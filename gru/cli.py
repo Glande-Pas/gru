@@ -291,6 +291,9 @@ def list_():
     live = API()
     installed = Folder.scan(live)
 
+    if not installed:
+        click.echo('No addons installed.')
+        return
     _display([live.addon(folder.id) for folder in installed if hasattr(folder, 'id')], installed=installed)
 
 @main.command(help='List missing dependencies')
