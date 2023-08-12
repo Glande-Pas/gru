@@ -2,10 +2,16 @@
 name = "Gru"
 version = "0.0.0"
 authors = [{name="Cimbali", email="me@cimba.li" }]
-description = "Greates Resolving Updater for MMO addons"
+description = "Gru gets/removes/updates your ESO add-ons. Nothing to do with being minions’ boss."
 readme = "README.md"
-dependencies = ["requests", "requests-cache", "click", "unicodedata2"]
+license = {text = "MIT License"}
+dependencies = ["requests", "requests-cache", "click", "unicodedata2", "charset-normalizer"]
 requires-python = ">=3.8"
+
+[project.optional-dependencies]
+test = [
+  "pytest",
+]
 
 [project.scripts]
 gru = "gru.cli:main"

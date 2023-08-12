@@ -7,22 +7,11 @@ import functools
 import unicodedata
 import re
 
-from .installed import Folder
+from .config import config
 
 
 class API:
-    endpoint = 'https://api.mmoui.com/v{version}/'
-    version = 3
-
     session = requests_cache.CachedSession('gru', expire_after=datetime.timedelta(hours=1))
-
-    pages = dict(
-        globalconf='globalconfig.json',
-        gameconf='game/{game}/gameconfig.json',
-        catlist='game/{game}/categorylist.json',
-        filelist='game/{game}/filelist.json',
-    )
-
     invalid_chars = re.compile(r'[^\w-]')
 
     @classmethod
@@ -31,7 +20,10 @@ class API:
         return cls.invalid_chars.sub('', value).strip('_-')
 
     def __init__(self, game='ESO', stable=True):
-        self.options = dict(version=self.version + int(not stable), game=game)
+        endpoint = config.get('api', 'endpoint')
+        version = config.getint('api', 'version') + int(not stable)
+
+        self.pages = {key: endpoint.format(version=version, path=val) for key, val in config.items('ESO.paths')}
 
     @functools.cached_property
     def globalconf(self):
@@ -59,7 +51,7 @@ class API:
 
     def _load(self, page):
         """ Load a page and return the JSON, ensure we use cached page if <1h old """
-        url = f'{self.endpoint}{self.pages[page]}'.format(**self.options)
+        url = self.pages[page]
         try:
             response = self.session.get(url)
             response.raise_for_status()
@@ -69,7 +61,6 @@ class API:
             print(f'Error loading {url!r}: {err}')
         else:
             return response.json()
-
 
     def cat_name_hierarchy(self, start):
         """ Go up parent category ids (if any) and return list of names """
@@ -127,9 +118,8 @@ class API:
     def search(self, term, maxlen=10):
         """ Search `term` in addon names """
         # We want at least 75% of search string in result
-        return self._fuzz(self.filelist.values(), 'UIName', term, cutoff=.75, maxlen=maxlen, tiebreakattr=[
-            'UIDownloadTotal'  # Could be 'UIDownloadMonthly', 'UIFavoriteTotal'
-        ])
+        return self._fuzz(self.filelist.values(), 'UIName', term, cutoff=.75 if len(term) > 3 else 1, maxlen=maxlen,
+                          tiebreakattr=['UIDownloadTotal'])  # Could be 'UIDownloadMonthly', 'UIFavoriteTotal'
 
     def addon(self, id_):
         """ Lookup an addon by id """
@@ -149,7 +139,7 @@ class API:
 
     def find(self, val, installed, local_only=False):
         """ Search for an addon generically """
-        id_ = None
+        # Various methods of exact matches
         try:
             return self.addon(int(val))
         except (ValueError, KeyError):
@@ -165,8 +155,17 @@ class API:
         except ValueError:
             pass
 
+        try:
+            idx = [folder.dir for folder in installed].index(val)
+        except ValueError:
+            pass
+        else:
+            return installed[idx]
+
+        # Otherwise revert to search and return a list of candidates
         results = self.search(val)
         if local_only:
+            from .installed import Folder
             results = [addon for addon in results if Folder.find_installed(addon['slug'], installed) is not None]
 
         return results

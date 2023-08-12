@@ -11,21 +11,24 @@ IS_WINDOWS = os.name == 'nt'
 
 defaults = '''
 [api]
-endpoint = https://api.mmoui.com/v{version}/
+endpoint = https://api.mmoui.com/v{version}/{path}
 version = 3
 
+[ESO.paths]
 globalconf = globalconfig.json
-gameconf = game/{game}/gameconfig.json
-catlist = game/{game}/categorylist.json
-filelist = game/{game}/filelist.json
-game = ESO
+gameconf = game/ESO/gameconfig.json
+catlist = game/ESO/categorylist.json
+filelist = game/ESO/filelist.json
 
+[ESO.links]
 info = https://www.esoui.com/downloads/info{id}.html
 download = https://cdn.esoui.com/downloads/file{id}/
 
-[user]
-path =
+[ESO.addons]
+root =
 '''
+
+config = configparser.ConfigParser(delimiters=['='])
 
 def user_home():
     if (userhome := os.environ.get('HOME')) is not None:
@@ -54,7 +57,23 @@ def user_config():
             base_dir.mkdir(parents=True)
         return base_dir / 'gru'
 
-def load():
-    parser = configparser.Configparser(delimiters=['='])
-    parser.read_file(io.StringIO(defaults))
-    print(parser.items())
+def load_config(config_file=None):
+    config.read_file(io.StringIO(defaults))
+    config_file = user_config() if config_file is None else pathlib.Path(config_file)
+    if config_file.exists():
+        config.read(config_file)
+
+    # Guess addons directory?
+    if config.get('ESO.addons', 'root').strip():
+        return
+
+    for check in ['Documents/Elder Scrolls Online/live/AddOns', 'Documents/Elder Scrolls Online/pts/AddOns']:
+        addons_dir = user_home() / check
+        if addons_dir.exists():
+            config.set('ESO.addons', 'root', str(addons_dir.resolve()))
+            break
+
+def save_config(config_file=None):
+    config_file = user_config() if config_file is None else pathlib.Path(config_file)
+    with open(config_file, 'w') as f:
+        config.write(f)
