@@ -219,8 +219,17 @@ def remove(addon, clean_deps=False):
         return
 
     folder = Folder.find_installed(addon['slug'], installed)
-    if folder is not None:
-        folder.remove()
+    if folder is None:
+        return
+
+    folder.remove()
+
+    if not clean_deps:
+        return
+
+    remains = [inst for inst in installed if inst.root != folder.root]
+    for lib in Folder.all_unused_deps(remains, remains):
+        lib.remove()
 
 
 @main.command()

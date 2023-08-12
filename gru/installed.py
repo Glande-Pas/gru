@@ -294,6 +294,7 @@ class Folder:
         return max(stat.st_mtime, stat.st_ctime) + 2 <= addon['UIDate'] / 1000
 
     def missing_deps(self, folders, opt=False):
+        """ Return dependencies that are missing from `folders` """
         missing = {}
         for dep, version in [*self.deps.items(), *(self.optdeps.items() if opt else ())]:
             if self.find_installed(dep, folders, version) is None:
@@ -307,3 +308,18 @@ class Folder:
             deps = addon.missing_deps(folders, opt=opt)
             missing.update({dep: max(ver, missing.get(dep, ver)) for dep, ver in deps.items()})
         return missing
+
+    def depcount(self, folders, opt=True):
+        """ Count the number of times this addon is dependend on in `folders` """
+        refcount = sum(self.dir in addon.deps for addon in folders)
+        if opt:
+            refcount += sum(self.dir in addon.optdeps for addon in folders)
+        return refcount
+
+    @classmethod
+    def all_unused_deps(cls, pool, folders, opt=False):
+        unused = []
+        for addon in pool:
+            if addon.islib and addon.depcount(folders) == 0:
+                unused.append(addon)
+        return unused
