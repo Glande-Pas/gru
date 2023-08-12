@@ -5,6 +5,7 @@ import requests
 import shutil
 import datetime
 import functools
+import warnings
 import re
 import charset_normalizer
 
@@ -55,14 +56,14 @@ class Folder:
             try:
                 addon.parse_manifest()
             except Exception as err:
-                print(f'Error: Skipping addon at {path} due to {err}')
+                warnings.warn(f'Skipping addon at {path} due to {type(err).__name__} {err}')
                 continue
 
             try:
                 if api is not None:
                     addon.lookup(api)
             except ValueError:
-                print(f'Warning: Addon at {path} not found in database')
+                warnings.warn(f'Addon at {path} not found in database')
 
             results.append(addon)
         return results
@@ -117,7 +118,9 @@ class Folder:
 
         # Now handle all interesting metadata
         # NB. AddOnVersion supposedly is mandatory but effectively missing from some addons
-        assert {'Title', 'APIVersion'} <= metadata.keys(), 'Missing mandatory keys'
+        missing_mandatory_keys = {'Title', 'APIVersion'} - metadata.keys()
+        if missing_mandatory_keys:
+            warnings.warn(f'Missing mandatory keys {", ".join(missing_mandatory_keys)} in {self}')
         self.version = atol(metadata.get('AddOnVersion', '1'), 10)
         self.api = [atol(api, 10) for api in metadata.pop('APIVersion').split()]
 
@@ -170,13 +173,13 @@ class Folder:
         manifest_depth1 = [f.filename for f in files if re.match(r'([^/]+)/\1.txt$', f.filename)]
         if len(manifest_depth1) == 1 and len(toplevels) == 1:
             self.dir = pathlib.Path(manifest_depth1[0]).stem
-            print(f'Warning: using {self.dir} as install dir instead of {self.root.name}')
+            warnings.warn(f'Using {self.dir} as install dir instead of {self.root.name}')
             self.root = self.root.parent / self.dir
             return self.root.parent, files
 
         # Try to find a single top-level manifest with expected name
         if any(f.filename == f'{self.dir}.txt' for f in files):
-            print(f'Warning: addon bundle missing top-level dir, prepending {self.dir}/ to zip contents')
+            warnings.warn(f'Addon bundle missing top-level dir, prepending {self.dir}/ to zip contents')
             return self.root, files
 
         # Try to find a single top-level manifest with any name
@@ -188,9 +191,9 @@ class Folder:
 
         if len(manifest_depth0) == 1:
             self.dir = pathlib.Path(manifest_depth0[0]).stem
-            print(f'Warning: using {self.dir} as install dir instead of {self.root.name}')
+            warnings.warn(f'Using {self.dir} as install dir instead of {self.root.name}')
             self.root = self.root.parent / self.dir
-            print(f'Warning: addon bundle missing top-level dir, prepending {self.dir}/ to zip contents')
+            warnings.warn(f'Addon bundle missing top-level dir, prepending {self.dir}/ to zip contents')
             return self.root, files
 
         # Try to find any manifest? Do not take into account non-single top-level .txt files
@@ -204,14 +207,14 @@ class Folder:
 
         # Some addons bundle gamedata, EsoUI (etc) as top-level folders, install to a subdirectory
         if len(toplevels) > 1 and not all(f'{name}/{name}.txt' in manifest_depth1 for name in toplevels):
-            print(f'Warning: multiple-directory addon, prepending {self.dir}/ to zip contents')
+            warnings.warn(f'Multiple-directory addon, prepending {self.dir}/ to zip contents')
             return self.root, files
 
         # We have a guess of what we’re really installing -- does not really matter in terms of addon clashes as it’s all 1 dir
         if len(toplevels) == 1:
             self.dir = pathlib.Path(manifest_anydepth[0]).stem
             self.root = self.root.parent / toplevels.pop()
-            print(f'Warning: using {self.dir} as addon dir, installing under {self.root.name}')
+            warnings.warn(f'Using {self.dir} as addon dir, installing under {self.root.name}')
             return self.root.parent, files
 
         # So now we know we have several top-level addons, i.e. risk of clashing
@@ -228,7 +231,7 @@ class Folder:
                     toplevels.remove(dir_)
 
         if len(toplevels) > 1:
-            print(f'Warning: Installing {len(toplevels)} addons as part of {self.dir}: {", ".join(toplevels)}')
+            warnings.warn(f'Installing {len(toplevels)} addons as part of {self.dir}: {", ".join(toplevels)}')
         return self.root.parent, [info for info in files if pathlib.Path(info.filename).parts[0] in toplevels]
 
 

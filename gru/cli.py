@@ -1,3 +1,5 @@
+import contextlib
+import warnings
 import datetime
 import pathlib
 import shutil
@@ -5,7 +7,7 @@ import click
 import math
 import sys
 
-from .config import config, load_config, save_config
+from .config import load_config, save_config
 from .api import API
 from .installed import Folder
 
@@ -140,8 +142,15 @@ def _progress(size, message):
 @click.group(cls=SectionedHelpGroup)
 @click.option('--config', 'config_file', help='path to config file',
               type=click.Path(dir_okay=False, writable=True), default=None)
-def main(config_file=None):
-    load_config(config_file)
+@click.pass_context
+def main(ctx, config_file=None):
+    ctx.ensure_object(dict)
+    ctx.obj['exit_stack'] = contextlib.ExitStack()
+    ctx.obj['warnings'] = ctx.obj['exit_stack'].enter_context(
+        warnings.catch_warnings(record=True, category=UserWarning)
+    )
+
+    config = ctx.obj['config'] = load_config(config_file)
 
     root = config.get('ESO.addons', 'root')
     if not root or not pathlib.Path(root).exists():
@@ -149,12 +158,21 @@ def main(config_file=None):
         root = click.prompt('Path to addons directory', prompt_suffix=':\n> ',
                             type=click.Path(exists=True, file_okay=False, path_type=pathlib.Path))
         config.set('ESO.addons', 'root', str(root.resolve()))
+        save_config(config_file)
+
+    live = ctx.obj['live'] = API(config)
+    installed = ctx.obj['installed'] = Folder.scan(live)
 
 
 
 @main.result_callback()
-def process_result(result, config_file):
-    save_config(config_file)
+@click.pass_context
+def process_result(ctx, result, config_file):
+    ctx.obj['exit_stack'].close()
+    if ctx.obj['warnings']:
+        click.echo(f'{len(ctx.obj["warnings"])} warning(s):')
+        for warning in ctx.obj['warnings']:
+            click.echo(f'- {warning.message}')
 
 
 @main.command()
@@ -294,7 +312,9 @@ def list_():
     if not installed:
         click.echo('No addons installed.')
         return
-    _display([live.addon(folder.id) for folder in installed if hasattr(folder, 'id')], installed=installed)
+
+    click.echo(f'Found {len(installed)} addon(s):')
+    _display([live.addon(folder.id) if hasattr(folder, 'id') else folder for folder in installed], installed=installed)
 
 @main.command(help='List missing dependencies')
 @click.option('--opt/--no-opt', help='include optional dependencies')

@@ -28,8 +28,6 @@ download = https://cdn.esoui.com/downloads/file{id}/
 root =
 '''
 
-config = configparser.ConfigParser(delimiters=['='])
-
 def user_home():
     if (userhome := os.environ.get('HOME')) is not None:
         return pathlib.Path(userhome)
@@ -58,22 +56,30 @@ def user_config():
         return base_dir / 'gru'
 
 def load_config(config_file=None):
+    config = configparser.ConfigParser(delimiters=['='])
     config.read_file(io.StringIO(defaults))
+
     config_file = user_config() if config_file is None else pathlib.Path(config_file)
     if config_file.exists():
         config.read(config_file)
 
     # Guess addons directory?
     if config.get('ESO.addons', 'root').strip():
-        return
+        return config
 
     for check in ['Documents/Elder Scrolls Online/live/AddOns', 'Documents/Elder Scrolls Online/pts/AddOns']:
         addons_dir = user_home() / check
         if addons_dir.exists():
             config.set('ESO.addons', 'root', str(addons_dir.resolve()))
             break
+    else:
+        return config
 
-def save_config(config_file=None):
+    save_config(config, config_file)
+    return config
+
+
+def save_config(config, config_file=None):
     config_file = user_config() if config_file is None else pathlib.Path(config_file)
     with open(config_file, 'w') as f:
         config.write(f)

@@ -3,11 +3,10 @@ import requests_cache
 import datetime
 import operator
 import difflib
+import warnings
 import functools
 import unicodedata
 import re
-
-from .config import config
 
 
 class API:
@@ -19,7 +18,7 @@ class API:
         value = unicodedata.normalize('NFKD', value).encode('ascii', 'ignore').decode('ascii')
         return cls.invalid_chars.sub('', value).strip('_-')
 
-    def __init__(self, game='ESO', stable=True):
+    def __init__(self, config, game='ESO', stable=True):
         endpoint = config.get('api', 'endpoint')
         version = config.getint('api', 'version') + int(not stable)
 
@@ -56,9 +55,9 @@ class API:
             response = self.session.get(url)
             response.raise_for_status()
         except requests.HTTPError as http_err:
-            print(f'HTTP error while loading {url!r}: {http_err}')
+            warnings.warn(f'HTTP error while loading {url!r}: {http_err}')
         except Exception as err:
-            print(f'Error loading {url!r}: {err}')
+            warnings.warn(f'Error loading {url!r}: {err}')
         else:
             return response.json()
 
