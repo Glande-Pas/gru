@@ -1,4 +1,3 @@
-import contextlib
 import warnings
 import datetime
 import pathlib
@@ -6,8 +5,11 @@ import shutil
 import click
 import math
 import sys
+import os
+import click_repl
+import prompt_toolkit.history as prompt_history
 
-from .config import load_config, save_config
+from .config import load_config, save_config, user_cache
 from .api import API
 from .installed import Folder
 
@@ -15,22 +17,27 @@ from .installed import Folder
 class SectionedHelpGroup(click.Group):
     """ Sections commands into help groups """
 
-    _cmd_shortcuts = {'rm': 'remove', 'up': 'update', 'ls': 'list', 's': 'search', 'cc': 'clear-cache'}
+    _cmd_shortcuts = {'rm': 'remove', 'up': 'update', 'ls': 'list', 's': 'search', 'cc': 'clear-caches'}
 
     @classmethod
-    def _cmd_group(cls, cmd, group):
-        return (cmd.name in {'get': 'get', 'remove': 'rm', 'update': 'up'}) == (group == 'main')
+    def _cmd_group(cls, cmd):
+        if cmd.name in {'get', 'remove', 'update'}:
+            return 'main'
+        elif cmd.name in {'help', 'exit'}:
+            return 'command line'
+        else:
+            return 'extra'
 
     def get_command(self, ctx, cmd_name):
         return super().get_command(ctx, self._cmd_shortcuts.get(cmd_name, cmd_name))
 
     def format_commands(self, ctx, formatter):
         shortcuts = {long: short for short, long in self._cmd_shortcuts.items()}
-        for group in ['main', 'extra']:
+        for group in ['main', 'extra', 'command line']:
             rows = []
             for subcommand in self.list_commands(ctx):
                 cmd = self.get_command(ctx, subcommand)
-                if cmd is None or not self._cmd_group(cmd, group):
+                if cmd is None or group != self._cmd_group(cmd):
                     continue
                 short = shortcuts.get(subcommand)
                 rows.append((f'{subcommand} [{short}]' if short else subcommand, cmd.short_help or ''))
@@ -40,17 +47,18 @@ class SectionedHelpGroup(click.Group):
                     formatter.write_dl(rows)
 
 
-def _display_addon(n, addon, width, local, live):
+def _display_addon(ctx, n, addon, width, local):
     """ Show addon info from the API endpoint """
     click.echo()
     click.echo(f'{n:{width}}{addon["UIName"]} (id {addon["UID"]}){"  [installed]" if local else ""}')
     pfx = ' ' * width
     sep = ' |  '
     # Based on verbosity level, only click.echo a number of those:
+    # TODO: move to an “Addon” object
     infos = [
         f'Author: {addon["UIAuthorName"]}', f'Version: {addon["UIVersion"]}',
         f'Updated: {datetime.datetime.fromtimestamp(addon["UIDate"] / 1000).strftime("%c")}',
-        f'Category: {" > ".join(live.cat_name_hierarchy(addon["UICATID"]))}',
+        f'Category: {" > ".join(ctx.obj["api"].cat_name_hierarchy(addon["UICATID"]))}',
         f'Downloads: {addon["UIDownloadTotal"]} [{addon["UIDownloadMonthly"]} / Month]',
         f'Favorites: {addon["UIFavoriteTotal"]}',
         f'Directory: {addon["slug"] if local is None else local.root}',
@@ -67,6 +75,7 @@ def _display_folder(n, folder, width):
     pfx = ' ' * width
     sep = ' |  '
     # Based on verbosity level, only click.echo a number of those:
+    # TODO: move to an “Addon” object
     click.echo(pfx + sep.join([f'Author: {folder.metadata["UIAuthorName"]}', f'Version: {folder["Version"]}']))
     if 'Description' in folder.metadata:
         click.echo(pfx + f'Description: {folder.metadata["Description"]}')
@@ -80,24 +89,22 @@ def _display_unknown(n, folder, width):
     click.echo(' ' * width + f'NB: this add-on may be deprecated')
 
 
-def _display(results, installed=None):
+def _display(ctx, results, num_from=0):
     """ Show a list of addons """
-    live = API()
-    if installed is None:
-        installed = Folder.scan(live)
+    live = ctx.obj['api']
 
     width = math.ceil(math.log(len(results), 10))
     width += 2
 
-    for n, addon in enumerate(results, 1):
+    for n, addon in enumerate(results, num_from + 1):
         num = f'{n:{width - 2}}: ' if width > 2 else ''
         if isinstance(addon, Folder):
             _display_folder(num, addon, width)
         elif isinstance(addon, str):
             _display_unknown(num, addon, width)
         else:
-            local = Folder.find_installed(addon['slug'], installed)
-            _display_addon(num, addon, width, local, live)
+            local = Folder.find_installed(addon['slug'], ctx.obj['installed'])
+            _display_addon(ctx, num, addon, width, local)
 
     click.echo()
 
@@ -108,7 +115,7 @@ def _confirm(query):
     return answer
 
 
-def _prompt_addon(results, installed=None):
+def _prompt_addon(ctx, results, show_batch=10):
     """ Pick an addon from a list of addons """
     if not results:
         click.echo('No addon found')
@@ -118,12 +125,21 @@ def _prompt_addon(results, installed=None):
         'No exact matches.',
         f'{len(results)} possible results:' if len(results) > 1 else 'Only approximate result:'
     ]))
-    _display(results, installed=installed)
+
+    _display(ctx, results[:show_batch])
 
     if len(results) == 1:
         return results[0] if _confirm('Confirm removal?') else None
 
-    answer = click.prompt(f'Select (1-{len(results)}, 0 cancels)', prompt_suffix=':\n> ', type=int)
+    for shown in range(show_batch, len(results), show_batch):
+        answer = click.prompt(f'Select (1-{shown}, 0 cancels, empty continues)', prompt_suffix=':\n> ', default=-1,
+                              type=click.IntRange(-1, shown + 1), show_default=False)
+        if answer >= 0:
+            break
+
+        _display(ctx, results[shown:shown+show_batch], num_from=shown)
+    else:
+        answer = click.prompt(f'Select (1-{len(results)}, 0 cancels)', prompt_suffix=':\n> ', type=click.IntRange(0, len(results) + 1))
 
     click.echo()
     try:
@@ -139,16 +155,24 @@ def _progress(size, message):
     return click.progressbar(length=size, label=message)
 
 
-@click.group(cls=SectionedHelpGroup)
+def add_repl_commands(group):
+    @group.command('help', help='Print CLI help')
+    def print_help():
+        with click.Context(group) as ctx:
+            click.echo(group.get_help(ctx))
+
+    @group.command('exit', help='Exit CLI')
+    def exit_repl():
+        raise click_repl.ExitReplException()
+
+
+@click.group(cls=SectionedHelpGroup, invoke_without_command=True, context_settings=dict(help_option_names=['-h', '--help']))
 @click.option('--config', 'config_file', help='path to config file',
               type=click.Path(dir_okay=False, writable=True), default=None)
 @click.pass_context
 def main(ctx, config_file=None):
     ctx.ensure_object(dict)
-    ctx.obj['exit_stack'] = contextlib.ExitStack()
-    ctx.obj['warnings'] = ctx.obj['exit_stack'].enter_context(
-        warnings.catch_warnings(record=True, category=UserWarning)
-    )
+    ctx.obj['warnings'] = ctx.with_resource(warnings.catch_warnings(record=True, category=UserWarning))
 
     config = ctx.obj['config'] = load_config(config_file)
 
@@ -160,37 +184,49 @@ def main(ctx, config_file=None):
         config.set('ESO.addons', 'root', str(root.resolve()))
         save_config(config_file)
 
-    live = ctx.obj['live'] = API(config)
+    live = ctx.obj['api'] = API(config)
     installed = ctx.obj['installed'] = Folder.scan(live)
 
+    if ctx.invoked_subcommand is None:
+        add_repl_commands(main)
+        click_repl.repl(ctx, prompt_kwargs={
+            'history': prompt_history.FileHistory(user_cache('history')),
+        })
+
+
+def show_warnings(ctx):
+    if not ctx.obj['warnings']:
+        return
+
+    click.echo(f'\n{len(ctx.obj["warnings"])} warning(s):')
+    while ctx.obj['warnings']:
+        click.echo(f'- {ctx.obj["warnings"].pop(0).message}')
 
 
 @main.result_callback()
 @click.pass_context
 def process_result(ctx, result, config_file):
-    ctx.obj['exit_stack'].close()
-    if ctx.obj['warnings']:
-        click.echo(f'{len(ctx.obj["warnings"])} warning(s):')
-        for warning in ctx.obj['warnings']:
-            click.echo(f'- {warning.message}')
+    show_warnings(ctx)
 
 
 @main.command()
 @click.argument('addon')
 @click.option('--auto-deps/--no-auto-deps', default=True)
 @click.option('--opt/--no-opt', default=False, help='Include optional dependencies')
-def get(addon, auto_deps=True, opt=False):
+@click.pass_context
+def get(ctx, addon, auto_deps=True, opt=False):
     """ Find, download, and install an addon """
-    live = API()
-    installed = Folder.scan(live)
+    live = ctx.obj['api']
+    installed = ctx.obj['installed']
 
     addon = live.find(addon, installed)
     if not addon:
         click.echo('No corresponding addon found')
         click.echo()
     if isinstance(addon, list):
-        addon = _prompt_addon(addon, installed=installed)
+        addon = _prompt_addon(ctx, addon)
     if not addon:
+        show_warnings(ctx)
         return
 
     folder = Folder.find_installed(addon['slug'], installed)
@@ -198,6 +234,7 @@ def get(addon, auto_deps=True, opt=False):
     # Try to reuse an existing install dir
     if folder is not None:
         if not _confirm(f'Addon found at {folder.root}, update?'):
+            click.echo('Not removing')
             return
     else:
         folder = Folder(addon['slug'], id=int(addon['UID']))
@@ -206,121 +243,153 @@ def get(addon, auto_deps=True, opt=False):
 
     if not auto_deps:
         click.echo(f'Done installing {addon["UIName"]}')
+        show_warnings(ctx)
         return
 
     deps = [folder]
     while newdeps := Folder.all_missing_deps(deps, installed, opt=opt):
         deps.clear()
-        for addon in newdeps:
+        for add in newdeps:
             # Do not check if installed as it’s a missing dep
-            folder = Folder(addon)
+            folder = Folder(add)
             folder.lookup(live)
             folder.unpack(_progress)
             deps.append(folder)
 
+    click.echo(f'\nDone installing {addon["UIName"]} and dependencies')
+    show_warnings(ctx)
+
 
 @main.command()
-@click.argument('addon')
+@click.argument('addon', required=False)
 @click.option('--clean-deps/--no-clean-deps', default=False)
-def remove(addon, clean_deps=False):
+@click.pass_context
+def remove(ctx, addon, clean_deps=False):
     """ Find and uninstall an addon """
-    live = API()
-    installed = Folder.scan(live)
+    live = ctx.obj['api']
+    installed = ctx.obj['installed']
 
-    addon = live.find(addon, installed, local_only=True)
+    if addon is None:
+        addon = [live.addon(folder.id) if hasattr(folder, 'id') else folder for folder in installed]
+    else:
+        addon = live.find(addon, installed, local_only=True)
+
     if not addon:
         click.echo('No corresponding addon found')
-        click.echo()
+        show_warnings(ctx)
+        return
+
     if isinstance(addon, list):
-        addon = _prompt_addon(addon, installed=installed)
+        addon = _prompt_addon(ctx, addon)
     if not addon:
         return
 
     folder = Folder.find_installed(addon['slug'], installed)
     if folder is None:
+        show_warnings(ctx)
         return
 
     folder.remove()
 
     if not clean_deps:
+        click.echo('Addon removed.')
+        show_warnings(ctx)
         return
 
     remains = [inst for inst in installed if inst.root != folder.root]
     for lib in Folder.all_unused_deps(remains, remains):
         lib.remove()
 
+    click.echo('Addon and unused dependencies removed.')
+    show_warnings(ctx)
+
 
 @main.command()
 @click.option('--auto-deps/--no-auto-deps', default=True)
 @click.option('--opt/--no-opt', default=False, help='Include optional dependencies')
-def update(auto_deps, opt):
+@click.pass_context
+def update(ctx, auto_deps, opt):
     """ Find out-of-date and missing addons and install them """
-    live = API()
-    installed = Folder.scan(live)
+    live = ctx.obj['api']
+    installed = ctx.obj['installed']
 
+    updates = 0
     for folder in installed:
         if folder.check_update(live):
+            updates += 1
             folder.unpack(_progress)
 
     if not auto_deps:
+        click.echo(f'Updated {updates} addon(s)' if updates else 'Nothing to do')
+        show_warnings(ctx)
         return
 
+    added = 0
     deps = installed
     while newdeps := Folder.all_missing_deps(deps, installed, opt=opt):
         deps.clear()
         for addon in newdeps:
+            added += 1
             # Do not check if installed as it’s a missing dep
             folder = Folder(addon)
             folder.lookup(live)
             folder.unpack(_progress)
             deps.append(folder)
 
+    if updates + added:
+        click.echo(f'Updated {updates} addon(s) and installed {added} dependencies')
+    else:
+        click.echo('Nothing to do')
+    show_warnings(ctx)
 
 @main.command()
-def check_api_release(hidden=True):
+@click.pass_context
+def check_api_release(ctx, hidden=True):
     try:
-        alpha = API(stable=False)
-        if alpha.globalconf['api']['version'] != 'ALPHA':
+        alpha = API(ctx.obj['config'], stable=False)
+        if alpha.globalconf['API']['Version'] != 'ALPHA':
             click.echo(f'Version {API.version + 1} seems to have come out of alpha')
     except:
         pass
 
-    live = API()
-    if live.globalconf['API']['Version'] != 'LIVE':
-        click.echo(f'Error: Version {API.version} has been retired')
+    if ctx.obj['api'].globalconf['API']['Version'] != 'LIVE':
+        click.echo(f'Error: Version {ctx.obj["config"].get("api", "version")} has been retired')
 
 
 @main.command()
 @click.argument('term')
 @click.option('-m', '--max', 'max_', help='max number of matches', default=10)
-def search(term, max_=10):
-    live = API()
+@click.pass_context
+def search(ctx, term, max_=10):
+    live = ctx.obj['api']
     search = live.search(term, maxlen=max_)
 
     if search:
         click.echo(len(search), 'results:')
-        _display(search)
+        _display(ctx, search)
     else:
         click.echo('No matches.')
 
 
-@main.command('list', help='List installed add-ons')
-def list_():
-    live = API()
-    installed = Folder.scan(live)
+@main.command('list', help='list installed add-ons')
+@click.pass_context
+def list_(ctx):
+    live = ctx.obj['api']
+    installed = ctx.obj['installed']
 
     if not installed:
         click.echo('No addons installed.')
         return
 
     click.echo(f'Found {len(installed)} addon(s):')
-    _display([live.addon(folder.id) if hasattr(folder, 'id') else folder for folder in installed], installed=installed)
+    _display(ctx, [live.addon(folder.id) if hasattr(folder, 'id') else folder for folder in installed])
 
 @main.command(help='List missing dependencies')
 @click.option('--opt/--no-opt', help='include optional dependencies')
-def miss(opt):
-    live = API()
-    installed = Folder.scan(live)
+@click.pass_context
+def miss(ctx, opt):
+    live = ctx.obj['api']
+    installed = ctx.obj['installed']
     missing = Folder.all_missing_deps(installed, installed, opt=opt)
 
     if not missing:
@@ -334,12 +403,17 @@ def miss(opt):
             found.append(live.dir(dep))
         except ValueError:
             not_found.append(dep)
-    _display(found + not_found, installed=installed)
+    _display(ctx, found + not_found)
 
     if found:
         click.echo(f'Run update to fetch resolved missing dependencies')
 
 
 @main.command()
-def clear_cache():
-    API.reset()
+@click.pass_context
+def clear_caches(ctx):
+    live = ctx.obj['api']
+    live.reset()
+    ctx.obj['installed'] = Folder.scan(live)
+
+    click.echo('Caches cleared.')

@@ -8,6 +8,7 @@ IS_POSIX = os.name == 'posix'
 IS_MAC_OS = sys.platform == 'darwin'
 IS_WINDOWS = os.name == 'nt'
 
+config = configparser.ConfigParser(delimiters=['='])
 
 defaults = '''
 [api]
@@ -39,6 +40,26 @@ def user_home():
         else:
             return pathlib.Path(userhome)
 
+def user_cache(*args):
+    """ Returns the appropriate path to the cache file in the user app dirs.
+
+    Returns:
+        :class:`~pathlib.Path`: path to the cache file or directory.
+    """
+    if IS_WINDOWS:
+        base_dir = pathlib.Path(os.getenv('LOCALAPPDATA', os.getenv('APPDATA')))
+    elif IS_MAC_OS:
+        # NB. for local ~/Library/Logs
+        base_dir = pathlib.Path('~/Library/Caches').expanduser()
+    else:
+        base_dir = pathlib.Path(os.getenv('XDG_CACHE_HOME', '~/.cache')).expanduser()
+
+    base_dir /= 'gru'
+    if not base_dir.exists():
+        base_dir.mkdir(parents=True)
+
+    return base_dir.joinpath(*args)
+
 def user_config():
     """ Returns the path to the configuration file in the user config directory
 
@@ -56,7 +77,6 @@ def user_config():
         return base_dir / 'gru'
 
 def load_config(config_file=None):
-    config = configparser.ConfigParser(delimiters=['='])
     config.read_file(io.StringIO(defaults))
 
     config_file = user_config() if config_file is None else pathlib.Path(config_file)

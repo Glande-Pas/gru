@@ -117,10 +117,6 @@ class Folder:
         metadata = {key: ' '.join(val) for key, val in metadata.items()}
 
         # Now handle all interesting metadata
-        # NB. AddOnVersion supposedly is mandatory but effectively missing from some addons
-        missing_mandatory_keys = {'Title', 'APIVersion'} - metadata.keys()
-        if missing_mandatory_keys:
-            warnings.warn(f'Missing mandatory keys {", ".join(missing_mandatory_keys)} in {self}')
         self.version = atol(metadata.get('AddOnVersion', '1'), 10)
         self.api = [atol(api, 10) for api in metadata.pop('APIVersion').split()]
 
@@ -141,6 +137,11 @@ class Folder:
 
         # Whatever remains: title, author, etc.
         self.metadata.update(metadata)
+
+        # NB. emit warning last on keys that were not popped
+        missing_mandatory_keys = {'Title'} - metadata.keys()
+        if missing_mandatory_keys:
+            warnings.warn(f'Missing mandatory key(s) {", ".join(missing_mandatory_keys)} in {self}')
 
     def lookup(self, api):
         """ Looks up the addon’s id in the provided `api.API` instance """
