@@ -9,9 +9,46 @@ import unicodedata
 import re
 
 
+def to_list(arg):
+    if arg is None:
+        return []
+    else:
+        return list(arg)
+
+
+def epoch_ms(val):
+    return datetime.datetime.fromtimestamp(int(val) / 1000)
+
+
 class API:
     session = requests_cache.CachedSession('gru', expire_after=datetime.timedelta(hours=1))
     invalid_chars = re.compile(r'[^\w-]')
+
+    fileinfo_rename = {
+        'UID':               ('id', int),
+        'UICATID':           ('category', int),
+        'UIVersion':         ('display_version', str),
+        'UIDate':            ('date', epoch_ms),
+        'UIName':            ('title', str),
+        'UIAuthorName':      ('author', str),
+        'UIFileInfoURL':     ('link', str),
+        'UIDownloadTotal':   ('downloads', int),
+        'UIDownloadMonthly': ('monthly_downloads', int),
+        'UIFavoriteTotal':   ('favorites', int),
+        'UICompatibility':   ('api_versions', str),
+        'UIDir':             ('directories', to_list),
+        'UIIMG_Thumbs':      ('thumbnails', to_list),
+        'UIIMGs':            ('images', to_list),
+        'UIDonationLink':    ('donate', str),
+    }
+
+    catlist_rename = {
+        'UICATID':        ('id', int),
+        'UICATTitle':     ('title', str),
+        'UICATICON':      ('icon', str),
+        'UICATFileCount': ('addon_count', int),
+        'UICATParentIDs': ('parent_ids', functools.partial(map, int)),
+    }
 
     @classmethod
     def slugify(cls, value):
@@ -36,17 +73,25 @@ class API:
     def filelist(self):
         data = {}
         for addon in self._load('filelist'):
-            dirs = set(addon['UIDir']) - {'__MACOSX'}
+            addon = {new: typ(addon[old]) for old, (new, typ) in self.fileinfo_rename.items()}
+            dirs = set(addon['directories']) - {'__MACOSX'}
             if len(dirs) != 1 or {'lang', 'libs', 'EsoUI', 'gamedata'} & dirs:
-                addon['slug'] = self.slugify(addon['UIName'])
+                addon['slug'] = self.slugify(addon['title'])
             else:
-                addon['slug'] = addon['UIDir'][0]
-            data[int(addon['UID'])] = addon
+                addon['slug'] = addon['directories'][0]
+            data[addon['id']] = addon
         return data
 
     @functools.cached_property
     def catlist(self):
-        return {int(cat['UICATID']): cat for cat in self._load('catlist')}
+        categories = {}
+        for cat in self._load('catlist'):
+            categories[int(cat['UICATID'])] = {new: typ(cat[old]) for old, (new, typ) in self.catlist_rename.items()}
+
+        for cat in categories.values():
+            cat['parent_ids'] = [intval for intval in cat['parent_ids'] if intval in categories]
+
+        return categories
 
     def _load(self, page):
         """ Load a page and return the JSON, ensure we use cached page if <1h old """
@@ -71,8 +116,8 @@ class API:
                 cat = self.cat(id_)
             except KeyError:
                 continue  # Upstream references fictional categories, e.g. 0, 23
-            cat_names.append(cat['UICATTitle'])
-            cat_list.extend(int(id_) for id_ in cat['UICATParentIDs'] if id_ != '0')
+            cat_names.append(cat['title'])
+            cat_list.extend(int(id_) for id_ in cat['parent_ids'] if id_ != 0)
         return cat_names[::-1]
 
     @classmethod
@@ -100,7 +145,7 @@ class API:
             if sum(matches) < cutoff:
                 continue
             # NB. cast for numerical attributes represented as strings in json
-            prio = (sum(matches), max(matches), *(float(obj[tie]) for tie in tiebreakattr))
+            prio = (sum(matches), max(matches), *(obj[tie] for tie in tiebreakattr))
             candidates.append((prio, obj))
 
         candidates = sorted(candidates, key=operator.itemgetter(0), reverse=True)
@@ -117,8 +162,8 @@ class API:
     def search(self, term, maxlen=10):
         """ Search `term` in addon names """
         # We want at least 75% of search string in result
-        return self._fuzz(self.filelist.values(), 'UIName', term, cutoff=.75 if len(term) > 3 else 1, maxlen=maxlen,
-                          tiebreakattr=['UIDownloadTotal'])  # Could be 'UIDownloadMonthly', 'UIFavoriteTotal'
+        return self._fuzz(self.filelist.values(), 'title', term, cutoff=.75 if len(term) > 3 else 1, maxlen=maxlen,
+                          tiebreakattr=['downloads'])  # Could be 'monthly_downloads', 'favorites'
 
     def addon(self, id_):
         """ Lookup an addon by id """
@@ -134,7 +179,7 @@ class API:
 
     def name(self, name):
         """ Lookup an addon by name (exact match) """
-        return self._lookup(self.filelist.values(), 'UIName', str(name))
+        return self._lookup(self.filelist.values(), 'title', str(name))
 
     def find(self, val, installed, local_only=False):
         """ Search for an addon generically """

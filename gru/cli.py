@@ -50,22 +50,22 @@ class SectionedHelpGroup(click.Group):
 def _display_addon(ctx, n, addon, width, local):
     """ Show addon info from the API endpoint """
     click.echo()
-    click.echo(f'{n:{width}}{addon["UIName"]} (id {addon["UID"]}){"  [installed]" if local else ""}')
+    click.echo(f'{n:{width}}{addon["title"]} (id {addon["id"]}){"  [installed]" if local else ""}')
     pfx = ' ' * width
     sep = ' |  '
     # Based on verbosity level, only click.echo a number of those:
     # TODO: move to an “Addon” object
     infos = [
-        f'Author: {addon["UIAuthorName"]}', f'Version: {addon["UIVersion"]}',
-        f'Updated: {datetime.datetime.fromtimestamp(addon["UIDate"] / 1000).strftime("%c")}',
-        f'Category: {" > ".join(ctx.obj["api"].cat_name_hierarchy(addon["UICATID"]))}',
-        f'Downloads: {addon["UIDownloadTotal"]} [{addon["UIDownloadMonthly"]} / Month]',
-        f'Favorites: {addon["UIFavoriteTotal"]}',
+        f'Author: {addon["author"]}', f'Version: {addon["display_version"]}',
+        f'Updated: {addon["date"].strftime("%c")}',
+        f'Category: {" > ".join(ctx.obj["api"].cat_name_hierarchy(addon["category"]))}',
+        f'Downloads: {addon["downloads"]} [{addon["monthly_downloads"]} / Month]',
+        f'Favorites: {addon["favorites"]}',
         f'Directory: {addon["slug"] if local is None else local.root}',
     ]
     click.echo(pfx + sep.join(infos[:4]))
     click.echo(pfx + sep.join(infos[4:]))
-    click.echo(pfx + addon['UIFileInfoURL'])
+    click.echo(pfx + addon['link'])
 
 
 def _display_folder(n, folder, width):
@@ -76,7 +76,7 @@ def _display_folder(n, folder, width):
     sep = ' |  '
     # Based on verbosity level, only click.echo a number of those:
     # TODO: move to an “Addon” object
-    click.echo(pfx + sep.join([f'Author: {folder.metadata["UIAuthorName"]}', f'Version: {folder["Version"]}']))
+    click.echo(pfx + sep.join([f'Author: {folder.metadata["author"]}', f'Version: {folder["display_version"]}']))
     if 'Description' in folder.metadata:
         click.echo(pfx + f'Description: {folder.metadata["Description"]}')
     click.echo(pfx + f'NB: this add-on may be deprecated')
@@ -237,12 +237,12 @@ def get(ctx, addon, auto_deps=True, opt=False):
             click.echo('Not removing')
             return
     else:
-        folder = Folder(addon['slug'], id=int(addon['UID']))
+        folder = Folder(addon['slug'], id=addon['id'])
 
     folder.unpack(_progress)
 
     if not auto_deps:
-        click.echo(f'Done installing {addon["UIName"]}')
+        click.echo(f'Done installing {addon["title"]}')
         show_warnings(ctx)
         return
 
@@ -256,7 +256,7 @@ def get(ctx, addon, auto_deps=True, opt=False):
             folder.unpack(_progress)
             deps.append(folder)
 
-    click.echo(f'\nDone installing {addon["UIName"]} and dependencies')
+    click.echo(f'\nDone installing {addon["title"]} and dependencies')
     show_warnings(ctx)
 
 

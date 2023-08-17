@@ -115,6 +115,7 @@ class Folder:
                     metadata.setdefault(key.strip(), []).append(val.strip())
 
         metadata = {key: ' '.join(val) for key, val in metadata.items()}
+        missing_mandatory_keys = {'Title', 'APIVersion'} - metadata.keys()
 
         # Now handle all interesting metadata
         self.version = atol(metadata.get('AddOnVersion', '1'), 10)
@@ -138,14 +139,13 @@ class Folder:
         # Whatever remains: title, author, etc.
         self.metadata.update(metadata)
 
-        # NB. emit warning last on keys that were not popped
-        missing_mandatory_keys = {'Title'} - metadata.keys()
+        # NB. emit warning last
         if missing_mandatory_keys:
             warnings.warn(f'Missing mandatory key(s) {", ".join(missing_mandatory_keys)} in {self}')
 
     def lookup(self, api):
         """ Looks up the addon’s id in the provided `api.API` instance """
-        self.id = int(api.dir(self.dir)['UID'])
+        self.id = api.dir(self.dir)['id']
 
     def _inspect_bundle(self, zf):
         """ This is the annoying bit where we need to handle non-standard zip bundles
@@ -228,7 +228,7 @@ class Folder:
             except KeyError:
                 install.append(dir_)
             else:
-                if addon['UID'] != self.id:
+                if addon['id'] != self.id:
                     toplevels.remove(dir_)
 
         if len(toplevels) > 1:
@@ -289,13 +289,13 @@ class Folder:
             return False
 
         try:
-            return self.display_version < tuple(atol(token) for token in addon['UIVersion'].split('.'))
+            return self.display_version < tuple(atol(token) for token in addon['display_version'].split('.'))
         except ValueError:
             pass
 
         stat = self.manifest.stat()
         # NB. some file systems have 2s resolution, but addons should never get updates within 2s
-        return max(stat.st_mtime, stat.st_ctime) + 2 <= addon['UIDate'] / 1000
+        return datetime.datetime.from_timestamp(max(stat.st_mtime, stat.st_ctime) + 2) <= addon['date']
 
     def missing_deps(self, folders, opt=False):
         """ Return dependencies that are missing from `folders` """
