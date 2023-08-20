@@ -1,3 +1,4 @@
+""" Module handling user configuration """
 import configparser
 import pathlib
 import sys
@@ -15,7 +16,7 @@ defaults = '''
 endpoint = https://api.mmoui.com/v{version}/{path}
 version = 3
 
-[ESO.paths]
+[ESOUIv3.paths]
 globalconf = globalconfig.json
 gameconf = game/ESO/gameconfig.json
 catlist = game/ESO/categorylist.json

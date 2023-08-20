@@ -1,3 +1,4 @@
+""" Module handling command-line interface """
 import warnings
 import datetime
 import pathlib
@@ -11,7 +12,11 @@ import prompt_toolkit.history as prompt_history
 
 from .config import load_config, save_config, user_cache
 from .api import API
-from .installed import Folder
+from .addon import Addon
+from .install import Folder
+
+
+# TODO: exception handler that prints warnings
 
 
 class SectionedHelpGroup(click.Group):
@@ -47,38 +52,38 @@ class SectionedHelpGroup(click.Group):
                     formatter.write_dl(rows)
 
 
-def _display_addon(ctx, n, addon, width, local):
+def _display_addon(ctx, n, addon, width):
     """ Show addon info from the API endpoint """
     click.echo()
-    click.echo(f'{n:{width}}{addon["title"]} (id {addon["id"]}){"  [installed]" if local else ""}')
+    click.echo(f'{n:{width}}{addon.metadata["title"]} (id {addon.id}){"  [installed]" if addon.folder is not None else ""}')
     pfx = ' ' * width
     sep = ' |  '
     # Based on verbosity level, only click.echo a number of those:
-    # TODO: move to an “Addon” object
+    # TODO: display whether update is available
     infos = [
-        f'Author: {addon["author"]}', f'Version: {addon["display_version"]}',
-        f'Updated: {addon["date"].strftime("%c")}',
-        f'Category: {" > ".join(ctx.obj["api"].cat_name_hierarchy(addon["category"]))}',
-        f'Downloads: {addon["downloads"]} [{addon["monthly_downloads"]} / Month]',
-        f'Favorites: {addon["favorites"]}',
-        f'Directory: {addon["slug"] if local is None else local.root}',
+        f'Author: {addon.metadata["author"]}', f'Version: {addon.metadata["version" if addon.folder is None else "installed_version"]}',
+        f'Updated: {addon.metadata["date"].strftime("%c")}',
+        f'Category: {" > ".join(ctx.obj["api"].cat_name_hierarchy(addon.metadata["category"]))}',
+        f'Downloads: {addon.metadata["downloads"]} [{addon.metadata["monthly"]} / Month]',
+        f'Favorites: {addon.metadata["favorites"]}',
+        f'Directory: {addon.dir}',
     ]
     click.echo(pfx + sep.join(infos[:4]))
     click.echo(pfx + sep.join(infos[4:]))
-    click.echo(pfx + addon['link'])
+    click.echo(pfx + addon.metadata['link'])
 
 
 def _display_folder(n, folder, width):
     """ Show addon info from a local folder that was not matched with the API endpoint """
     click.echo()
-    click.echo(f'{n:{width}}{folder.metadata["Title"]} (id not found)  [installed]')
+    click.echo(f'{n:{width}}{folder.metadata["title"]} (id not found)  [installed]')
     pfx = ' ' * width
     sep = ' |  '
     # Based on verbosity level, only click.echo a number of those:
     # TODO: move to an “Addon” object
-    click.echo(pfx + sep.join([f'Author: {folder.metadata["author"]}', f'Version: {folder["display_version"]}']))
+    click.echo(pfx + sep.join([f'Author: {folder.metadata["author"]}', f'Version: {folder["installed_version"]}']))
     if 'Description' in folder.metadata:
-        click.echo(pfx + f'Description: {folder.metadata["Description"]}')
+        click.echo(pfx + f'Description: {folder.metadata["description"]}')
     click.echo(pfx + f'NB: this add-on may be deprecated')
 
 
@@ -91,20 +96,22 @@ def _display_unknown(n, folder, width):
 
 def _display(ctx, results, num_from=0):
     """ Show a list of addons """
-    live = ctx.obj['api']
+    api = ctx.obj['api']
 
     width = math.ceil(math.log(len(results), 10))
     width += 2
 
     for n, addon in enumerate(results, num_from + 1):
         num = f'{n:{width - 2}}: ' if width > 2 else ''
-        if isinstance(addon, Folder):
+        if addon.id is not None:
+            local = ctx.obj['local'].find_installed(addon)
+            if local is not None:
+                addon = local.merge(addon)
+            _display_addon(ctx, num, addon, width)
+        elif addon.folder is not None:
             _display_folder(num, addon, width)
-        elif isinstance(addon, str):
-            _display_unknown(num, addon, width)
         else:
-            local = Folder.find_installed(addon['slug'], ctx.obj['installed'])
-            _display_addon(ctx, num, addon, width, local)
+            _display_unknown(num, addon, width)
 
     click.echo()
 
@@ -139,7 +146,8 @@ def _prompt_addon(ctx, results, show_batch=10):
 
         _display(ctx, results[shown:shown+show_batch], num_from=shown)
     else:
-        answer = click.prompt(f'Select (1-{len(results)}, 0 cancels)', prompt_suffix=':\n> ', type=click.IntRange(0, len(results) + 1))
+        answer = click.prompt(f'Select (1-{len(results)}, 0 cancels)', prompt_suffix=':\n> ',
+                              type=click.IntRange(0, len(results) + 1))
 
     click.echo()
     try:
@@ -184,8 +192,10 @@ def main(ctx, config_file=None):
         config.set('ESO.addons', 'root', str(root.resolve()))
         save_config(config_file)
 
-    live = ctx.obj['api'] = API(config)
-    installed = ctx.obj['installed'] = Folder.scan(live)
+    api = ctx.obj['api'] = API.live(config)
+    local = ctx.obj['local'] = Folder(root)
+    if ctx.invoked_subcommand not in {'check-api-release', 'clear-caches'}:
+        local.installed = local.scan(api)
 
     if ctx.invoked_subcommand is None:
         add_repl_commands(main)
@@ -210,16 +220,19 @@ def process_result(ctx, result, config_file):
 
 
 @main.command()
-@click.argument('addon')
+@click.argument('addon', required=False)
 @click.option('--auto-deps/--no-auto-deps', default=True)
 @click.option('--opt/--no-opt', default=False, help='Include optional dependencies')
 @click.pass_context
 def get(ctx, addon, auto_deps=True, opt=False):
     """ Find, download, and install an addon """
-    live = ctx.obj['api']
-    installed = ctx.obj['installed']
+    api = ctx.obj['api']
+    local = ctx.obj['local']
 
-    addon = live.find(addon, installed)
+    if addon is None:
+        addon = click.prompt(f'Addon to install', prompt_suffix=':\n> ')
+
+    addon = api.find(addon, local)
     if not addon:
         click.echo('No corresponding addon found')
         click.echo()
@@ -229,34 +242,37 @@ def get(ctx, addon, auto_deps=True, opt=False):
         show_warnings(ctx)
         return
 
-    folder = Folder.find_installed(addon['slug'], installed)
+    installed_addon = local.find_installed(addon)
 
     # Try to reuse an existing install dir
-    if folder is not None:
-        if not _confirm(f'Addon found at {folder.root}, update?'):
+    if installed_addon.folder is not None:
+        if not _confirm(f'Addon found at {installed_addon.folder}, update?'):
             click.echo('Not removing')
             return
     else:
-        folder = Folder(addon['slug'], id=addon['id'])
+        installed_addon = Addon(addon.id, local.root / addon.dir)
 
-    folder.unpack(_progress)
+    local.unpack(installed_addon, api, _progress)
 
     if not auto_deps:
-        click.echo(f'Done installing {addon["title"]}')
+        click.echo(f'Done installing {addon.metadata["title"]}')
         show_warnings(ctx)
         return
 
-    deps = [folder]
-    while newdeps := Folder.all_missing_deps(deps, installed, opt=opt):
+    deps = [installed_addon]
+    while newdeps := local.all_missing_deps(deps, opt=opt):
         deps.clear()
-        for add in newdeps:
+        for dep in newdeps:
             # Do not check if installed as it’s a missing dep
-            folder = Folder(add)
-            folder.lookup(live)
-            folder.unpack(_progress)
-            deps.append(folder)
+            try:
+                addon = api.dir(dep.dir)
+            except ValueError:
+                warnings.warn(f'Failed to look up addon dependency {dep.dir!r}')
+            else:
+                local.unpack(addon, api, _progress)
+                deps.append(addon)
 
-    click.echo(f'\nDone installing {addon["title"]} and dependencies')
+    click.echo(f'\nDone installing {addon.metadata["title"]} and dependencies')
     show_warnings(ctx)
 
 
@@ -266,13 +282,15 @@ def get(ctx, addon, auto_deps=True, opt=False):
 @click.pass_context
 def remove(ctx, addon, clean_deps=False):
     """ Find and uninstall an addon """
-    live = ctx.obj['api']
-    installed = ctx.obj['installed']
+    api = ctx.obj['api']
+    local = ctx.obj['local']
 
     if addon is None:
-        addon = [live.addon(folder.id) if hasattr(folder, 'id') else folder for folder in installed]
+        addon = local.installed
     else:
-        addon = live.find(addon, installed, local_only=True)
+        addon = api.find(addon, local)
+        if isinstance(addon, list):
+            addon = local.filter_installed(addon)
 
     if not addon:
         click.echo('No corresponding addon found')
@@ -284,19 +302,19 @@ def remove(ctx, addon, clean_deps=False):
     if not addon:
         return
 
-    folder = Folder.find_installed(addon['slug'], installed)
-    if folder is None:
+    addon = local.find_installed(addon)
+    if addon is None:
         show_warnings(ctx)
         return
 
-    folder.remove()
+    local.remove(addon)
 
     if not clean_deps:
         click.echo('Addon removed.')
         show_warnings(ctx)
         return
 
-    remains = [inst for inst in installed if inst.root != folder.root]
+    remains = [inst for inst in local.installed if inst.folder != addon.folder]
     for lib in Folder.all_unused_deps(remains, remains):
         lib.remove()
 
@@ -310,14 +328,14 @@ def remove(ctx, addon, clean_deps=False):
 @click.pass_context
 def update(ctx, auto_deps, opt):
     """ Find out-of-date and missing addons and install them """
-    live = ctx.obj['api']
-    installed = ctx.obj['installed']
+    api = ctx.obj['api']
+    local = ctx.obj['local']
 
     updates = 0
-    for folder in installed:
-        if folder.check_update(live):
+    for addon in local.installed:
+        if addon.can_update():
             updates += 1
-            folder.unpack(_progress)
+            addon.unpack(_progress, api)
 
     if not auto_deps:
         click.echo(f'Updated {updates} addon(s)' if updates else 'Nothing to do')
@@ -325,16 +343,19 @@ def update(ctx, auto_deps, opt):
         return
 
     added = 0
-    deps = installed
-    while newdeps := Folder.all_missing_deps(deps, installed, opt=opt):
+    deps = local.installed
+    while newdeps := local.all_missing_deps(deps, opt=opt):
         deps.clear()
-        for addon in newdeps:
+        for dep in newdeps:
             added += 1
             # Do not check if installed as it’s a missing dep
-            folder = Folder(addon)
-            folder.lookup(live)
-            folder.unpack(_progress)
-            deps.append(folder)
+            try:
+                addon = api.dir(dep.dir)
+            except ValueError:
+                warnings.warn(f'Failed to look up addon dependency {dep.dir!r}')
+            else:
+                local.unpack(addon, api, _progress)
+                deps.append(addon)
 
     if updates + added:
         click.echo(f'Updated {updates} addon(s) and installed {added} dependencies')
@@ -346,7 +367,7 @@ def update(ctx, auto_deps, opt):
 @click.pass_context
 def check_api_release(ctx, hidden=True):
     try:
-        alpha = API(ctx.obj['config'], stable=False)
+        alpha = API.alpha(ctx.obj['config'])
         if alpha.globalconf['API']['Version'] != 'ALPHA':
             click.echo(f'Version {API.version + 1} seems to have come out of alpha')
     except:
@@ -361,8 +382,8 @@ def check_api_release(ctx, hidden=True):
 @click.option('-m', '--max', 'max_', help='max number of matches', default=10)
 @click.pass_context
 def search(ctx, term, max_=10):
-    live = ctx.obj['api']
-    search = live.search(term, maxlen=max_)
+    api = ctx.obj['api']
+    search = api.search(term, maxlen=max_)
 
     if search:
         click.echo(len(search), 'results:')
@@ -374,23 +395,23 @@ def search(ctx, term, max_=10):
 @main.command('list', help='list installed add-ons')
 @click.pass_context
 def list_(ctx):
-    live = ctx.obj['api']
-    installed = ctx.obj['installed']
+    api = ctx.obj['api']
+    local = ctx.obj['local']
 
-    if not installed:
+    if not local.installed:
         click.echo('No addons installed.')
         return
 
-    click.echo(f'Found {len(installed)} addon(s):')
-    _display(ctx, [live.addon(folder.id) if hasattr(folder, 'id') else folder for folder in installed])
+    click.echo(f'Found {len(local.installed)} addon(s):')
+    _display(ctx, local.installed)
 
 @main.command(help='List missing dependencies')
 @click.option('--opt/--no-opt', help='include optional dependencies')
 @click.pass_context
 def miss(ctx, opt):
-    live = ctx.obj['api']
-    installed = ctx.obj['installed']
-    missing = Folder.all_missing_deps(installed, installed, opt=opt)
+    api = ctx.obj['api']
+    local = ctx.obj['local']
+    missing = local.all_missing_deps(local.installed, opt=opt)
 
     if not missing:
         click.echo('No missing dependencies!')
@@ -400,7 +421,7 @@ def miss(ctx, opt):
     found, not_found = [], []
     for dep in missing:
         try:
-            found.append(live.dir(dep))
+            found.append(api.dir(dep.dir))
         except ValueError:
             not_found.append(dep)
     _display(ctx, found + not_found)
@@ -412,8 +433,9 @@ def miss(ctx, opt):
 @main.command()
 @click.pass_context
 def clear_caches(ctx):
-    live = ctx.obj['api']
-    live.reset()
-    ctx.obj['installed'] = Folder.scan(live)
+    api = ctx.obj['api']
+    local = ctx.obj['local']
+    api.reset()
+    local.installed = local.scan(api)
 
     click.echo('Caches cleared.')

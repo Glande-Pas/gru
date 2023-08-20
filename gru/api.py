@@ -1,3 +1,4 @@
+""" Module handling fetching info from the API """
 import requests
 import requests_cache
 import datetime
@@ -7,6 +8,8 @@ import warnings
 import functools
 import unicodedata
 import re
+
+from .addon import Addon
 
 
 def to_list(arg):
@@ -24,78 +27,13 @@ class API:
     session = requests_cache.CachedSession('gru', expire_after=datetime.timedelta(hours=1))
     invalid_chars = re.compile(r'[^\w-]')
 
-    fileinfo_rename = {
-        'UID':               ('id', int),
-        'UICATID':           ('category', int),
-        'UIVersion':         ('display_version', str),
-        'UIDate':            ('date', epoch_ms),
-        'UIName':            ('title', str),
-        'UIAuthorName':      ('author', str),
-        'UIFileInfoURL':     ('link', str),
-        'UIDownloadTotal':   ('downloads', int),
-        'UIDownloadMonthly': ('monthly_downloads', int),
-        'UIFavoriteTotal':   ('favorites', int),
-        'UICompatibility':   ('api_versions', str),
-        'UIDir':             ('directories', to_list),
-        'UIIMG_Thumbs':      ('thumbnails', to_list),
-        'UIIMGs':            ('images', to_list),
-        'UIDonationLink':    ('donate', str),
-    }
-
-    catlist_rename = {
-        'UICATID':        ('id', int),
-        'UICATTitle':     ('title', str),
-        'UICATICON':      ('icon', str),
-        'UICATFileCount': ('addon_count', int),
-        'UICATParentIDs': ('parent_ids', functools.partial(map, int)),
-    }
-
     @classmethod
     def slugify(cls, value):
         value = unicodedata.normalize('NFKD', value).encode('ascii', 'ignore').decode('ascii')
         return cls.invalid_chars.sub('', value).strip('_-')
 
-    def __init__(self, config, game='ESO', stable=True):
-        endpoint = config.get('api', 'endpoint')
-        version = config.getint('api', 'version') + int(not stable)
-
-        self.pages = {key: endpoint.format(version=version, path=val) for key, val in config.items('ESO.paths')}
-
-    @functools.cached_property
-    def globalconf(self):
-        return self._load('globalconf')
-
-    @functools.cached_property
-    def gameconf(self):
-        return self._load('gameconf')
-
-    @functools.cached_property
-    def filelist(self):
-        data = {}
-        for addon in self._load('filelist'):
-            addon = {new: typ(addon[old]) for old, (new, typ) in self.fileinfo_rename.items()}
-            dirs = set(addon['directories']) - {'__MACOSX'}
-            if len(dirs) != 1 or {'lang', 'libs', 'EsoUI', 'gamedata'} & dirs:
-                addon['slug'] = self.slugify(addon['title'])
-            else:
-                addon['slug'] = addon['directories'][0]
-            data[addon['id']] = addon
-        return data
-
-    @functools.cached_property
-    def catlist(self):
-        categories = {}
-        for cat in self._load('catlist'):
-            categories[int(cat['UICATID'])] = {new: typ(cat[old]) for old, (new, typ) in self.catlist_rename.items()}
-
-        for cat in categories.values():
-            cat['parent_ids'] = [intval for intval in cat['parent_ids'] if intval in categories]
-
-        return categories
-
-    def _load(self, page):
+    def _load(self, url):
         """ Load a page and return the JSON, ensure we use cached page if <1h old """
-        url = self.pages[page]
         try:
             response = self.session.get(url)
             response.raise_for_status()
@@ -105,20 +43,6 @@ class API:
             warnings.warn(f'Error loading {url!r}: {err}')
         else:
             return response.json()
-
-    def cat_name_hierarchy(self, start):
-        """ Go up parent category ids (if any) and return list of names """
-        cat_list = [int(start)]
-        cat_names = []
-        while cat_list:
-            id_ = cat_list.pop(0)
-            try:
-                cat = self.cat(id_)
-            except KeyError:
-                continue  # Upstream references fictional categories, e.g. 0, 23
-            cat_names.append(cat['title'])
-            cat_list.extend(int(id_) for id_ in cat['parent_ids'] if id_ != 0)
-        return cat_names[::-1]
 
     @classmethod
     def reset(cls):
@@ -137,51 +61,56 @@ class API:
         candidates = []
         matcher = difflib.SequenceMatcher(str.isspace, ''.join(term.lower().split()), None)
 
-        for obj in source:
-            matcher.set_seq2(obj[attr].lower())
+        for addon in source:
+            matcher.set_seq2(addon.metadata[attr].lower())
             matches = [match.size for match in matcher.get_matching_blocks()]
             # For debug log:
-            #print(obj[attr], [repr(term[b.a:b.a + b.size]) for b in matcher.get_matching_blocks() if b.size])
+            #print(addon[attr], [repr(term[b.a:b.a + b.size]) for b in matcher.get_matching_blocks() if b.size])
             if sum(matches) < cutoff:
                 continue
             # NB. cast for numerical attributes represented as strings in json
-            prio = (sum(matches), max(matches), *(obj[tie] for tie in tiebreakattr))
-            candidates.append((prio, obj))
+            prio = (sum(matches), max(matches), *(addon.metadata[tie] for tie in tiebreakattr))
+            candidates.append((prio, addon))
 
         candidates = sorted(candidates, key=operator.itemgetter(0), reverse=True)
-        return [obj for prio, obj in candidates[:maxlen]]
+        return [addon for prio, addon in candidates[:maxlen]]
 
-    def _lookup(self, source, attr, value):
+    def _lookup(self, source, attr, match):
         """ Search with exact match """
-        for obj in source:
-            if value in obj[attr] if isinstance(obj[attr], list) else obj[attr] == value:
-                return obj
+        for addon in source:
+            value = addon.metadata[attr]
+            if match in value if isinstance(value, list) else value == match:
+                return addon
         else:
             raise ValueError(f'{attr} {value!r} not found in list')
 
     def search(self, term, maxlen=10):
         """ Search `term` in addon names """
         # We want at least 75% of search string in result
-        return self._fuzz(self.filelist.values(), 'title', term, cutoff=.75 if len(term) > 3 else 1, maxlen=maxlen,
-                          tiebreakattr=['downloads'])  # Could be 'monthly_downloads', 'favorites'
+        return self._fuzz(self.addons.values(), 'title', term, cutoff=.75 if len(term) > 3 else 1, maxlen=maxlen,
+                          tiebreakattr=['downloads'])  # Could be 'monthly', 'favorites'
 
     def addon(self, id_):
         """ Lookup an addon by id """
-        return self.filelist[id_]
+        return self.addons[id_]
 
     def cat(self, id_):
         """ Lookup a category by id """
-        return self.catlist[id_]
+        return self.categories[id_]
 
     def dir(self, dir_):
         """ Lookup an addon by directory """
-        return self._lookup(self.filelist.values(), 'slug', str(dir_))
+        for addon in self.addons.values():
+            if addon.dir == dir_:
+                return addon
+        else:
+            raise ValueError(f'Directory {dir_!r} not found in list')
 
     def name(self, name):
         """ Lookup an addon by name (exact match) """
-        return self._lookup(self.filelist.values(), 'title', str(name))
+        return self._lookup(self.addons.values(), 'title', str(name))
 
-    def find(self, val, installed, local_only=False):
+    def find(self, val, local):
         """ Search for an addon generically """
         # Various methods of exact matches
         try:
@@ -200,16 +129,106 @@ class API:
             pass
 
         try:
-            idx = [folder.dir for folder in installed].index(val)
+            idx = [folder.dir for folder in local.installed].index(val)
         except ValueError:
             pass
         else:
-            return installed[idx]
+            return local.installed[idx]
 
         # Otherwise revert to search and return a list of candidates
-        results = self.search(val)
-        if local_only:
-            from .installed import Folder
-            results = [addon for addon in results if Folder.find_installed(addon['slug'], installed) is not None]
+        return self.search(val)
 
-        return results
+    @classmethod
+    def _factory(cls, config, game, stable=True):
+        version = config.getint('api', 'version') + int(not stable)
+        if game == 'ESO' and version == 3:
+            return ESOUIv3(config)
+        raise NotImplementedError(f'API version {version} for {game} not implemented')
+
+    @classmethod
+    def live(cls, config):
+        return cls._factory(config, 'ESO', True)
+
+    @classmethod
+    def alpha(cls, config):
+        return cls._factory(config, 'ESO', False)
+
+
+class ESOUIv3(API):
+
+    fileinfo_rename = {
+        'UID':               ('id', int),
+        'UICATID':           ('category', int),
+        'UIVersion':         ('version', str),
+        'UIDate':            ('date', epoch_ms),
+        'UIName':            ('title', str),
+        'UIAuthorName':      ('author', str),
+        'UIFileInfoURL':     ('link', str),
+        'UIDownloadTotal':   ('downloads', int),
+        'UIDownloadMonthly': ('monthly', int),
+        'UIFavoriteTotal':   ('favorites', int),
+        'UICompatibility':   ('api_versions', str),
+        'UIDir':             ('directories', to_list),
+        'UIIMG_Thumbs':      ('thumbnails', to_list),
+        'UIIMGs':            ('images', to_list),
+        'UIDonationLink':    ('donate', str),
+    }
+
+    catlist_rename = {
+        'UICATID':        ('id', int),
+        'UICATTitle':     ('title', str),
+        'UICATICON':      ('icon', str),
+        'UICATFileCount': ('addon_count', int),
+        'UICATParentIDs': ('parent_ids', functools.partial(map, int)),
+    }
+
+    def __init__(self, config):
+        super().__init__()
+        endpoint = config.get('api', 'endpoint')
+        self.pages = {key: endpoint.format(version=3, path=val) for key, val in config.items('ESOUIv3.paths')}
+
+    @functools.cached_property
+    def globalconf(self):
+        return self._load(self.pages['globalconf'])
+
+    @functools.cached_property
+    def gameconf(self):
+        return self._load(self.pages['gameconf'])
+
+    @functools.cached_property
+    def addons(self):
+        data = {}
+        for addon in self._load(self.pages['filelist']):
+            infos = {new: typ(addon[old]) for old, (new, typ) in self.fileinfo_rename.items()}
+            dirs = set(infos['directories']) - {'__MACOSX'}
+            if len(dirs) != 1 or {'lang', 'libs', 'EsoUI', 'gamedata'} & dirs:
+                infos['slug'] = self.slugify(infos['title'])
+            else:
+                infos['slug'] = infos['directories'][0]
+            data[infos['id']] = Addon(infos['id'], None, infos)
+        return data
+
+    @functools.cached_property
+    def categories(self):
+        categories = {}
+        for cat in self._load(self.pages['catlist']):
+            categories[int(cat['UICATID'])] = {new: typ(cat[old]) for old, (new, typ) in self.catlist_rename.items()}
+
+        for cat in categories.values():
+            cat['parent_ids'] = [intval for intval in cat['parent_ids'] if intval in categories]
+
+        return categories
+
+    def cat_name_hierarchy(self, start):
+        """ Go up parent category ids (if any) and return list of names """
+        cat_list = [start]
+        cat_names = []
+        while cat_list:
+            id_ = cat_list.pop(0)
+            try:
+                cat = self.cat(id_)
+            except KeyError:
+                continue  # Upstream references fictional categories, e.g. 0, 23
+            cat_names.append(cat['title'])
+            cat_list.extend(id_ for id_ in cat['parent_ids'] if id_ != 0)
+        return cat_names[::-1]
