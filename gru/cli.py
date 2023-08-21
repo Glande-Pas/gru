@@ -16,8 +16,6 @@ from .addon import Addon
 from .install import Folder
 
 
-# TODO: exception handler that prints warnings
-
 
 class SectionedHelpGroup(click.Group):
     """ Sections commands into help groups """
@@ -84,7 +82,7 @@ def _display_folder(n, folder, width):
     sep = ' |  '
     # Based on verbosity level, only click.echo a number of those:
     # TODO: move to an “Addon” object
-    click.echo(pfx + sep.join([f'Author: {folder.metadata["author"]}', f'Version: {folder["installed_version"]}']))
+    click.echo(pfx + sep.join([f'Author: {folder.metadata["author"]}', f'Version: {folder.metadata["installed_version"]}']))
     if 'Description' in folder.metadata:
         click.echo(pfx + f'Description: {folder.metadata["description"]}')
     click.echo(pfx + f'NB: this add-on may be deprecated')
@@ -120,7 +118,7 @@ def _display(ctx, results, num_from=0):
 
 
 def _confirm(query):
-    answer = click.confirm(query, prompt_suffix=':\n> ')
+    answer = click.confirm(query, prompt_suffix=':\n>> ')
     click.echo()
     return answer
 
@@ -145,14 +143,14 @@ def _prompt_addon(ctx, results, show_batch=None):
         return results[0] if _confirm('Confirm removal?') else None
 
     for shown in range(show_batch, len(results), show_batch):
-        answer = click.prompt(f'Select (1-{shown}, 0 cancels, empty continues)', prompt_suffix=':\n> ', default=-1,
+        answer = click.prompt(f'Select (1-{shown}, 0 cancels, empty continues)', prompt_suffix=':\n>> ', default=-1,
                               type=click.IntRange(-1, shown + 1), show_default=False)
         if answer >= 0:
             break
 
         _display(ctx, results[shown:shown+show_batch], num_from=shown)
     else:
-        answer = click.prompt(f'Select (1-{len(results)}, 0 cancels)', prompt_suffix=':\n> ',
+        answer = click.prompt(f'Select (1-{len(results)}, 0 cancels)', prompt_suffix=':\n>> ',
                               type=click.IntRange(0, len(results) + 1))
 
     click.echo()
@@ -193,15 +191,13 @@ def main(ctx, config_file=None):
     root = config.get('ESO.addons', 'root')
     if not root or not pathlib.Path(root).exists():
         click.echo('ESO addons directory not found!')
-        root = click.prompt('Path to addons directory', prompt_suffix=':\n> ',
+        root = click.prompt('Path to addons directory', prompt_suffix=':\n>> ',
                             type=click.Path(exists=True, file_okay=False, path_type=pathlib.Path))
         config.set('ESO.addons', 'root', str(root.resolve()))
         save_config(config_file)
 
     api = ctx.obj['api'] = API.live(config)
-    local = ctx.obj['local'] = Folder(root)
-    if ctx.invoked_subcommand not in {'check-api-release', 'clear-caches'}:
-        local.installed = local.scan(api)
+    local = ctx.obj['local'] = Folder('ESO', config, api)
 
     if ctx.invoked_subcommand is None:
         add_repl_commands(main)
@@ -236,7 +232,7 @@ def get(ctx, addon, auto_deps=True, opt=False):
     local = ctx.obj['local']
 
     if addon is None:
-        addon = click.prompt(f'Addon to install', prompt_suffix=':\n> ')
+        addon = click.prompt(f'Addon to install', prompt_suffix=':\n>> ')
 
     addon = api.find(addon, local)
     if not addon:
@@ -357,25 +353,39 @@ def cleanup(ctx, opt):
 @main.command()
 @click.pass_context
 def check_api_release(ctx, hidden=True):
+    alpha_ok, live_ok = False, False
+    try:
+        if ctx.obj['api'].globalconf['API']['Version'] == 'LIVE':
+            live_ok = True
+        else:
+            click.echo(f'Error: Version {ctx.obj["config"].get("api", "version")} has been retired')
+    except:
+        click.echo("Can't check stable API status")
+
     try:
         alpha = API.alpha(ctx.obj['config'])
-        if alpha.globalconf['API']['Version'] != 'ALPHA':
+        if alpha.globalconf['API']['Version'] == 'ALPHA':
+            alpha_ok = True
+        else:
             click.echo(f'Version {API.version + 1} seems to have come out of alpha')
     except:
-        pass
+        click.echo("Can't check alpha API status")
 
-    if ctx.obj['api'].globalconf['API']['Version'] != 'LIVE':
-        click.echo(f'Error: Version {ctx.obj["config"].get("api", "version")} has been retired')
+    if live_ok and alpha_ok:
+        # Don’t just exit without
+        click.echo('Status of stable and alpha APIs as expected.')
 
 
 @main.command()
-@click.argument('term')
+@click.argument('term', required=False)
 @click.option('-m', '--max', 'max_', help='max number of matches', default=10)
 @click.pass_context
 def search(ctx, term, max_=10):
+    if term is None:
+        term = click.prompt(f'Term to search for', prompt_suffix=':\n>> ')
+
     api = ctx.obj['api']
     search = api.search(term, maxlen=max_)
-
     if search:
         click.echo(f'{len(search)} results:')
         _display(ctx, search)
@@ -395,6 +405,8 @@ def list_(ctx):
 
     click.echo(f'Found {len(local.installed)} addon(s):')
     _display(ctx, local.installed)
+    show_warnings(ctx)
+
 
 @main.command(help='List missing dependences')
 @click.option('--opt/--no-opt', help='include optional dependences')
@@ -419,6 +431,7 @@ def miss(ctx, opt):
 
     if found:
         click.echo(f'Run update to fetch resolved missing dependences')
+    show_warnings(ctx)
 
 
 @main.command()
@@ -430,3 +443,4 @@ def clear_caches(ctx):
     local.installed = local.scan(api)
 
     click.echo('Caches cleared.')
+    show_warnings(ctx)

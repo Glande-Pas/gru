@@ -23,6 +23,25 @@ def epoch_ms(val):
     return datetime.datetime.fromtimestamp(int(val) / 1000)
 
 
+def _exception_root_cause(err):
+    while True:
+        if getattr(err, '__cause__', None) is not None:
+            err = err.__cause__  # standard python exception chaining
+        elif isinstance(err.args[0], Exception):
+            err = err.args[0]   # requests exception chaining
+        elif getattr(err, 'reason', None) is not None:
+            err = err.reason  # urllib3 (requests' backend) exception chaining
+        else:
+            break
+
+    import urllib3
+    if isinstance(err, (urllib3.exceptions.NewConnectionError, urllib3.exceptions.PoolError)):
+        # Both error messages are <object>: cause
+        return str(err).split(': ', 1)[-1]
+
+    return str(err)
+
+
 class API:
     session = requests_cache.CachedSession('gru', expire_after=datetime.timedelta(hours=1))
     invalid_chars = re.compile(r'[^\w-]')
@@ -32,17 +51,23 @@ class API:
         value = unicodedata.normalize('NFKD', value).encode('ascii', 'ignore').decode('ascii')
         return cls.invalid_chars.sub('', value).strip('_-')
 
-    def _load(self, url):
+    def _load(self, url, fallback=None):
         """ Load a page and return the JSON, ensure we use cached page if <1h old """
         try:
             response = self.session.get(url)
             response.raise_for_status()
-        except requests.HTTPError as http_err:
-            warnings.warn(f'HTTP error while loading {url!r}: {http_err}')
-        except Exception as err:
-            warnings.warn(f'Error loading {url!r}: {err}')
-        else:
             return response.json()
+        except requests.JSONDecodeError as err:
+            warnings.warn(f'JSON decode error while loading data from {url!r}')
+        except requests.HTTPError as err:
+            warnings.warn(f'HTTP error while loading {url!r} status code {err.response.status_code}: {err}')
+        except (requests.ConnectionError, requests.Timeout) as err:
+            # Get back up to root cause for readability
+            msg = _exception_root_cause(err)
+            warnings.warn(f'Connection error while loading {url!r}: {msg}')
+        except requests.RequestException as err:
+            warnings.warn(f'Error loading {url!r}: {err}')
+        return fallback
 
     @classmethod
     def reset(cls):
@@ -189,16 +214,16 @@ class ESOUIv3(API):
 
     @functools.cached_property
     def globalconf(self):
-        return self._load(self.pages['globalconf'])
+        return self._load(self.pages['globalconf'], {})
 
     @functools.cached_property
     def gameconf(self):
-        return self._load(self.pages['gameconf'])
+        return self._load(self.pages['gameconf'], {})
 
     @functools.cached_property
     def addons(self):
         data = {}
-        for addon in self._load(self.pages['filelist']):
+        for addon in self._load(self.pages['filelist'], []):
             infos = {new: typ(addon[old]) for old, (new, typ) in self.fileinfo_rename.items()}
             dirs = set(infos['directories']) - {'__MACOSX'}
             if len(dirs) != 1 or {'lang', 'libs', 'EsoUI', 'gamedata'} & dirs:
@@ -211,7 +236,7 @@ class ESOUIv3(API):
     @functools.cached_property
     def categories(self):
         categories = {}
-        for cat in self._load(self.pages['catlist']):
+        for cat in self._load(self.pages['catlist'], []):
             categories[int(cat['UICATID'])] = {new: typ(cat[old]) for old, (new, typ) in self.catlist_rename.items()}
 
         for cat in categories.values():

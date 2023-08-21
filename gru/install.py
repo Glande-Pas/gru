@@ -36,10 +36,10 @@ class SilentProgress:
 
 
 class Folder:
-    def __init__(self, path):
+    def __init__(self, path, api=None):
         self.root = pathlib.Path(path)
         #: A list of Addon() instances that have local file info and are enriched as appropriate with API info
-        self.installed = self.scan()
+        self.installed = self.scan(api)
 
     def scan(self, api=None):
         """ List the root path """
@@ -198,6 +198,7 @@ class Folder:
         )
 
         if not manifest_depth1plus:
+            # TODO: if it’s a single Foo/Foo.lua, can we provide a template manifest? We don’t know API version
             raise ValueError(f'No addon manifest in bundle {zf.filename}')
 
         # Some addons bundle gamedata, EsoUI (etc) as top-level folders, install to a subdirectory
@@ -333,8 +334,12 @@ class Folder:
         for addon in self.installed:
             if not addon.can_update():
                 continue
+            try:
+                self.unpack(addon, api, progress)
+            except Exception as err:
+                warnings.warn(f'Failed to install addon dependence {addon.dir!r}: {err}')
+                continue
             updates += 1
-            self.unpack(addon, api, progress)
         return updates
 
     def install_deps(self, pool, api, progress=None, opt=False):
@@ -343,15 +348,19 @@ class Folder:
         while newdeps := self.all_missing_deps(deps, opt=opt):
             deps.clear()
             for dep in newdeps:
-                added += 1
                 # Do not check if installed as it’s a missing dep
                 try:
                     addon = api.dir(dep.dir)
                 except ValueError:
-                    warnings.warn(f'Failed to look up addon dependency {dep.dir!r}')
-                else:
+                    warnings.warn(f'Failed to look up addon dependence {dep.dir!r}')
+                    continue
+                try:
                     self.unpack(addon, api, progress)
-                    deps.append(addon)
+                except Exception as err:
+                    warnings.warn(f'Failed to install addon dependence {addon.dir!r}: {err}')
+                    continue
+                added += 1
+                deps.append(addon)
 
         return added
 
