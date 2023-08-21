@@ -55,13 +55,16 @@ class SectionedHelpGroup(click.Group):
 def _display_addon(ctx, n, addon, width):
     """ Show addon info from the API endpoint """
     click.echo()
-    click.echo(f'{n:{width}}{addon.metadata["title"]} (id {addon.id}){"  [installed]" if addon.folder is not None else ""}')
+    click.echo(f'{n:{width}}{addon.metadata["title"]} (id {addon.id})' +
+               (f'  [installed{" - " + click.style("update available", bold=True) if addon.can_update() else ""}]'
+                if addon.folder is not None else ''))
     pfx = ' ' * width
     sep = ' |  '
     # Based on verbosity level, only click.echo a number of those:
     # TODO: display whether update is available
     infos = [
-        f'Author: {addon.metadata["author"]}', f'Version: {addon.metadata["version" if addon.folder is None else "installed_version"]}',
+        f'Author: {addon.metadata["author"]}',
+        f'Version: {addon.metadata["version" if addon.folder is None else "installed_version"]}',
         f'Updated: {addon.metadata["date"].strftime("%c")}',
         f'Category: {" > ".join(ctx.obj["api"].cat_name_hierarchy(addon.metadata["category"]))}',
         f'Downloads: {addon.metadata["downloads"]} [{addon.metadata["monthly"]} / Month]',
@@ -88,7 +91,7 @@ def _display_folder(n, folder, width):
 
 
 def _display_unknown(n, folder, width):
-    """ Show a missing and unresolved dependency """
+    """ Show a missing and unresolved dependence """
     click.echo()
     click.echo(f'{n:{width}}{folder} (id not found)')
     click.echo(' ' * width + f'NB: this add-on may be deprecated')
@@ -122,11 +125,14 @@ def _confirm(query):
     return answer
 
 
-def _prompt_addon(ctx, results, show_batch=10):
+def _prompt_addon(ctx, results, show_batch=None):
     """ Pick an addon from a list of addons """
     if not results:
         click.echo('No addon found')
         return None
+
+    if show_batch is None:
+        show_batch = max(shutil.get_terminal_size()[1] // 5 - 1, 4)
 
     click.echo(' '.join([
         'No exact matches.',
@@ -160,7 +166,7 @@ def _prompt_addon(ctx, results, show_batch=10):
 
 
 def _progress(size, message):
-    return click.progressbar(length=size, label=message)
+    return click.progressbar(length=size, label=message, width=0)
 
 
 def add_repl_commands(group):
@@ -222,7 +228,7 @@ def process_result(ctx, result, config_file):
 @main.command()
 @click.argument('addon', required=False)
 @click.option('--auto-deps/--no-auto-deps', default=True)
-@click.option('--opt/--no-opt', default=False, help='Include optional dependencies')
+@click.option('--opt/--no-opt', default=False, help='Include optional dependences')
 @click.pass_context
 def get(ctx, addon, auto_deps=True, opt=False):
     """ Find, download, and install an addon """
@@ -245,42 +251,32 @@ def get(ctx, addon, auto_deps=True, opt=False):
     installed_addon = local.find_installed(addon)
 
     # Try to reuse an existing install dir
-    if installed_addon.folder is not None:
+    if installed_addon is not None and installed_addon.folder is not None:
         if not _confirm(f'Addon found at {installed_addon.folder}, update?'):
             click.echo('Not removing')
             return
     else:
         installed_addon = Addon(addon.id, local.root / addon.dir)
 
-    local.unpack(installed_addon, api, _progress)
+    local.unpack(installed_addon.merge(addon), api, _progress)
 
     if not auto_deps:
         click.echo(f'Done installing {addon.metadata["title"]}')
         show_warnings(ctx)
         return
 
-    deps = [installed_addon]
-    while newdeps := local.all_missing_deps(deps, opt=opt):
-        deps.clear()
-        for dep in newdeps:
-            # Do not check if installed as it’s a missing dep
-            try:
-                addon = api.dir(dep.dir)
-            except ValueError:
-                warnings.warn(f'Failed to look up addon dependency {dep.dir!r}')
-            else:
-                local.unpack(addon, api, _progress)
-                deps.append(addon)
+    added = local.install_deps([installed_addon], api, _progress, opt=opt)
 
-    click.echo(f'\nDone installing {addon.metadata["title"]} and dependencies')
+    click.echo(f'\nDone installing {addon.metadata["title"]} and {added} dependence(s)')
     show_warnings(ctx)
 
 
 @main.command()
 @click.argument('addon', required=False)
-@click.option('--clean-deps/--no-clean-deps', default=False)
+@click.option('--clean-deps/--no-clean-deps', default=False, help='Clean up unused dependences')
+@click.option('--opt/--no-opt', default=True, help='Keep optional dependences')
 @click.pass_context
-def remove(ctx, addon, clean_deps=False):
+def remove(ctx, addon, clean_deps, opt):
     """ Find and uninstall an addon """
     api = ctx.obj['api']
     local = ctx.obj['local']
@@ -302,66 +298,61 @@ def remove(ctx, addon, clean_deps=False):
     if not addon:
         return
 
-    addon = local.find_installed(addon)
+    installed_addon = local.find_installed(addon)
     if addon is None:
         show_warnings(ctx)
         return
 
-    local.remove(addon)
+    local.remove(installed_addon)
 
     if not clean_deps:
         click.echo('Addon removed.')
         show_warnings(ctx)
         return
 
-    remains = [inst for inst in local.installed if inst.folder != addon.folder]
-    for lib in Folder.all_unused_deps(remains, remains):
-        lib.remove()
+    nremoved = local.remove_unused_deps(opt=opt)
 
-    click.echo('Addon and unused dependencies removed.')
+    click.echo(f'Addon and {nremoved} unused dependence(s) removed.')
     show_warnings(ctx)
 
 
 @main.command()
-@click.option('--auto-deps/--no-auto-deps', default=True)
-@click.option('--opt/--no-opt', default=False, help='Include optional dependencies')
+@click.option('--auto-deps/--no-auto-deps', default=True, help='Automatically install new/missing dependences')
+@click.option('--opt/--no-opt', default=False, help='Include optional dependences')
 @click.pass_context
 def update(ctx, auto_deps, opt):
     """ Find out-of-date and missing addons and install them """
     api = ctx.obj['api']
     local = ctx.obj['local']
 
-    updates = 0
-    for addon in local.installed:
-        if addon.can_update():
-            updates += 1
-            addon.unpack(_progress, api)
+    updates = local.update(api, _progress)
 
     if not auto_deps:
         click.echo(f'Updated {updates} addon(s)' if updates else 'Nothing to do')
         show_warnings(ctx)
         return
 
-    added = 0
-    deps = local.installed
-    while newdeps := local.all_missing_deps(deps, opt=opt):
-        deps.clear()
-        for dep in newdeps:
-            added += 1
-            # Do not check if installed as it’s a missing dep
-            try:
-                addon = api.dir(dep.dir)
-            except ValueError:
-                warnings.warn(f'Failed to look up addon dependency {dep.dir!r}')
-            else:
-                local.unpack(addon, api, _progress)
-                deps.append(addon)
+    added = local.install_deps(local.installed, api, _progress, opt=opt)
 
     if updates + added:
-        click.echo(f'Updated {updates} addon(s) and installed {added} dependencies')
+        click.echo(f'Updated {updates} addon(s) and installed {added} dependence(s)')
     else:
         click.echo('Nothing to do')
     show_warnings(ctx)
+
+@main.command(help='Remove unused dependences')
+@click.option('--opt/--no-opt', default=True, help='Keep optional dependences')
+@click.pass_context
+def cleanup(ctx, opt):
+    """ Find and uninstall an addon """
+    api = ctx.obj['api']
+    local = ctx.obj['local']
+
+    nremoved = local.remove_unused_deps(opt=opt)
+
+    click.echo(f'Removed {nremoved} unused dependence(s).')
+    show_warnings(ctx)
+
 
 @main.command()
 @click.pass_context
@@ -386,7 +377,7 @@ def search(ctx, term, max_=10):
     search = api.search(term, maxlen=max_)
 
     if search:
-        click.echo(len(search), 'results:')
+        click.echo(f'{len(search)} results:')
         _display(ctx, search)
     else:
         click.echo('No matches.')
@@ -405,8 +396,8 @@ def list_(ctx):
     click.echo(f'Found {len(local.installed)} addon(s):')
     _display(ctx, local.installed)
 
-@main.command(help='List missing dependencies')
-@click.option('--opt/--no-opt', help='include optional dependencies')
+@main.command(help='List missing dependences')
+@click.option('--opt/--no-opt', help='include optional dependences')
 @click.pass_context
 def miss(ctx, opt):
     api = ctx.obj['api']
@@ -414,10 +405,10 @@ def miss(ctx, opt):
     missing = local.all_missing_deps(local.installed, opt=opt)
 
     if not missing:
-        click.echo('No missing dependencies!')
+        click.echo('No missing dependences!')
         return
 
-    click.echo(f'{len(missing)} missing dependencies:')
+    click.echo(f'{len(missing)} missing dependences:')
     found, not_found = [], []
     for dep in missing:
         try:
@@ -427,7 +418,7 @@ def miss(ctx, opt):
     _display(ctx, found + not_found)
 
     if found:
-        click.echo(f'Run update to fetch resolved missing dependencies')
+        click.echo(f'Run update to fetch resolved missing dependences')
 
 
 @main.command()

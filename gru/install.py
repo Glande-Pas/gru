@@ -10,6 +10,7 @@ import operator
 import warnings
 import re
 import charset_normalizer
+from urllib.parse import quote as urllib_quote
 
 from .config import config
 from .addon import Addon, Dependency, atol
@@ -78,8 +79,9 @@ class Folder:
         return results
 
     def filter_installed(self, addons):
-        installed = (self.find_installed(addon) for addon in results)
-        return [local.merge(addon) for local, addon in zip(installed, results) if local is not None]
+        # Do not match up by directory as it is flaky, reuse previous matching results through ids
+        installed = {addon.id: addon for addon in self.installed if addon is not None}
+        return [addon.merge(installed[addon.id]) for addon in addons if addon.id in installed]
 
     def find_installed(self, addon, installed=None, version=0):
         if installed is None:
@@ -87,7 +89,7 @@ class Folder:
 
         for folder in installed:
             if folder.dir == addon.dir and folder.metadata['dep_version'] >= version:
-                return folder.merge(addon)
+                return folder
         else:
             return None
 
@@ -105,7 +107,7 @@ class Folder:
                     try:
                         key, val = line.lstrip('#').split(':', 1)
                     except ValueError:
-                        pass
+                        continue
                     metadata.setdefault(key.strip(), []).append(val.strip())
 
         metadata = {key: ' '.join(val) for key, val in metadata.items()}
@@ -117,10 +119,10 @@ class Folder:
         infos['api'] = [atol(api) for api in metadata.pop('APIVersion').split()]
         infos['installed_version'] = metadata.pop('Version', '')
         assert 1 <= len(infos['api']) <= 2 and 100003 <= min(infos['api']) and max(infos['api']) <= 999999, \
-            'Unexpected API Version format'
+            f'Unexpected API Version format {infos["api"]!r}'
 
         islib = metadata.pop('IsLibrary', 'false').lower()
-        assert islib in {'true', 'false'}, 'Unexpected value for IsLibrary'
+        assert islib in {'true', 'false'}, f'Unexpected value for IsLibrary {islib!r}'
         infos['library'] = islib == 'true'
 
         infos['deps'] = [Dependency(name, atol(version[0]) if version else 0) for name, *version in (
@@ -135,7 +137,7 @@ class Folder:
 
         # NB. emit warning last
         if missing_mandatory_keys:
-            warnings.warn(f'Missing mandatory key(s) {", ".join(missing_mandatory_keys)} in {manifest_path}')
+            warnings.warn(f'Missing mandatory key(s) {", ".join(map(repr, missing_mandatory_keys))} in {manifest_path}')
 
         return infos
 
@@ -225,11 +227,16 @@ class Folder:
             warnings.warn(f'Installing {len(toplevels)} addons as part of {addon.dir}: {", ".join(toplevels)}')
         return addon.folder.parent, [info for info in files if pathlib.Path(info.filename).parts[0] in toplevels]
 
-
     def unpack(self, addon, api, progress_context=None):
         """ Download and install, calls back to `progress` (100% until return means unzipping) """
-        fname = f'{addon.dir}.zip'
-        url = config.get('ESO.links', 'download').format(id=addon.id) + fname
+        if progress_context is None:
+            progress_context = SilentProgress
+
+        # NB. any file name returns correct file eventually, and “correct” file names are underterministic.
+        # However, server-side caching means we can get stale versions if we use a version-independent url.
+        # Do not use a random string, so we don’t defeat the purpose of server-side caching.
+        fname = f'{addon.dir}-{addon.metadata["version"]}.zip'
+        url = config.get('ESO.links', 'download').format(id=addon.id) + urllib_quote(fname)
 
         dl = requests.get(url, stream=True, allow_redirects=True)
         size = int(dl.headers.get('content-length', 0))
@@ -241,9 +248,6 @@ class Folder:
 
         # Download
         zippath = self.root / fname
-        if progress_context is None:
-            progress_context = SilentProgress
-
         with open(zippath, 'wb') as fd, progress_context(int(dl.headers.get('content-length', 0)),
                                                          f'Downloading {fname}...') as prog:
             for chunk in dl.iter_content(1024):
@@ -267,15 +271,17 @@ class Folder:
                 shutil.rmtree(addon.folder)
 
             extract_size = sum(getattr(info, 'file_size', 0) for info in extract)
-            with progress_context(extract_size, f'Extracting {fname}...') as prog:
+            with progress_context(extract_size, f'Extracting  {fname}...') as prog:
                 for info in extract:
                     zf.extract(info, path=dest)
                     prog.update(getattr(info, 'file_size', 0))
 
-        # Add to our list of installed and clean up
-        addon.metadata.update(self.parse_manifest(addon.manifest))
-        self.installed.append(addon)
         zippath.unlink()
+
+        # Update our list of installed addons
+        addon.metadata.update(self.parse_manifest(addon.manifest))
+        if addon not in self.installed:
+            self.installed.append(addon)
 
     def remove(self, addon):
         """ Uninstall addon """
@@ -310,14 +316,50 @@ class Folder:
         if installed is None:
             installed = self.installed
 
-        refcount = sum(addon.dir in addon.metatada['deps'] for addon in installed)
+        refcount = sum(addon.dir in addon.metadata['deps'] for addon in installed)
         if opt:
-            refcount += sum(addon.dir in addon.metadata['optdeps'] for addon in folders)
+            refcount += sum(addon.dir in addon.metadata['optdeps'] for addon in installed)
         return refcount
 
     def all_unused_deps(self, pool, installed=None, opt=False):
         unused = []
         for addon in pool:
-            if addon.islib and self.depcount(addon, installed=installed, opt=top) == 0:
+            if addon.metadata['library'] and self.depcount(addon, installed=installed, opt=opt) == 0:
                 unused.append(addon)
         return unused
+
+    def update(self, api, progress=None):
+        updates = 0
+        for addon in self.installed:
+            if not addon.can_update():
+                continue
+            updates += 1
+            self.unpack(addon, api, progress)
+        return updates
+
+    def install_deps(self, pool, api, progress=None, opt=False):
+        added = 0
+        deps = pool[:]
+        while newdeps := self.all_missing_deps(deps, opt=opt):
+            deps.clear()
+            for dep in newdeps:
+                added += 1
+                # Do not check if installed as it’s a missing dep
+                try:
+                    addon = api.dir(dep.dir)
+                except ValueError:
+                    warnings.warn(f'Failed to look up addon dependency {dep.dir!r}')
+                else:
+                    self.unpack(addon, api, progress)
+                    deps.append(addon)
+
+        return added
+
+    def remove_unused_deps(self, opt=True):
+        removed = 0
+        while remove := self.all_unused_deps(self.installed, opt=opt):
+            for lib in remove:
+                removed += 1
+                self.remove(lib)
+
+        return removed

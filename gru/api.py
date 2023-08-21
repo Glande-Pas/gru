@@ -59,7 +59,7 @@ class API:
         """
         cutoff *= len(term)
         candidates = []
-        matcher = difflib.SequenceMatcher(str.isspace, ''.join(term.lower().split()), None)
+        matcher = difflib.SequenceMatcher(str.isspace, term.lower(), None)
 
         for addon in source:
             matcher.set_seq2(addon.metadata[attr].lower())
@@ -84,7 +84,7 @@ class API:
         else:
             raise ValueError(f'{attr} {value!r} not found in list')
 
-    def search(self, term, maxlen=10):
+    def search(self, term, maxlen=30):
         """ Search `term` in addon names """
         # We want at least 75% of search string in result
         return self._fuzz(self.addons.values(), 'title', term, cutoff=.75 if len(term) > 3 else 1, maxlen=maxlen,
