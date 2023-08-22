@@ -12,7 +12,6 @@ import re
 import charset_normalizer
 from urllib.parse import quote as urllib_quote
 
-from .config import config
 from .addon import Addon, Dependency, atol
 
 
@@ -36,8 +35,9 @@ class SilentProgress:
 
 
 class Folder:
-    def __init__(self, path, api=None):
-        self.root = pathlib.Path(path)
+    def __init__(self, game, config, api=None):
+        self.root = pathlib.Path(config.get(f'{game}.addons', 'root'))
+        self.url_template = config.get(f'{game}.links', 'download')
         #: A list of Addon() instances that have local file info and are enriched as appropriate with API info
         self.installed = self.scan(api)
 
@@ -237,7 +237,7 @@ class Folder:
         # However, server-side caching means we can get stale versions if we use a version-independent url.
         # Do not use a random string, so we don’t defeat the purpose of server-side caching.
         fname = f'{addon.dir}-{addon.metadata["version"]}.zip'
-        url = config.get('ESO.links', 'download').format(id=addon.id) + urllib_quote(fname)
+        url = self.url_template.format(id=addon.id) + urllib_quote(fname)
 
         dl = requests.get(url, stream=True, allow_redirects=True)
         size = int(dl.headers.get('content-length', 0))

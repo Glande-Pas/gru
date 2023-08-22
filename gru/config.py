@@ -9,8 +9,6 @@ IS_POSIX = os.name == 'posix'
 IS_MAC_OS = sys.platform == 'darwin'
 IS_WINDOWS = os.name == 'nt'
 
-config = configparser.ConfigParser(delimiters=['='])
-
 defaults = '''
 [api]
 endpoint = https://api.mmoui.com/v{version}/{path}
@@ -78,13 +76,14 @@ def user_config():
         return base_dir / 'gru'
 
 def load_config(config_file=None):
+    config = configparser.ConfigParser(delimiters=['='])
     config.read_file(io.StringIO(defaults))
 
     config_file = user_config() if config_file is None else pathlib.Path(config_file)
     if config_file.exists():
         config.read(config_file)
 
-    # Guess addons directory?
+    # Valid addons directory?
     if config.get('ESO.addons', 'root').strip():
         return config
 
@@ -94,8 +93,10 @@ def load_config(config_file=None):
             config.set('ESO.addons', 'root', str(addons_dir.resolve()))
             break
     else:
+        # No valid guesses, return as-is
         return config
 
+    # Otherwise update before returning
     save_config(config, config_file)
     return config
 
