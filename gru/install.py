@@ -312,14 +312,14 @@ class Folder:
             missing.extend(self.missing_deps(addon, installed, opt=opt))
         return self._dedup_deps(missing)
 
-    def depcount(self, addon, installed=None, opt=True):
+    def depcount(self, lib, installed=None, opt=True):
         """ Count the number of times this addon is dependend on in `installed` """
         if installed is None:
             installed = self.installed
 
-        refcount = sum(addon.dir in addon.metadata['deps'] for addon in installed)
+        refcount = sum(lib.dir == dep.dir for addon in installed for dep in addon.metadata['deps'])
         if opt:
-            refcount += sum(addon.dir in addon.metadata['optdeps'] for addon in installed)
+            refcount += sum(lib.dir == dep.dir for addon in installed for dep in addon.metadata['optdeps'])
         return refcount
 
     def all_unused_deps(self, pool, installed=None, opt=False):

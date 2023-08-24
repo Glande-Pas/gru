@@ -25,7 +25,10 @@ info = https://www.esoui.com/downloads/info{id}.html
 download = https://cdn.esoui.com/downloads/file{id}/
 
 [ESO.addons]
+# Path to addons root directory
 root =
+# Whether to include optional dependences by default
+optional = off
 '''
 
 def user_home():

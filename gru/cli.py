@@ -2,6 +2,7 @@
 import warnings
 import datetime
 import pathlib
+import locale
 import shutil
 import click
 import math
@@ -59,18 +60,21 @@ def _display_addon(ctx, n, addon, width):
     pfx = ' ' * width
     sep = ' |  '
     # Based on verbosity level, only click.echo a number of those:
-    # TODO: display whether update is available
     infos = [
-        f'Author: {addon.metadata["author"]}',
-        f'Version: {addon.metadata["version" if addon.folder is None else "installed_version"]}',
-        f'Updated: {addon.metadata["date"].strftime("%c")}',
+        f'Author: {addon.metadata["author"]:20}',
+        f'Version: {addon.metadata["version" if addon.folder is None else "installed_version"]:10}',
+        f'Updated: {addon.metadata["date"].strftime("%x"):12}',
         f'Category: {" > ".join(ctx.obj["api"].cat_name_hierarchy(addon.metadata["category"]))}',
-        f'Downloads: {addon.metadata["downloads"]} [{addon.metadata["monthly"]} / Month]',
-        f'Favorites: {addon.metadata["favorites"]}',
-        f'Directory: {addon.dir}',
     ]
-    click.echo(pfx + sep.join(infos[:4]))
-    click.echo(pfx + sep.join(infos[4:]))
+    click.echo(pfx + sep.join(infos))
+    infos2 = [
+        f'Directory: {addon.dir}',
+        f'Favorites: {addon.metadata["favorites"]:n}',
+        f'Downloads: {addon.metadata["downloads"]:n} [{addon.metadata["monthly"]:n} / Month]',
+    ]
+    infos2[0] = f'{infos2[0]:{len(sep) + len(infos[0]) + len(infos[1])}}'
+    infos2[1] = f'{infos2[1]:{len(infos[2])}}'
+    click.echo(pfx + sep.join(infos2))
     click.echo(pfx + addon.metadata['link'])
 
 
@@ -181,23 +185,28 @@ def add_repl_commands(group):
 @click.group(cls=SectionedHelpGroup, invoke_without_command=True, context_settings=dict(help_option_names=['-h', '--help']))
 @click.option('--config', 'config_file', help='path to config file',
               type=click.Path(dir_okay=False, writable=True), default=None)
+@click.option('--game', 'game', help='Choice of game', hidden=True,
+              type=click.Choice(['ESO']), default='ESO')
 @click.pass_context
-def main(ctx, config_file=None):
+def main(ctx, game='ESO', config_file=None):
+    locale.setlocale(locale.LC_ALL, '')
+
     ctx.ensure_object(dict)
     ctx.obj['warnings'] = ctx.with_resource(warnings.catch_warnings(record=True, category=UserWarning))
 
     config = ctx.obj['config'] = load_config(config_file)
+    ctx.obj['game'] = game
 
-    root = config.get('ESO.addons', 'root')
+    root = config.get(f'{game}.addons', 'root')
     if not root or not pathlib.Path(root).exists():
-        click.echo('ESO addons directory not found!')
+        click.echo(f'{game} addons directory not found!')
         root = click.prompt('Path to addons directory', prompt_suffix=':\n>> ',
                             type=click.Path(exists=True, file_okay=False, path_type=pathlib.Path))
-        config.set('ESO.addons', 'root', str(root.resolve()))
+        config.set(f'{game}.addons', 'root', str(root.resolve()))
         save_config(config_file)
 
     api = ctx.obj['api'] = API.live(config)
-    local = ctx.obj['local'] = Folder('ESO', config, api)
+    local = ctx.obj['local'] = Folder(game, config, api)
 
     if ctx.invoked_subcommand is None:
         add_repl_commands(main)
@@ -217,19 +226,22 @@ def show_warnings(ctx):
 
 @main.result_callback()
 @click.pass_context
-def process_result(ctx, result, config_file):
+def process_result(ctx, result, game, config_file):
     show_warnings(ctx)
 
 
 @main.command()
 @click.argument('addon', required=False)
 @click.option('--auto-deps/--no-auto-deps', default=True)
-@click.option('--opt/--no-opt', default=False, help='Include optional dependences')
+@click.option('--opt/--no-opt', default=None, help='Include optional dependences')
 @click.pass_context
-def get(ctx, addon, auto_deps=True, opt=False):
+def get(ctx, addon, auto_deps=True, opt=None):
     """ Find, download, and install an addon """
     api = ctx.obj['api']
     local = ctx.obj['local']
+
+    if opt is None:
+        opt = ctx.obj['config'].getboolean(f'{ctx.obj["game"]}.addons', 'optional')
 
     if addon is None:
         addon = click.prompt(f'Addon to install', prompt_suffix=':\n>> ')
@@ -270,12 +282,15 @@ def get(ctx, addon, auto_deps=True, opt=False):
 @main.command()
 @click.argument('addon', required=False)
 @click.option('--clean-deps/--no-clean-deps', default=False, help='Clean up unused dependences')
-@click.option('--opt/--no-opt', default=True, help='Keep optional dependences')
+@click.option('--opt/--no-opt', default=None, help='Keep optional dependences')
 @click.pass_context
-def remove(ctx, addon, clean_deps, opt):
+def remove(ctx, addon, clean_deps=False, opt=None):
     """ Find and uninstall an addon """
     api = ctx.obj['api']
     local = ctx.obj['local']
+
+    if opt is None:
+        opt = ctx.obj['config'].getboolean(f'{ctx.obj["game"]}.addons', 'optional')
 
     if addon is None:
         addon = local.installed
