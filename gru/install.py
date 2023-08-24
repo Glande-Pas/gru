@@ -64,16 +64,14 @@ class Folder:
                 warnings.warn(f'Skipping addon at {path} due to {type(err).__name__} {err}')
                 continue
 
+            addon = Addon(None, path, infos)
             try:
                 if api is None:
                     raise StopIteration
-                online = api.dir(path.name)
+                addon.merge(api.dir(path.name))
             except (StopIteration, ValueError) as err:
                 if not isinstance(err, StopIteration):
                     warnings.warn(f'Addon at {path} not found in database')
-                addon = Addon(None, path, infos)
-            else:
-                addon = Addon(online.id, path, {**infos, **online.metadata})
 
             results.append(addon)
         return results
@@ -81,7 +79,12 @@ class Folder:
     def filter_installed(self, addons):
         # Do not match up by directory as it is flaky, reuse previous matching results through ids
         installed = {addon.id: addon for addon in self.installed if addon is not None}
-        return [addon.merge(installed[addon.id]) for addon in addons if addon.id in installed]
+        return [installed[addon.id].merge(addon) for addon in addons if addon.id in installed]
+
+    def check_installed(self, addons):
+        # Do not match up by directory as it is flaky, reuse previous matching results through ids
+        installed = {addon.id: addon for addon in self.installed if addon is not None}
+        return [installed[addon.id].merge(addon) if addon.id in installed else addon for addon in addons]
 
     def find_installed(self, addon, installed=None, version=0):
         if installed is None:
@@ -257,7 +260,7 @@ class Folder:
 
         # Default install dir
         if addon.folder is None:
-            addon.folder = self.root / addon.dir
+            addon = Addon(addon.id, self.root / addon.dir, addon.metadata)
 
         # Inspect, extract
         with zipfile.ZipFile(zippath) as zf:
@@ -280,14 +283,27 @@ class Folder:
         zippath.unlink()
 
         # Update our list of installed addons
-        addon.metadata.update(self.parse_manifest(addon.manifest))
-        if addon not in self.installed:
-            self.installed.append(addon)
+        local_addon = Addon(addon.id, addon.folder, self.parse_manifest(addon.manifest))
+        local_addon.merge(addon)
+        try:
+            idx = next(n for n, inst in enumerate(self.installed) if inst.folder == local_addon.folder)
+        except StopIteration:
+            self.installed.append(local_addon)
+        else:
+            self.installed[idx] = local_addon
+        return local_addon
 
-    def remove(self, addon):
+    def remove(self, addon, deps=False, opt=False):
         """ Uninstall addon """
+        if addon.folder is None:
+            addon = self.check_installed([addon])[0]
+        if addon.folder is None:
+            raise ValueError(f'Addon {addon.title} is not installed')
+
         shutil.rmtree(addon.folder)
         self.installed = [inst for inst in self.installed if inst.folder != addon.folder]
+
+        return self.remove_unused_deps(opt=opt) if deps else 0
 
     def _dedup_deps(self, deps):
         dedup = {}
@@ -329,18 +345,22 @@ class Folder:
                 unused.append(addon)
         return unused
 
-    def update(self, api, progress=None):
-        updates = 0
+    def update(self, api, progress=None, opt=False, deps=False):
+        updates = []
         for addon in self.installed:
             if not addon.can_update():
                 continue
             try:
-                self.unpack(addon, api, progress)
+                addon = self.unpack(addon, api, progress)
             except Exception as err:
                 warnings.warn(f'Failed to install addon dependence {addon.dir!r}: {err}')
                 continue
-            updates += 1
-        return updates
+            updates.append(addon)
+
+        if deps:
+            return (len(updates), self.install_deps(updates, api, progress=progress, opt=opt))
+        else:
+            return (len(updates), 0)
 
     def install_deps(self, pool, api, progress=None, opt=False):
         added = 0
@@ -355,7 +375,7 @@ class Folder:
                     warnings.warn(f'Failed to look up addon dependence {dep.dir!r}')
                     continue
                 try:
-                    self.unpack(addon, api, progress)
+                    addon = self.unpack(addon, api, progress)
                 except Exception as err:
                     warnings.warn(f'Failed to install addon dependence {addon.dir!r}: {err}')
                     continue

@@ -29,6 +29,8 @@ download = https://cdn.esoui.com/downloads/file{id}/
 root =
 # Whether to include optional dependences by default
 optional = off
+# Sort equal matches in search according to one of: downloads, monthly, favorites
+sortkey = downloads
 '''
 
 def user_home():

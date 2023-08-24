@@ -6,10 +6,8 @@ import operator
 import difflib
 import warnings
 import functools
-import unicodedata
-import re
 
-from .addon import Addon
+from .addon import APIAddonInfo
 
 
 def to_list(arg):
@@ -44,12 +42,6 @@ def _exception_root_cause(err):
 
 class API:
     session = requests_cache.CachedSession('gru', expire_after=datetime.timedelta(hours=1))
-    invalid_chars = re.compile(r'[^\w-]')
-
-    @classmethod
-    def slugify(cls, value):
-        value = unicodedata.normalize('NFKD', value).encode('ascii', 'ignore').decode('ascii')
-        return cls.invalid_chars.sub('', value).strip('_-')
 
     def _load(self, url, fallback=None):
         """ Load a page and return the JSON, ensure we use cached page if <1h old """
@@ -109,11 +101,13 @@ class API:
         else:
             raise ValueError(f'{attr} {value!r} not found in list')
 
-    def search(self, term, maxlen=30):
+    def search(self, term, tiebreakattr=None, maxlen=30):
         """ Search `term` in addon names """
         # We want at least 75% of search string in result
+        if tiebreakattr is None:
+            tiebreakattr = 'downloads'
         return self._fuzz(self.addons.values(), 'title', term, cutoff=.75 if len(term) > 3 else 1, maxlen=maxlen,
-                          tiebreakattr=['downloads'])  # Could be 'monthly', 'favorites'
+                          tiebreakattr=[tiebreakattr])
 
     def addon(self, id_):
         """ Lookup an addon by id """
@@ -225,12 +219,7 @@ class ESOUIv3(API):
         data = {}
         for addon in self._load(self.pages['filelist'], []):
             infos = {new: typ(addon[old]) for old, (new, typ) in self.fileinfo_rename.items()}
-            dirs = set(infos['directories']) - {'__MACOSX'}
-            if len(dirs) != 1 or {'lang', 'libs', 'EsoUI', 'gamedata'} & dirs:
-                infos['slug'] = self.slugify(infos['title'])
-            else:
-                infos['slug'] = infos['directories'][0]
-            data[infos['id']] = Addon(infos['id'], None, infos)
+            data[infos['id']] = APIAddonInfo(infos['id'], infos)
         return data
 
     @functools.cached_property

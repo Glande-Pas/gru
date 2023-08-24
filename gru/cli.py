@@ -314,16 +314,13 @@ def remove(ctx, addon, clean_deps=False, opt=None):
         show_warnings(ctx)
         return
 
-    local.remove(installed_addon)
+    nremoved = local.remove(installed_addon, deps=clean_deps, opt=opt)
 
     if not clean_deps:
         click.echo('Addon removed.')
-        show_warnings(ctx)
-        return
+    else:
+        click.echo(f'Addon and {nremoved} unused dependence(s) removed.')
 
-    nremoved = local.remove_unused_deps(opt=opt)
-
-    click.echo(f'Addon and {nremoved} unused dependence(s) removed.')
     show_warnings(ctx)
 
 
@@ -336,19 +333,17 @@ def update(ctx, auto_deps, opt):
     api = ctx.obj['api']
     local = ctx.obj['local']
 
-    updates = local.update(api, _progress)
+    if opt is None:
+        opt = ctx.obj['config'].getboolean(f'{ctx.obj["game"]}.addons', 'optional')
 
-    if not auto_deps:
-        click.echo(f'Updated {updates} addon(s)' if updates else 'Nothing to do')
-        show_warnings(ctx)
-        return
+    updates, added = local.update(api, _progress, opt=opt, deps=auto_deps)
 
-    added = local.install_deps(local.installed, api, _progress, opt=opt)
-
-    if updates + added:
+    if updates + added == 0:
+        click.echo('Nothing to do')
+    elif auto_deps:
         click.echo(f'Updated {updates} addon(s) and installed {added} dependence(s)')
     else:
-        click.echo('Nothing to do')
+        click.echo(f'Updated {updates} addon(s)')
     show_warnings(ctx)
 
 @main.command(help='Remove unused dependences')
@@ -358,6 +353,9 @@ def cleanup(ctx, opt):
     """ Find and uninstall an addon """
     api = ctx.obj['api']
     local = ctx.obj['local']
+
+    if opt is None:
+        opt = ctx.obj['config'].getboolean(f'{ctx.obj["game"]}.addons', 'optional')
 
     nremoved = local.remove_unused_deps(opt=opt)
 
