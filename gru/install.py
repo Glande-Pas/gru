@@ -3,6 +3,7 @@ import collections
 import pathlib
 import zipfile
 import requests
+import asyncio
 import shutil
 import datetime
 import functools
@@ -13,6 +14,41 @@ import charset_normalizer
 from urllib.parse import quote as urllib_quote
 
 from .addon import Addon, Dependency, atol
+
+
+class AsyncItWrapper():
+    def __init__(self, iterable, loop=None):
+        self.loop = loop or asyncio.get_event_loop()
+        self.iterable = iterable
+
+    def __aiter__(self):
+        return self
+
+    def _get_next(self):
+        """ Call next() but raise correct end of iteration for async """
+        try:
+            return next(self.iterable)
+        except StopIteration:
+            raise StopAsyncIteration
+
+    def __anext__(self):
+        return self.loop.run_in_executor(None, self._get_next)
+
+
+def _asyncify(fun_or_iterable, *args, **kwargs):
+    """ Run a function or iterable and in the asyncio default executor """
+    loop = asyncio.get_event_loop()
+    try:
+        iterator = iter(fun_or_iterable)
+    except TypeError:
+        # A function
+        if kwargs:
+            return loop.run_in_executor(None, lambda: fun_or_iterable(*args, **kwargs))
+        else:
+            return loop.run_in_executor(None, fun_or_iterable, *args)
+    else:
+        # An iterable
+        return AsyncItWrapper(iterator, loop)
 
 
 class SilentProgress:
@@ -231,7 +267,19 @@ class Folder:
             warnings.warn(f'Installing {len(toplevels)} addons as part of {addon.dir}: {", ".join(toplevels)}')
         return addon.folder.parent, [info for info in files if pathlib.Path(info.filename).parts[0] in toplevels]
 
-    def unpack(self, addon, api, progress=None):
+    async def _download(self, dl, fd, progress):
+        with progress as prog:
+            async for chunk in _asyncify(dl.iter_content(1024)):
+                await _asyncify(fd.write, chunk)
+                prog.update(len(chunk))
+
+    async def _unzip(self, zf, fileinfos, dest, progress):
+        with progress as prog:
+            for info in fileinfos:
+                await _asyncify(zf.extract, info, dest)
+                prog.update(getattr(info, 'file_size', 0))
+
+    async def unpack(self, addon, api, progress=None):
         """ Download and install, calls back to `progress` (100% until return means unzipping) """
         if progress is None:
             progress = SilentProgress
@@ -242,7 +290,7 @@ class Folder:
         fname = f'{addon.dir}-{addon.metadata["version"]}.zip'
         url = self.url_template.format(id=addon.id) + urllib_quote(fname)
 
-        dl = requests.get(url, stream=True, allow_redirects=True)
+        dl = await _asyncify(requests.get, url, stream=True, allow_redirects=True)
         size = int(dl.headers.get('content-length', 0))
         # Try to get suggested filename from headers
         for tok in map(str.strip, dl.headers.get('Content-disposition', '').split(';')):
@@ -252,13 +300,11 @@ class Folder:
 
         # Download
         zippath = self.root / fname
-        with open(zippath, 'wb') as fd, progress(int(dl.headers.get('content-length', 0)),
-                                                 f'Downloading {fname}...') as prog:
-            for chunk in dl.iter_content(1024):
-                fd.write(chunk)
-                prog.update(len(chunk))
+        with open(zippath, 'wb') as fd:
+            await self._download(dl, fd, progress(int(dl.headers.get('content-length', 0)), f'Downloading {fname}...'))
 
-        # Default install dir
+        # Default install dir -- requires a temporary addon object that’s not the RO-API one,
+        # and can’t be the one initialized with metadata from the manifest
         if addon.folder is None:
             addon = Addon(addon.id, self.root / addon.dir, addon.metadata)
 
@@ -275,16 +321,12 @@ class Folder:
                 shutil.rmtree(addon.folder)
 
             extract_size = sum(getattr(info, 'file_size', 0) for info in extract)
-            with progress(extract_size, f'Extracting  {fname}...') as prog:
-                for info in extract:
-                    zf.extract(info, path=dest)
-                    prog.update(getattr(info, 'file_size', 0))
+            await self._unzip(zf, extract, dest, progress(extract_size, f'Extracting  {fname}...'))
 
-        zippath.unlink()
+        await _asyncify(zippath.unlink)
 
         # Update our list of installed addons
-        local_addon = Addon(addon.id, addon.folder, self.parse_manifest(addon.manifest))
-        local_addon.merge(addon)
+        local_addon = Addon(addon.id, addon.folder, self.parse_manifest(addon.manifest)).merge(addon)
         try:
             idx = next(n for n, inst in enumerate(self.installed) if inst.folder == local_addon.folder)
         except StopIteration:
@@ -292,16 +334,6 @@ class Folder:
         else:
             self.installed[idx] = local_addon
         return local_addon
-
-    def remove(self, addon, deps=False, opt=False):
-        """ Uninstall addon """
-        if addon.folder is None:
-            addon = self.check_installed([addon])[0]
-        if addon.folder is None:
-            raise ValueError(f'Addon {addon.title} is not installed')
-
-        shutil.rmtree(addon.folder)
-        self.installed = [inst for inst in self.installed if inst.folder != addon.folder]
 
         return self.remove_unused_deps(opt=opt) if deps else 0
 
@@ -345,24 +377,24 @@ class Folder:
                 unused.append(addon)
         return unused
 
-    def update(self, api, progress=None, opt=False, deps=False):
+    async def update(self, api, progress=None, opt=False, deps=False):
         updates = []
         for addon in self.installed:
             if not addon.can_update():
                 continue
             try:
-                addon = self.unpack(addon, api, progress=progress)
+                addon = await self.unpack(addon, api, progress=progress)
             except Exception as err:
                 warnings.warn(f'Failed to install addon dependence {addon.dir!r}: {err}')
                 continue
             updates.append(addon)
 
         if deps:
-            return (len(updates), self.install_deps(updates, api, progress=progress, opt=opt))
+            return (len(updates), await self.install_deps(updates, api, progress=progress, opt=opt))
         else:
             return (len(updates), 0)
 
-    def install_deps(self, pool, api, progress=None, opt=False):
+    async def install_deps(self, pool, api, progress=None, opt=False):
         added = 0
         deps = pool[:]
         while newdeps := self.all_missing_deps(deps, opt=opt):
@@ -375,8 +407,9 @@ class Folder:
                     warnings.warn(f'Failed to look up addon dependence {dep.dir!r}')
                     continue
                 try:
-                    addon = self.unpack(addon, api, progress=progress)
+                    addon = await self.unpack(addon, api, progress=progress)
                 except Exception as err:
+                    print(f'Failed to install addon dependence {addon.dir!r}: {err}')
                     warnings.warn(f'Failed to install addon dependence {addon.dir!r}: {err}')
                     continue
                 added += 1
@@ -384,11 +417,26 @@ class Folder:
 
         return added
 
-    def remove_unused_deps(self, opt=True):
+    async def remove(self, addon, deps=False, opt=True):
+        """ Uninstall addon """
+        if addon.folder is None:
+            addon = self.check_installed([addon])[0]
+        if addon.folder is None:
+            raise ValueError(f'Addon {addon.title} is not installed')
+
+        shutil.rmtree(addon.folder)
+        self.installed = [inst for inst in self.installed if inst.folder != addon.folder]
+
+        if not deps:
+            return 0
+
+        return await self.remove_unused_deps(opt=opt)
+
+    async def remove_unused_deps(self, opt=True):
         removed = 0
         while remove := self.all_unused_deps(self.installed, opt=opt):
             for lib in remove:
                 removed += 1
-                self.remove(lib)
+                await self.remove(lib)
 
         return removed
