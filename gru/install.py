@@ -231,10 +231,10 @@ class Folder:
             warnings.warn(f'Installing {len(toplevels)} addons as part of {addon.dir}: {", ".join(toplevels)}')
         return addon.folder.parent, [info for info in files if pathlib.Path(info.filename).parts[0] in toplevels]
 
-    def unpack(self, addon, api, progress_context=None):
+    def unpack(self, addon, api, progress=None):
         """ Download and install, calls back to `progress` (100% until return means unzipping) """
-        if progress_context is None:
-            progress_context = SilentProgress
+        if progress is None:
+            progress = SilentProgress
 
         # NB. any file name returns correct file eventually, and “correct” file names are underterministic.
         # However, server-side caching means we can get stale versions if we use a version-independent url.
@@ -252,8 +252,8 @@ class Folder:
 
         # Download
         zippath = self.root / fname
-        with open(zippath, 'wb') as fd, progress_context(int(dl.headers.get('content-length', 0)),
-                                                         f'Downloading {fname}...') as prog:
+        with open(zippath, 'wb') as fd, progress(int(dl.headers.get('content-length', 0)),
+                                                 f'Downloading {fname}...') as prog:
             for chunk in dl.iter_content(1024):
                 fd.write(chunk)
                 prog.update(len(chunk))
@@ -275,7 +275,7 @@ class Folder:
                 shutil.rmtree(addon.folder)
 
             extract_size = sum(getattr(info, 'file_size', 0) for info in extract)
-            with progress_context(extract_size, f'Extracting  {fname}...') as prog:
+            with progress(extract_size, f'Extracting  {fname}...') as prog:
                 for info in extract:
                     zf.extract(info, path=dest)
                     prog.update(getattr(info, 'file_size', 0))
@@ -351,7 +351,7 @@ class Folder:
             if not addon.can_update():
                 continue
             try:
-                addon = self.unpack(addon, api, progress)
+                addon = self.unpack(addon, api, progress=progress)
             except Exception as err:
                 warnings.warn(f'Failed to install addon dependence {addon.dir!r}: {err}')
                 continue
@@ -375,7 +375,7 @@ class Folder:
                     warnings.warn(f'Failed to look up addon dependence {dep.dir!r}')
                     continue
                 try:
-                    addon = self.unpack(addon, api, progress)
+                    addon = self.unpack(addon, api, progress=progress)
                 except Exception as err:
                     warnings.warn(f'Failed to install addon dependence {addon.dir!r}: {err}')
                     continue
