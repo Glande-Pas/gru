@@ -204,10 +204,11 @@ def main(ctx, game='ESO', config_file=None):
         root = click.prompt('Path to addons directory', prompt_suffix=':\n>> ',
                             type=click.Path(exists=True, file_okay=False, path_type=pathlib.Path))
         config.set(f'{game}.addons', 'root', str(root.resolve()))
-        save_config(config_file)
+        save_config(config, config_file)
 
     api = ctx.obj['api'] = API.live(config)
-    local = ctx.obj['local'] = Folder(game, config, api)
+    local = ctx.obj['local'] = Folder(game, config)
+    asyncio.run(local.scan(api))
 
     if ctx.invoked_subcommand is None:
         add_repl_commands(main)
@@ -455,7 +456,7 @@ def clear_caches(ctx):
     api = ctx.obj['api']
     local = ctx.obj['local']
     api.reset()
-    local.installed = local.scan(api)
+    asyncio.run(local.scan(api))
 
     click.echo('Caches cleared.')
     show_warnings(ctx)

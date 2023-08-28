@@ -31,6 +31,9 @@ root =
 optional = off
 # Sort equal matches in search according to one of: downloads, monthly, favorites
 sortkey = downloads
+
+[app]
+open_in_browser = off
 '''
 
 def user_home():

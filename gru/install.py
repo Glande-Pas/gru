@@ -5,7 +5,7 @@ import zipfile
 import asyncio
 import aiofiles
 import aiofiles.os
-import aiohttp
+import httpx
 import aioshutil
 import datetime
 import functools
@@ -39,7 +39,7 @@ class SilentProgress:
 
 
 class Folder:
-    def __init__(self, game, config, api=None):
+    def __init__(self, game, config):
         self.root = pathlib.Path(config.get(f'{game}.addons', 'root'))
         self.url_template = config.get(f'{game}.links', 'download')
         #: A list of Addon() instances that have local file info and are enriched as appropriate with API info
@@ -239,7 +239,7 @@ class Folder:
 
     async def _download(self, dl, fd, progress):
         with progress as prog:
-            async for chunk in dl.content.iter_chunked(1024):
+            async for chunk in dl.aiter_bytes(1024):
                 await fd.write(chunk)
                 prog.update(len(chunk))
 
@@ -269,8 +269,8 @@ class Folder:
         fname = f'{addon.dir}-{addon.metadata["version"]}.zip'
         url = self.url_template.format(id=addon.id) + urllib_quote(fname)
 
-        async with aiohttp.ClientSession(raise_for_status=True) as session:
-            async with session.get(url, allow_redirects=True) as dl:
+        async with httpx.AsyncClient() as session:
+            async with session.stream('GET', url) as dl:
                 size = int(dl.headers.get('content-length', 0))
                 # Try to get suggested filename from headers
                 for tok in map(str.strip, dl.headers.get('Content-disposition', '').split(';')):
@@ -405,8 +405,7 @@ class Folder:
             raise ValueError(f'Addon {addon.title} is not installed')
 
         await aioshutil.rmtree(addon.folder)
-        self.installed = [
-            inst for inst in self.installed if inst.folder != addon.folder]
+        self.installed = [inst for inst in self.installed if inst.folder != addon.folder]
 
         if not deps:
             return 0

@@ -5,7 +5,7 @@ authors = [{name="Cimbali", email="me@cimba.li" }]
 description = "Gru gets/removes/updates your ESO add-ons. Nothing to do with being minions’ boss."
 readme = "README.md"
 license = {text = "MIT License"}
-dependencies = ["requests", "requests-cache", "click", "unicodedata2", "charset-normalizer", "aiofiles", "aiohttp", "aioshutil"]
+dependencies = ["requests", "requests-cache", "click", "unicodedata2", "charset-normalizer", "aiofiles", "aioshutil", "httpx"]
 requires-python = ">=3.8"
 
 [project.optional-dependencies]
