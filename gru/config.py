@@ -1,5 +1,7 @@
 """ Module handling user configuration """
 import configparser
+import builtins
+import gettext
 import pathlib
 import sys
 import os
@@ -35,6 +37,7 @@ sortkey = downloads
 [app]
 open_in_browser = off
 '''
+
 
 def user_home():
     if (userhome := os.environ.get('HOME')) is not None:
@@ -113,3 +116,46 @@ def save_config(config, config_file=None):
     config_file = user_config() if config_file is None else pathlib.Path(config_file)
     with open(config_file, 'w') as f:
         config.write(f)
+
+
+class FormatMixin():
+    def gettext_format(self, string, *args, **kwargs):
+        """ A function that condenses translation.gettext(string).format(...) in single function """
+        return super().gettext(string).format(*args, **kwargs)
+
+    def install(self):
+        builtins.__dict__['_'] = self.gettext_format
+
+
+class NullFormatTranslations(FormatMixin, gettext.NullTranslations):
+    pass
+
+
+class GNUFormatTranslations(FormatMixin, gettext.GNUTranslations):
+    pass
+
+
+def install_translation(domain, localedir):
+    """ Installs a gettext translation object.
+
+    This re-implements gettext’s translation() and find() followed by .install(), to use a Traversable as localedir
+
+    Use as: install_translation('gru', importlib_resources.files('gru').joinpath('share', 'locale'))
+    """
+    for envar in ('LANGUAGE', 'LC_ALL', 'LC_MESSAGES', 'LANG'):
+        if enval := os.environ.get(envar):
+            break
+    else:
+        return gettext.NullTranslations().install()
+
+    # now normalize and expand the languages
+    for lang in enval.split(':'):
+        for nelang in gettext._expand_lang(lang):
+            file = localedir.joinpath(nelang, 'LC_MESSAGES', domain + '.mo')
+            if file.is_file():
+                break
+    else:
+        return NullFormatTranslations().install()
+
+    with file.open() as fp:
+        return GNUFormatTranslations(fp).install()
