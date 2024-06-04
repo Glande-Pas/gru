@@ -18,6 +18,10 @@ from .addon import Addon
 from .install import Folder
 
 
+def get_config_bool(ctx, string):
+    section, key = string.format(**ctx.obj).rsplit('.', maxsplit=1)
+    return ctx.obj['config'].getboolean(section, key)
+
 
 class SectionedHelpGroup(click.Group):
     """ Sections commands into help groups """
@@ -208,7 +212,7 @@ def main(ctx, game='ESO', config_file=None):
 
     api = ctx.obj['api'] = API.live(config)
     local = ctx.obj['local'] = Folder(game, config)
-    asyncio.run(local.scan(api))
+    local.scan(api)
 
     if ctx.invoked_subcommand is None:
         add_repl_commands(main)
@@ -243,7 +247,7 @@ def get(ctx, addon, auto_deps=True, opt=None):
     local = ctx.obj['local']
 
     if opt is None:
-        opt = ctx.obj['config'].getboolean(f'{ctx.obj["game"]}.addons', 'optional')
+        opt = get_config_bool(ctx, '{game}.addons.optional')
 
     if addon is None:
         addon = click.prompt(f'Addon to install', prompt_suffix=':\n>> ')
@@ -268,16 +272,12 @@ def get(ctx, addon, auto_deps=True, opt=None):
     else:
         installed_addon = Addon(addon.id, local.root / addon.dir)
 
-    installed_addon = asyncio.run(local.unpack(installed_addon.merge(addon), api, _progress))
+    result = local.install(installed_addon.merge(addon), api, _progress, deps=auto_deps, opt=opt)
 
-    if not auto_deps:
+    if result is None:
         click.echo(f'Done installing {addon.metadata["title"]}')
-        show_warnings(ctx)
-        return
-
-    added = asyncio.run(local.install_deps([installed_addon], api, _progress, opt=opt))
-
-    click.echo(f'\nDone installing {addon.metadata["title"]} and {added} dependence(s)')
+    else:
+        click.echo(f'Done installing {addon.metadata["title"]} and {result} dependence(s)')
     show_warnings(ctx)
 
 
@@ -292,7 +292,7 @@ def remove(ctx, addon, clean_deps=False, opt=None):
     local = ctx.obj['local']
 
     if opt is None:
-        opt = ctx.obj['config'].getboolean(f'{ctx.obj["game"]}.addons', 'optional')
+        opt = get_config_bool(ctx, '{game}.addons.optional')
 
     if addon is None:
         addon = local.installed
@@ -317,7 +317,7 @@ def remove(ctx, addon, clean_deps=False, opt=None):
         show_warnings(ctx)
         return
 
-    nremoved = asyncio.run(local.remove(installed_addon, deps=clean_deps, opt=opt))
+    nremoved = local.remove(installed_addon, deps=clean_deps, opt=opt)
 
     if not clean_deps:
         click.echo('Addon removed.')
@@ -337,9 +337,9 @@ def update(ctx, auto_deps, opt):
     local = ctx.obj['local']
 
     if opt is None:
-        opt = ctx.obj['config'].getboolean(f'{ctx.obj["game"]}.addons', 'optional')
+        opt = get_config_bool(ctx, '{game}.addons.optional')
 
-    updates, added = asyncio.run(local.update(api, _progress, opt=opt, deps=auto_deps))
+    updates, added = local.update(api, _progress, opt=opt, deps=auto_deps)
 
     if updates + added == 0:
         click.echo('Nothing to do')
@@ -352,15 +352,15 @@ def update(ctx, auto_deps, opt):
 @main.command(help='Remove unused dependences')
 @click.option('--opt/--no-opt', default=True, help='Keep optional dependences')
 @click.pass_context
-def cleanup(ctx, opt):
+def cleanup(ctx, opt=None):
     """ Find and uninstall an addon """
     api = ctx.obj['api']
     local = ctx.obj['local']
 
     if opt is None:
-        opt = ctx.obj['config'].getboolean(f'{ctx.obj["game"]}.addons', 'optional')
+        opt = get_config_bool(ctx, '{game}.addons.optional')
 
-    nremoved = asyncio.run(local.remove_unused_deps(opt=opt))
+    nremoved = local.remove_unused_deps(opt=opt)
 
     click.echo(f'Removed {nremoved} unused dependence(s).')
     show_warnings(ctx)
@@ -375,8 +375,8 @@ def check_api_release(ctx, hidden=True):
             live_ok = True
         else:
             click.echo(f'Error: Version {ctx.obj["config"].get("api", "version")} has been retired')
-    except:
-        click.echo("Can't check stable API status")
+    except Exception as err:
+        click.echo(f"Can't check stable API status: {err}")
 
     try:
         alpha = API.alpha(ctx.obj['config'])
@@ -384,8 +384,8 @@ def check_api_release(ctx, hidden=True):
             alpha_ok = True
         else:
             click.echo(f'Version {API.version + 1} seems to have come out of alpha')
-    except:
-        click.echo("Can't check alpha API status")
+    except Exception as err:
+        click.echo(f"Can't check alpha API status: {err}")
 
     if live_ok and alpha_ok:
         # Don’t just exit without
@@ -456,7 +456,7 @@ def clear_caches(ctx):
     api = ctx.obj['api']
     local = ctx.obj['local']
     api.reset()
-    asyncio.run(local.scan(api))
+    local.scan(api)
 
     click.echo('Caches cleared.')
     show_warnings(ctx)

@@ -2,11 +2,8 @@
 import collections
 import pathlib
 import zipfile
-import asyncio
-import aiofiles
-import aiofiles.os
-import httpx
-import aioshutil
+import requests
+import shutil
 import datetime
 import functools
 import operator
@@ -45,10 +42,13 @@ class Folder:
         #: A list of Addon() instances that have local file info and are enriched as appropriate with API info
         self.installed = []
 
-    async def scan(self, api=None):
+    def scan(self, api=None):
+        self.installed = self._scan(api)
+
+    def _scan(self, api=None):
         """ List the root path """
         candidates = collections.deque(self.root.iterdir())
-        self.installed.clear()
+        results = []
         while candidates:
             path = candidates.pop()
             if not path.is_dir():
@@ -56,14 +56,14 @@ class Folder:
 
             # Recursively check for depths up to 3
             if len(path.relative_to(self.root).parts) < 3:
-                candidates.extend(pathlib.Path(sub) for sub in await aiofiles.os.listdir(path))
+                candidates.extend(path.iterdir())
 
             manifest = path / f'{path.name}.txt'
-            if not await aiofiles.os.path.exists(manifest):
+            if not manifest.exists():
                 continue
 
             try:
-                infos = await self.parse_manifest(manifest)
+                infos = self.parse_manifest(manifest)
             except Exception as err:
                 warnings.warn(f'Skipping addon at {path} due to {type(err).__name__} {err}')
                 continue
@@ -77,7 +77,8 @@ class Folder:
                 if not isinstance(err, StopIteration):
                     warnings.warn(f'Addon at {path} not found in database')
 
-            self.installed.append(addon)
+            results.append(addon)
+        return results
 
     def filter_installed(self, addons):
         # Do not match up by directory as it is flaky, reuse previous matching results through ids
@@ -104,13 +105,13 @@ class Folder:
     def __repr__(self):
         return f'Folder({self.root})'
 
-    async def parse_manifest(self, manifest_path):
+    def parse_manifest(self, manifest_path):
         """ Parse the manifest file """
         # Parse metadata handling multiple line entries
         metadata = {}
         encoding = charset_normalizer.from_path(manifest_path).best().encoding
-        async with aiofiles.open(manifest_path, encoding=encoding) as manifest:
-            async for line in manifest:
+        with open(manifest_path, encoding=encoding) as manifest:
+            for line in manifest:
                 if line.startswith('## ') and len(line) > 4:
                     try:
                         key, val = line.lstrip('#').split(':', 1)
@@ -237,28 +238,28 @@ class Folder:
             warnings.warn(f'Installing {len(toplevels)} addons as part of {addon.dir}: {", ".join(toplevels)}')
         return addon.folder.parent, [info for info in files if pathlib.Path(info.filename).parts[0] in toplevels]
 
-    async def _download(self, dl, fd, progress):
+    def _download(self, dl, fd, progress):
         with progress as prog:
-            async for chunk in dl.aiter_bytes(1024):
-                await fd.write(chunk)
+            for chunk in dl.iter_content(chunk_size=1024):
+                fd.write(chunk)
                 prog.update(len(chunk))
 
-    async def _unzip(self, zf, fileinfos, dest, progress):
+    def _unzip(self, zf, fileinfos, dest, progress):
         with progress as prog:
             for info in fileinfos:
                 filename = dest.joinpath(info.filename).resolve()
                 if not filename.is_relative_to(dest):
                     continue
 
-                await aiofiles.os.makedirs(filename if info.is_dir() else filename.parent, exist_ok=True)
+                (filename if info.is_dir() else filename.parent).mkdir(exist_ok=True, parents=True)
                 if info.is_dir():
                     continue
 
                 with zf.open(info, 'r') as zfreader, open(filename, 'wb') as out:
-                    await aioshutil.copyfileobj(zfreader, out)
+                    shutil.copyfileobj(zfreader, out)
                 prog.update(info.file_size)
 
-    async def unpack(self, addon, api, progress=None):
+    def unpack(self, addon, api, progress=None):
         """ Download and install, calls back to `progress` (100% until return means unzipping) """
         if progress is None:
             progress = SilentProgress
@@ -269,19 +270,18 @@ class Folder:
         fname = f'{addon.dir}-{addon.metadata["version"]}.zip'
         url = self.url_template.format(id=addon.id) + urllib_quote(fname)
 
-        async with httpx.AsyncClient() as session:
-            async with session.stream('GET', url) as dl:
-                size = int(dl.headers.get('content-length', 0))
-                # Try to get suggested filename from headers
-                for tok in map(str.strip, dl.headers.get('Content-disposition', '').split(';')):
-                    if tok.startswith('filename='):
-                        fname = tok[10:].strip('"')
-                        break
+        with requests.get(url, stream=True, allow_redirects=True) as dl:
+            size = int(dl.headers.get('content-length', 0))
+            # Try to get suggested filename from headers
+            for tok in map(str.strip, dl.headers.get('Content-disposition', '').split(';')):
+                if tok.startswith('filename='):
+                    fname = tok[10:].strip('"')
+                    break
 
-                # Download
-                zippath = self.root / fname
-                async with aiofiles.open(zippath, 'wb') as fd:
-                    await self._download(dl, fd, progress(size, f'Downloading {fname}...'))
+            # Download
+            zippath = self.root / fname
+            with open(zippath, 'wb') as fd:
+                self._download(dl, fd, progress(size, f'Downloading {fname}...'))
 
         # Default install dir -- requires a temporary addon object that’s not the RO-API one,
         # and can’t be the one initialized with metadata from the manifest
@@ -297,16 +297,16 @@ class Folder:
                 info for info in files if (dest / info.filename).resolve().is_relative_to(self.root)
             ]
 
-            if await aiofiles.os.path.exists(addon.folder):
-                await aioshutil.rmtree(addon.folder)
+            if addon.folder.exists():
+                shutil.rmtree(addon.folder)
 
             extract_size = sum(getattr(info, 'file_size', 0) for info in extract)
-            await self._unzip(zf, extract, dest, progress(extract_size, f'Extracting  {fname}...'))
+            self._unzip(zf, extract, dest, progress(extract_size, f'Extracting  {fname}...'))
 
-        await aiofiles.os.unlink(zippath)
+        zippath.unlink()
 
         # Update our list of installed addons
-        metadata = await self.parse_manifest(addon.manifest)
+        metadata = self.parse_manifest(addon.manifest)
         local_addon = Addon(addon.id, addon.folder, metadata).merge(addon)
         try:
             idx = next(n for n, inst in enumerate(self.installed) if inst.folder == local_addon.folder)
@@ -317,6 +317,13 @@ class Folder:
         return local_addon
 
         return self.remove_unused_deps(opt=opt) if deps else 0
+
+    def install(self, addon, api, progress=None, deps=True, opt=False):
+        installed = self.unpack(addon, api, progress=progress)
+
+        if deps:
+            return self.install_deps([installed], api, progress=progress, opt=opt)
+
 
     def _dedup_deps(self, deps):
         dedup = {}
@@ -358,26 +365,26 @@ class Folder:
                 unused.append(addon)
         return unused
 
-    async def update(self, api, progress=None, opt=False, deps=False):
+    def update(self, api, progress=None, opt=False, deps=False):
         updates = []
         for addon in self.installed:
             if not addon.can_update():
                 continue
             try:
-                addon = await self.unpack(addon, api, progress=progress)
+                addon = self.unpack(addon, api, progress=progress)
             except Exception as err:
                 warnings.warn(f'Failed to install addon dependence {addon.dir!r}: {err}')
                 continue
             updates.append(addon)
 
         if deps:
-            return (len(updates), await self.install_deps(updates, api, progress=progress, opt=opt))
+            return (len(updates), self.install_deps(updates, api, progress=progress, opt=opt))
         else:
             return (len(updates), 0)
 
-    async def install_deps(self, pool, api, progress=None, opt=False):
+    def install_deps(self, pool, api, progress=None, opt=False):
         added = 0
-        deps = pool[:]
+        deps = (pool if pool is not None else self.installed)[:]
         while newdeps := self.all_missing_deps(deps, opt=opt):
             deps.clear()
             for dep in newdeps:
@@ -388,7 +395,7 @@ class Folder:
                     warnings.warn(f'Failed to look up addon dependence {dep.dir!r}')
                     continue
                 try:
-                    addon = await self.unpack(addon, api, progress=progress)
+                    addon = self.unpack(addon, api, progress=progress)
                 except Exception as err:
                     warnings.warn(f'Failed to install addon dependence {addon.dir!r}: {err}')
                     continue
@@ -397,26 +404,26 @@ class Folder:
 
         return added
 
-    async def remove(self, addon, deps=False, opt=True):
+    def remove(self, addon, deps=False, opt=True):
         """ Uninstall addon """
         if addon.folder is None:
             addon = self.check_installed([addon])[0]
         if addon.folder is None:
             raise ValueError(f'Addon {addon.title} is not installed')
 
-        await aioshutil.rmtree(addon.folder)
+        shutil.rmtree(addon.folder)
         self.installed = [inst for inst in self.installed if inst.folder != addon.folder]
 
         if not deps:
             return 0
 
-        return await self.remove_unused_deps(opt=opt)
+        return self.remove_unused_deps(opt=opt)
 
-    async def remove_unused_deps(self, opt=True):
+    def remove_unused_deps(self, opt=True):
         removed = 0
         while remove := self.all_unused_deps(self.installed, opt=opt):
             for lib in remove:
                 removed += 1
-                await self.remove(lib)
+                self.remove(lib)
 
         return removed
