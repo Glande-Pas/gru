@@ -7,24 +7,25 @@ import difflib
 import warnings
 import functools
 import collections
+from collections.abc import Iterable, Mapping
 
 from .addon import APIAddonInfo
 
 
-def to_list(arg):
+def to_list(arg: Iterable | None) -> list:
     if arg is None:
         return []
     else:
         return list(arg)
 
 
-def case_insensitive(mapping: collections.abc.Mapping) -> requests.structures.CaseInsensitiveDict:
+def case_insensitive(mapping: Mapping) -> requests.structures.CaseInsensitiveDict:
     return requests.structures.CaseInsensitiveDict({
         key: case_insensitive(val) if isinstance(val, collections.abc.Mapping) else val for key, val in mapping.items()
     })
 
 
-def epoch_ms(val):
+def epoch_ms(val: float) -> datetime.datetime:
     return datetime.datetime.fromtimestamp(int(val) / 1000)
 
 

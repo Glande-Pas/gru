@@ -53,6 +53,7 @@ def user_home():
         else:
             return pathlib.Path(userhome)
 
+
 def user_cache(*args):
     """ Returns the appropriate path to the cache file in the user app dirs.
 
@@ -73,6 +74,7 @@ def user_cache(*args):
 
     return base_dir.joinpath(*args)
 
+
 def user_config():
     """ Returns the path to the configuration file in the user config directory
 
@@ -88,6 +90,7 @@ def user_config():
         if not base_dir.exists():
             base_dir.mkdir(parents=True)
         return base_dir / 'gru'
+
 
 def load_config(config_file=None):
     config = configparser.ConfigParser(delimiters=['='])
