@@ -16,6 +16,9 @@ defaults = '''
 endpoint = https://api.mmoui.com/v{version}/{path}
 version = 3
 
+[ESOUIv4.paths]
+globalconf = globalconfig.json
+
 [ESOUIv3.paths]
 globalconf = globalconfig.json
 gameconf = game/ESO/gameconfig.json

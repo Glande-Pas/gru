@@ -6,6 +6,7 @@ import operator
 import difflib
 import warnings
 import functools
+import collections
 
 from .addon import APIAddonInfo
 
@@ -15,6 +16,12 @@ def to_list(arg):
         return []
     else:
         return list(arg)
+
+
+def case_insensitive(mapping: collections.abc.Mapping) -> requests.structures.CaseInsensitiveDict:
+    return requests.structures.CaseInsensitiveDict({
+        key: case_insensitive(val) if isinstance(val, collections.abc.Mapping) else val for key, val in mapping.items()
+    })
 
 
 def epoch_ms(val):
@@ -162,6 +169,8 @@ class API:
         version = config.getint('api', 'version') + int(not stable)
         if game == 'ESO' and version == 3:
             return ESOUIv3(config)
+        elif game == 'ESO' and version == 4:
+            return ESOUIv4(config)
         raise NotImplementedError(f'API version {version} for {game} not implemented')
 
     @classmethod
@@ -171,6 +180,17 @@ class API:
     @classmethod
     def alpha(cls, config):
         return cls._factory(config, 'ESO', False)
+
+
+class ESOUIv4(API):
+    def __init__(self, config):
+        super().__init__()
+        endpoint = config.get('api', 'endpoint')
+        self.pages = {key: endpoint.format(version=4, path=val) for key, val in config.items('ESOUIv4.paths')}
+
+    @functools.cached_property
+    def globalconf(self):
+        return case_insensitive(self._load(self.pages['globalconf'], {}))
 
 
 class ESOUIv3(API):
