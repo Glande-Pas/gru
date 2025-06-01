@@ -42,7 +42,10 @@ class Addon:
 
     @property
     def manifest(self):
-        return self.folder / f'{self.dir}.txt'
+        for ext in ('.txt', '.addon'):
+            manifest = self.folder / f'{self.dir}{ext}'
+            if manifest.exists():
+                return manifest
 
     def can_update(self):
         if self.folder is None:

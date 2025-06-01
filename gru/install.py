@@ -58,8 +58,11 @@ class Folder:
             if len(path.relative_to(self.root).parts) < 3:
                 candidates.extend(path.iterdir())
 
-            manifest = path / f'{path.name}.txt'
-            if not manifest.exists():
+            for ext in ('.txt', '.addon'):
+                manifest = path / f'{path.name}{ext}'
+                if manifest.exists():
+                    break
+            else:
                 continue
 
             try:
@@ -170,12 +173,12 @@ class Folder:
         toplevels = {pathlib.Path(info.filename).parts[0] for info in files}
 
         # Try to find a single manifest at expected location with expected name: standard case
-        expected_manifest = any(f.filename == f'{addon.dir}/{addon.dir}.txt' for f in files)
+        expected_manifest = any(f.filename in {f'{addon.dir}/{addon.dir}.txt', f'{addon.dir}/{addon.dir}.addon'} for f in files)
         if expected_manifest and len(toplevels) == 1:
             return addon.folder.parent, files
 
         # Try to find a single manifest at expected location with any name
-        manifest_depth1 = [f.filename for f in files if re.match(r'([^/]+)/\1.txt$', f.filename)]
+        manifest_depth1 = [f.filename for f in files if re.match(r'([^/]+)/\1.(txt|addon)$', f.filename)]
         if len(manifest_depth1) == 1 and len(toplevels) == 1:
             addon.dir = pathlib.Path(manifest_depth1[0]).stem
             warnings.warn(f'Using {addon.dir} as install dir instead of {addon.folder.name}')
@@ -183,12 +186,12 @@ class Folder:
             return addon.folder.parent, files
 
         # Try to find a single top-level manifest with expected name
-        if any(f.filename == f'{addon.dir}.txt' for f in files):
+        if any(f.filename in {f'{addon.dir}.txt', f'{addon.dir}.addon'} for f in files):
             warnings.warn(f'Addon bundle missing top-level dir, prepending {addon.dir}/ to zip contents')
             return addon.folder, files
 
         # Try to find a single top-level manifest with any name
-        manifest_depth0 = [f.filename for f in files if re.match(r'([^/]+).txt$', f.filename)]
+        manifest_depth0 = [f.filename for f in files if re.match(r'([^/]+).(txt|addon)$', f.filename)]
         # If needed, try to reduce top-level manifest candidates to files whose stem appears in zip’s name
         # i.e. {addon}.txt in {addon.zip}, {addon}-{version}.zip, {addon}r{release}.zip, etc.
         if len(manifest_depth0) > 1:
@@ -203,7 +206,7 @@ class Folder:
 
         # Try to find any manifest? Do not take into account non-single top-level .txt files
         manifest_depth1plus = manifest_depth1 + sorted(
-            (f.filename for f in files if re.search(r'/([^/]+)/\1.txt$', f.filename) is not None),
+            (f.filename for f in files if re.search(r'/([^/]+)/\1.(txt|addon)$', f.filename) is not None),
             key=lambda f: f.count('/')
         )
 
@@ -212,7 +215,7 @@ class Folder:
             raise ValueError(f'No addon manifest in bundle {zf.filename}')
 
         # Some addons bundle gamedata, EsoUI (etc) as top-level folders, install to a subdirectory
-        if len(toplevels) > 1 and not all(f'{name}/{name}.txt' in manifest_depth1 for name in toplevels):
+        if len(toplevels) > 1 and not all(f'{name}/{name}.txt' in manifest_depth1 or f'{name}/{name}.addon' in manifest_depth1 for name in toplevels):
             warnings.warn(f'Multiple-directory addon, prepending {addon.dir}/ to zip contents')
             return addon.folder, files
 
