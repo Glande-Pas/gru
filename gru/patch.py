@@ -9,13 +9,23 @@ import datetime
 import warnings
 import diff_match_patch
 
+from .config import encoding_open
 
-def format_file_mtime(fname: pathlib.Path | None):
+Op = str
+Lines = list[str]
+BlockPatch = list[tuple[Op, Lines]]
+BlockHeader = str
+FilePatch = list[tuple[BlockHeader, BlockPatch]]
+File = str
+Patch = dict[tuple[File, File], FilePatch]
+
+
+def format_file_mtime(fname: pathlib.Path | None) -> str:
     timestamp = 0 if fname is None else fname.stat().st_mtime
     return datetime.datetime.fromtimestamp(timestamp, datetime.UTC).strftime(r'%Y-%m-%d %H:%M:%S.%f %z')
 
 
-def line_diff(orig_text, changed_text):
+def line_diff(orig_text: str, changed_text: str) -> str:
     dmp = diff_match_patch.diff_match_patch()
     # Map lines to chars in both texts
     orig_chars, changed_chars, line_array = dmp.diff_linesToChars(orig_text, changed_text)
@@ -35,11 +45,11 @@ def line_diff(orig_text, changed_text):
     return ''.join(text_patch)
 
 
-def parse_diff(path: pathlib.Path) -> dict[tuple[str, str], dict[str, str]]:
-    header = []
-    diff = None
-    block = None
-    patch = {}
+def parse_diff(path: pathlib.Path) -> Patch:
+    header: list[str] = []
+    diff: FilePatch | None = None
+    block: Blockpatch | None = None
+    patch: Patch = {}
     mnemonic_top_dirs = tuple(map(set, ('ab', 'ci', 'co', 'cw', 'io', 'iw', 'ow', '12')))
 
     with path.open() as f:
@@ -101,7 +111,7 @@ def addon_diff(addon: gru.addon.Addon, orig_addon: gru.addon.Addon, out=sys.stdo
 
     n_diff_files = 0
     for file in files & orig_files:
-        with open(addon.folder / file) as f, open(orig_addon.folder / file) as g:
+        with encoding_open(addon.folder / file) as f, encoding_open(orig_addon.folder / file) as g:
             diff = line_diff(f.read(), g.read())
         if diff.strip():
             n_diff_files += 1
@@ -113,20 +123,20 @@ def addon_diff(addon: gru.addon.Addon, orig_addon: gru.addon.Addon, out=sys.stdo
         n_diff_files += 1
         print(f'--- /dev/null', format_file_mtime(None), sep='\t', file=out)
         print(f'+++ {addon.folder.name}/{file}', format_file_mtime(addon.folder / file), sep='\t', file=out)
-        with open(addon.folder / file) as f:
+        with encoding_open(addon.folder / file) as f:
             print(line_diff('\n', f.read()), end='')
 
     for file in orig_files - files:
         n_diff_files += 1
         print(f'--- {addon.folder.name}/{file}', format_file_mtime(orig_addon.folder / file), sep='\t', file=out)
         print(f'+++ /dev/null', format_file_mtime(None), sep='\t', file=out)
-        with open(orig_addon.folder / file) as f:
+        with encoding_open(orig_addon.folder / file) as f:
             print(line_diff(f.read(), '\n'), end='')
 
     return n_diff_files
 
 
-def apply_patch(orig: str, patch) -> str:
+def apply_patch(orig: str, patch: FilePatch) -> str:
     dmp = diff_match_patch.diff_match_patch()
 
     diff_lines = '\n'.join(sum((lines for header, changes in patch for op, lines in changes), []))
@@ -148,11 +158,15 @@ def apply_patch(orig: str, patch) -> str:
     return ''.join(line_array[ord(char)] for char in result), values
 
 
-def addon_patch(addon: gru.addon.Addon, diff: pathlib.Path):
-    patch = parse_diff(diff)
+def addon_patch(addon: gru.addon.Addon, diff: pathlib.Path) -> tuple[int, int]:
+    try:
+        patch = parse_diff(diff)
 
-    if not all(str(file) == '/dev/null' or file.parts[0] == addon.folder.name for inout_files in patch for file in inout_files):
-        raise ValueError('Patch changes outside of addon folder')
+        if not all(str(file) == '/dev/null' or file.parts[0] == addon.folder.name for inout_files in patch for file in inout_files):
+            raise ValueError('Patch specifies changes outside of addon folder')
+    except Exception as err:
+        warnings.warn(f'Patch {diff.name} failed: {err}')
+        return 0, 0
 
     n_changed_files = 0
     for (infile, outfile), changes in patch.items():
@@ -177,7 +191,7 @@ def addon_patch(addon: gru.addon.Addon, diff: pathlib.Path):
                 raise ValueError(f'Malformed patch instructions on removing {infile}')
 
             try:
-                with inpath.open() as f:
+                with encoding_open(inpath) as f:
                     contents = f.read()
             except FileNotFoundError:
                 warnings.warn(f'Patch failed for {infile}: file does not exist')
@@ -190,9 +204,13 @@ def addon_patch(addon: gru.addon.Addon, diff: pathlib.Path):
                 n_changed_files += 1
             continue
 
-        # Finally both files exist
-        with inpath.open() as f:
-            orig = f.read()
+        # Finally both files are the same
+        try:
+            with encoding_open(inpath) as f:
+                orig = f.read()
+        except FileNotFoundError:
+            warnings.warn(f'Patch failed for {infile}: file does not exist')
+            continue
 
         result, values = apply_patch(orig, changes)
         if not all(values):
