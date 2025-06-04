@@ -526,6 +526,26 @@ def list_(ctx):
     show_warnings(ctx)
 
 
+@main.command(help='export installed add-ons')
+@click.pass_context
+def export(ctx):
+    api = ctx.obj['api']
+    local = ctx.obj['local']
+
+    if not local.installed:
+        click.echo('No addons installed.')
+        return
+
+    export_path = local.root / '.gru' / 'addons.txt'
+    export_path.parent.mkdir(parents=True, exist_ok=True)
+    with export_path.open('w') as out:
+        for addon in local.installed:
+            print(f'{addon.dir} = {addon.metadata["installed_version"]}', file=out)
+
+    click.echo(f'All {len(local.installed)} addon(s) exported to:\n{export_path.resolve()}')
+    show_warnings(ctx)
+
+
 @main.command(help='List missing dependences')
 @click.option('--opt/--no-opt', help='include optional dependences')
 @click.pass_context
