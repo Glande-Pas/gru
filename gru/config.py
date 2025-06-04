@@ -127,7 +127,10 @@ def load_config(config_file=None):
     if config.get('ESO.addons', 'root').strip():
         return config
 
-    for check in ['Documents/Elder Scrolls Online/live/AddOns', 'Documents/Elder Scrolls Online/pts/AddOns']:
+    paths = ['Documents/Elder Scrolls Online/live/AddOns', 'Documents/Elder Scrolls Online/pts/AddOns']
+    steam_library = '.local/share/Steam/'
+    steam_prefix = steam_library + 'steamapps/compatdata/306130/pfx/drive_c/users/steamuser/'
+    for check in [*paths, *(steam_prefix + path for path in paths)]:
         addons_dir = user_home() / check
         if addons_dir.exists():
             config.set('ESO.addons', 'root', str(addons_dir.resolve()))
