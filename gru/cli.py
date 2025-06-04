@@ -173,6 +173,27 @@ def _prompt_addon(ctx, results, show_batch=None):
         return results[answer - 1]
 
 
+def _find_installed(ctx, api, local, addon):
+    if addon is None:
+        addon = local.installed
+    else:
+        addon = api.find(addon, local)
+        if isinstance(addon, list):
+            addon = local.filter_installed(addon)
+
+    if not addon:
+        click.echo('No corresponding addon found.')
+        return
+
+    if isinstance(addon, list):
+        addon = _prompt_addon(ctx, addon)
+    if not addon:
+        click.echo('Nothing do to.')
+        return None
+
+    return local.find_installed(addon)
+
+
 def _progress(size, message):
     return click.progressbar(length=size, label=message, width=0)
 
@@ -370,26 +391,8 @@ def remove(ctx, addon, clean_deps=False, opt=None):
     if opt is None:
         opt = get_config_bool(ctx, '{game}.addons.optional')
 
-    if addon is None:
-        addon = local.installed
-    else:
-        addon = api.find(addon, local)
-        if isinstance(addon, list):
-            addon = local.filter_installed(addon)
-
-    if not addon:
-        click.echo('No corresponding addon found.')
-        show_warnings(ctx)
-        return
-
-    if isinstance(addon, list):
-        addon = _prompt_addon(ctx, addon)
-    if not addon:
-        click.echo('Nothing do to.')
-        return
-
-    installed_addon = local.find_installed(addon)
-    if addon is None:
+    installed_addon = _find_installed(ctx, api, local, addon)
+    if installed_addon is None:
         show_warnings(ctx)
         return
 
@@ -424,6 +427,7 @@ def update(ctx, auto_deps, opt):
     else:
         click.echo(f'Updated {updates} addon(s)')
     show_warnings(ctx)
+
 
 @main.command(help='Remove unused dependences')
 @click.option('--opt/--no-opt', default=True, help='Keep optional dependences')
