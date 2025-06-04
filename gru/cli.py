@@ -1,4 +1,5 @@
 """ Module handling command-line interface """
+import configparser
 import warnings
 import datetime
 import asyncio
@@ -201,6 +202,7 @@ def main(ctx, game='ESO', config_file=None):
 
     config = ctx.obj['config'] = load_config(config_file)
     ctx.obj['game'] = game
+    ctx.obj['config_file'] = config_file
 
     root = config.get(f'{game}.addons', 'root')
     if not root or not pathlib.Path(root).exists():
@@ -219,6 +221,80 @@ def main(ctx, game='ESO', config_file=None):
         click_repl.repl(ctx, prompt_kwargs={
             'history': prompt_history.FileHistory(user_cache('history')),
         })
+
+
+@main.group()
+@click.pass_context
+def config(ctx):
+    # The cli-configurable sections and names under which they will appear
+    ctx.obj['sections'] = {
+        'app': 'app',
+        'addons': f'{ctx.obj["game"]}.addons',
+    }
+
+
+@config.command
+@click.pass_context
+@click.argument('entry', required=False)
+def show(ctx, entry=None):
+    if not entry:
+        for section_name, section in ctx.obj['sections'].items():
+            for key, value in ctx.obj['config'].items(section):
+                click.echo(f'{section_name}.{key} = {value!r}')
+        return
+
+    section_name, *opt_key = entry.split('.', 1)
+    try:
+        section = ctx.obj['sections'][section_name]
+    except KeyError:
+        click.echo(f'Error: section {section_name} not understood')
+        return
+
+    try:
+        key = opt_key[0]
+    except IndexError:
+        key = None
+
+    if not key:
+        for key, value in ctx.obj['config'].items(section):
+            click.echo(f'{section_name}.{key} = {value!r}')
+        return
+
+    try:
+        click.echo(ctx.obj['config'].get(section, key))
+    except configparser.NoOptionError:
+        click.echo(f'Error: entry {key} not found in {section_name}')
+
+
+@config.command
+@click.pass_context
+@click.argument('entry')
+@click.argument('value')
+def set(ctx, entry, value):
+    try:
+        section_name, key = entry.split('.', 1)
+    except ValueError:
+        click.echo(f'Entry must be formatted as <section>.<key>')
+        return
+
+    try:
+        section = ctx.obj['sections'][section_name]
+    except KeyError:
+        click.echo(f'Error: section {section_name} not recognized')
+        return
+
+    try:
+        is_bool = ctx.obj['config'].get(section, key) in {'on', 'off'}
+    except configparser.NoOptionError:
+        click.echo(f'Error: entry {key} not found in {section_name} options')
+        return
+
+    if is_bool != (value in {'on', 'off'}):
+        click.echo(f'Error: value must be "on" or "off"{"" if is_bool else " only"} for boolean values')
+        return
+
+    ctx.obj['config'].set(section, key, value)
+    save_config(ctx.obj['config'], ctx.obj['config_file'])
 
 
 def show_warnings(ctx):
