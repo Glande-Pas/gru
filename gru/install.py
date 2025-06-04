@@ -68,7 +68,7 @@ class Folder:
             try:
                 infos = self.parse_manifest(manifest)
             except Exception as err:
-                warnings.warn(f'Skipping addon at {path} due to {type(err).__name__} {err}')
+                warnings.warn(f'Skipping addon at {path.relative_to(self.root)} due to {type(err).__name__} {err}')
                 continue
 
             addon = Addon(None, path, infos)
@@ -78,7 +78,7 @@ class Folder:
                 addon.merge(api.dir(path.name))
             except (StopIteration, ValueError) as err:
                 if not isinstance(err, StopIteration):
-                    warnings.warn(f'Addon at {path} not found in database')
+                    warnings.warn(f'Addon at {path.relative_to(self.root)} not found in database')
 
             results.append(addon)
         return results
@@ -150,7 +150,8 @@ class Folder:
 
         # NB. emit warning last
         if missing_mandatory_keys:
-            warnings.warn(f'Missing mandatory key(s) {", ".join(map(repr, missing_mandatory_keys))} in {manifest_path}')
+            warnings.warn(f'Missing mandatory key(s) {", ".join(map(repr, missing_mandatory_keys))}'
+                 f' in {manifest_path.relative_to(self.root)}')
 
         return infos
 
