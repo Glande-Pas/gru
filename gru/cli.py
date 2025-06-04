@@ -57,72 +57,85 @@ class SectionedHelpGroup(click.Group):
                     formatter.write_dl(rows)
 
 
-def _display_addon(ctx, n, addon, width):
+def _wrapped_display(gutter_width, *infos):
+    pfx = ' ' * gutter_width
+    width = shutil.get_terminal_size()[0] - gutter_width
+    sep = ' |  '
+    for i0, *inext in infos:
+        batch = i0
+        for term in inext:
+            if len(batch) + len(sep) + len(term) < width:
+                batch += sep + term
+                continue
+            click.echo(pfx + batch)
+            if len(i0) + len(sep) + len(term) < width:
+                batch = ' ' * len(i0) + sep + term
+            else:
+                batch = term
+        click.echo(pfx + batch)
+
+
+def _display_addon(ctx, num, addon, gutter_width):
     """ Show addon info from the API endpoint """
     click.echo()
-    click.echo(f'{n:{width}}{addon.metadata["title"]} (id {addon.id})' +
-               (f'  [installed{" - " + click.style("update available", bold=True) if addon.can_update() else ""}]'
-                if addon.folder is not None else ''))
-    pfx = ' ' * width
-    sep = ' |  '
-    # Based on verbosity level, only click.echo a number of those:
-    infos = [
+    click.echo(f'{num:{gutter_width}}{addon.metadata["title"]} (id {addon.id})' + (
+        '' if addon.folder is None else
+        f'  [installed]' if not addon.can_update() else
+        f'  [installed - {click.style("update available", bold=True)}]'
+    ))
+    # TODO: Based on verbosity level, only click.echo a number of those:
+    _wrapped_display(gutter_width, [
         f'Author: {addon.metadata["author"]:20}',
         f'Version: {addon.metadata["version" if addon.folder is None else "installed_version"]:10}',
-        f'Updated: {addon.metadata["date"].strftime("%x"):12}',
+        f'Updated: {addon.metadata["date"].strftime("%x"):10}',
         f'Category: {" > ".join(ctx.obj["api"].cat_name_hierarchy(addon.metadata["category"]))}',
-    ]
-    click.echo(pfx + sep.join(infos))
-    infos2 = [
-        f'Directory: {addon.dir}',
-        f'Favorites: {addon.metadata["favorites"]:n}',
+    ], [
+        f'Directory: {addon.dir:40}',
+        f'Favorites: {addon.metadata["favorites"]:8n}',
         f'Downloads: {addon.metadata["downloads"]:n} [{addon.metadata["monthly"]:n} / Month]',
-    ]
-    infos2[0] = f'{infos2[0]:{len(sep) + len(infos[0]) + len(infos[1])}}'
-    infos2[1] = f'{infos2[1]:{len(infos[2])}}'
-    click.echo(pfx + sep.join(infos2))
-    click.echo(pfx + addon.metadata['link'])
+    ])
+    click.echo(' ' * gutter_width + addon.metadata['link'])
 
 
-def _display_folder(n, folder, width):
+def _display_folder(num, folder, gutter_width):
     """ Show addon info from a local folder that was not matched with the API endpoint """
     click.echo()
-    click.echo(f'{n:{width}}{folder.metadata["title"]} (id not found)  [installed]')
-    pfx = ' ' * width
-    sep = ' |  '
+    click.echo(f'{num:{gutter_width}}{folder.metadata["title"]} (id not found)  [installed]')
     # Based on verbosity level, only click.echo a number of those:
     # TODO: move to an “Addon” object
-    click.echo(pfx + sep.join([f'Author: {folder.metadata["author"]}', f'Version: {folder.metadata["installed_version"]}']))
+    infos = [
+        f'Author: {folder.metadata["author"]:20}',
+        f'Version: {folder.metadata["installed_version"]:10}',
+    ]
     if 'Description' in folder.metadata:
-        click.echo(pfx + f'Description: {folder.metadata["description"]}')
-    click.echo(pfx + f'NB: this add-on may be deprecated')
+        infos.append(f'Description: {folder.metadata["description"]}')
+    _wrapped_display(gutter_width, infos)
+    click.echo(' ' * gutter_width + 'NB: this add-on may be deprecated')
 
 
-def _display_unknown(n, folder, width):
+def _display_unknown(num, folder, gutter_width):
     """ Show a missing and unresolved dependence """
     click.echo()
-    click.echo(f'{n:{width}}{folder} (id not found)')
-    click.echo(' ' * width + f'NB: this add-on may be deprecated')
+    click.echo(f'{num:{gutter_width}}{folder} (id not found)')
+    click.echo(' ' * gutter_width + f'NB: this add-on may be deprecated')
 
 
 def _display(ctx, results, num_from=0):
     """ Show a list of addons """
     api = ctx.obj['api']
-
-    width = math.ceil(math.log(len(results), 10))
-    width += 2
+    gutter_width = 2 + math.ceil(math.log(len(results), 10))
 
     for n, addon in enumerate(results, num_from + 1):
-        num = f'{n:{width - 2}}: ' if width > 2 else ''
+        num = f'{n:{gutter_width - 2}}: ' if len(results) > 1 else ''
         if addon.id is not None:
             local = ctx.obj['local'].find_installed(addon)
             if local is not None:
                 addon = local.merge(addon)
-            _display_addon(ctx, num, addon, width)
+            _display_addon(ctx, num, addon, gutter_width)
         elif addon.folder is not None:
-            _display_folder(num, addon, width)
+            _display_folder(num, addon, gutter_width)
         else:
-            _display_unknown(num, addon, width)
+            _display_unknown(num, addon, gutter_width)
 
     click.echo()
 
@@ -133,7 +146,7 @@ def _confirm(query):
     return answer
 
 
-def _prompt_addon(ctx, results, show_batch=None):
+def _prompt_addon(ctx, results, confirm_prompt=None, show_batch=None):
     """ Pick an addon from a list of addons """
     if not results:
         click.echo('No addon found')
@@ -150,7 +163,7 @@ def _prompt_addon(ctx, results, show_batch=None):
     _display(ctx, results[:show_batch])
 
     if len(results) == 1:
-        return results[0] if _confirm('Confirm removal?') else None
+        return results[0] if _confirm(confirm_prompt) else None
 
     for shown in range(show_batch, len(results), show_batch):
         answer = click.prompt(f'Select (1-{shown}, 0 cancels, empty continues)', prompt_suffix=':\n>> ', default=-1,
@@ -173,7 +186,7 @@ def _prompt_addon(ctx, results, show_batch=None):
         return results[answer - 1]
 
 
-def _find_installed(ctx, api, local, addon):
+def _find_installed(ctx, api, local, addon, confirm_prompt=None):
     if addon is None:
         addon = local.installed
     else:
@@ -186,7 +199,7 @@ def _find_installed(ctx, api, local, addon):
         return
 
     if isinstance(addon, list):
-        addon = _prompt_addon(ctx, addon)
+        addon = _prompt_addon(ctx, addon, confirm_prompt)
     if not addon:
         click.echo('Nothing do to.')
         return None
@@ -354,7 +367,7 @@ def get(ctx, addon, auto_deps=True, opt=None):
         click.echo('No corresponding addon found')
         click.echo()
     if isinstance(addon, list):
-        addon = _prompt_addon(ctx, addon)
+        addon = _prompt_addon(ctx, addon, 'Confirm installation?')
     if not addon:
         show_warnings(ctx)
         return
@@ -391,7 +404,7 @@ def remove(ctx, addon, clean_deps=False, opt=None):
     if opt is None:
         opt = get_config_bool(ctx, '{game}.addons.optional')
 
-    installed_addon = _find_installed(ctx, api, local, addon)
+    installed_addon = _find_installed(ctx, api, local, addon, 'Confirm removal?')
     if installed_addon is None:
         show_warnings(ctx)
         return
