@@ -1,7 +1,12 @@
 """ Module handling command-line interface """
+
+from __future__ import annotations
+
 import configparser
+import contextlib
 import warnings
 import datetime
+import tempfile
 import asyncio
 import pathlib
 import locale
@@ -17,6 +22,7 @@ from .config import load_config, save_config, user_cache
 from .api import API
 from .addon import Addon
 from .install import Folder
+from .patch import addon_diff, addon_patch
 
 
 def get_config_bool(ctx, string):
@@ -27,7 +33,7 @@ def get_config_bool(ctx, string):
 class SectionedHelpGroup(click.Group):
     """ Sections commands into help groups """
 
-    _cmd_shortcuts = {'rm': 'remove', 'up': 'update', 'ls': 'list', 's': 'search', 'cc': 'clear-caches'}
+    _cmd_shortcuts = {'rm': 'remove', 'up': 'update', 'ls': 'list', 's': 'search', 'cc': 'clear-caches', 'df': 'diff'}
 
     @classmethod
     def _cmd_group(cls, cmd):
@@ -187,6 +193,7 @@ def _prompt_addon(ctx, results, confirm_prompt=None, show_batch=None):
 
 
 def _find_installed(ctx, api, local, addon, confirm_prompt=None):
+    # TODO: make case-insensitive
     if addon is None:
         addon = local.installed
     else:
@@ -412,26 +419,28 @@ def remove(ctx, addon, clean_deps=False, opt=None):
     nremoved = local.remove(installed_addon, deps=clean_deps, opt=opt)
 
     if not clean_deps:
-        click.echo('Addon removed.')
+        click.echo(f'Removed addon {installed_addon.metadata["title"]}.')
     else:
-        click.echo(f'Addon and {nremoved} unused dependence(s) removed.')
-
+        click.echo(f'Removed addon {installed_addon.metadata["title"]} and {nremoved} unused dependence(s).')
     show_warnings(ctx)
 
 
 @main.command()
 @click.option('--auto-deps/--no-auto-deps', default=True, help='Automatically install new/missing dependences')
-@click.option('--opt/--no-opt', default=False, help='Include optional dependences')
+@click.option('--opt/--no-opt', default=None, help='Include optional dependences')
+@click.option('--patch/--no-patch', default=None, help='Automatically re-apply patches')
 @click.pass_context
-def update(ctx, auto_deps, opt):
+def update(ctx, auto_deps, opt, patch):
     """ Find out-of-date and missing addons and install them """
     api = ctx.obj['api']
     local = ctx.obj['local']
 
     if opt is None:
         opt = get_config_bool(ctx, '{game}.addons.optional')
+    if patch is None:
+        patch = get_config_bool(ctx, '{game}.addons.patch_updates')
 
-    updates, added = local.update(api, _progress, opt=opt, deps=auto_deps)
+    updates, added = local.update(api, _progress, opt=opt, deps=auto_deps, patch=patch)
 
     if updates + added == 0:
         click.echo('Nothing to do')
@@ -541,6 +550,90 @@ def miss(ctx, opt):
     if found:
         click.echo(f'Run update to fetch resolved missing dependences')
     show_warnings(ctx)
+
+
+@contextlib.contextmanager
+def unmodified_addon(api: gru.api.API, local: gru.install.Folder, addon: gru.addon.Addon, url=None):
+    # Code to acquire resource, e.g.:
+    with tempfile.TemporaryDirectory() as tempdir:
+        ref_local = local.alt_location(pathlib.Path(tempdir))
+        ref_addon = addon.alt_location(ref_local.root)
+        # Be sure to compare to installed version not up-to-date upstream
+        ref_local.unpack(ref_addon, api, url_override=url)
+
+        if ref_addon.metadata['installed_version'] != addon.metadata['installed_version']:
+            raise ValueError('Downloaded addon does not have same version as installed addon!')
+
+        yield ref_addon
+
+
+@main.command(help='Save the diff between current addon and upstream as a patch')
+@click.argument('addon', required=False)
+@click.option('--url', help='Download url for installed version', required=False)
+@click.pass_context
+def diff(ctx, addon, url=None):
+    api = ctx.obj['api']
+    local = ctx.obj['local']
+
+    addon = _find_installed(ctx, api, local, addon, 'Confirm diff saving?')
+    if addon is None:
+        show_warnings(ctx)
+        return
+
+    if not url and addon.metadata['version'] != addon.metadata['installed_version']:
+        click.echo(f'Addon is out of date!  Can not fetch unmodified source automatically.')
+        click.echo()
+        url = click.prompt(f'Please manually specify {addon.metadata["installed_version"]} download url',
+                              prompt_suffix=':\n>> ', type=str)
+
+    result_path = local.root / '.gru' / f'{addon.dir}.patch'
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with unmodified_addon(api, local, addon, url=url) as ref_addon, result_path.open('w') as out:
+        nfiles = addon_diff(ref_addon, addon, out=out)
+
+    if nfiles > 0:
+        click.echo(f'Changes saved under:\n{result_path.resolve()}')
+    else:
+        result_path.unlink()
+        click.echo(f'No changes to be saved.')
+    show_warnings(ctx)
+
+
+@main.command(help='Import a patch of changes for an addon')
+@click.argument('addon', required=False)
+@click.argument('patch', type=click.Path(dir_okay=False, path_type=pathlib.Path), required=False)
+@click.pass_context
+def patch(ctx, addon, patch):
+    api = ctx.obj['api']
+    local = ctx.obj['local']
+
+    installed_addon = _find_installed(ctx, api, local, addon, 'Confirm patch target?')
+    if installed_addon is None:
+        show_warnings(ctx)
+        return
+
+    if patch is None:
+        patch = local.root / '.gru' / f'{installed_addon.dir}.patch'
+        if not patch.exists():
+            click.echo(f'No saved changes to be re-applied.')
+            return
+
+    done, total = addon_patch(installed_addon, patch)
+    if not total:
+        click.echo(f'No changes to be apply in patch.')
+    elif done == total:
+        click.echo(f'Applied patch successfully.')
+    else:
+        click.echo(f'Applied {done} / {total} hunks in patch.')
+
+
+@main.command(help='Save the diff between current addon and upstream')
+@click.pass_context
+def patch_all(ctx):
+    api = ctx.obj['api']
+    local = ctx.obj['local']
+    missing = local.all_missing_deps(local.installed, opt=opt)
 
 
 @main.command()

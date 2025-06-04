@@ -1,4 +1,7 @@
 """ Module handling an install location """
+
+from __future__ import annotations
+
 import collections
 import pathlib
 import zipfile
@@ -13,6 +16,7 @@ from urllib.parse import quote as urllib_quote
 
 from .config import encoding_open
 from .addon import Addon, Dependency, atol
+from .patch import addon_patch
 
 
 class SilentProgress:
@@ -41,6 +45,10 @@ class Folder:
         self.url_template = config.get(f'{game}.links', 'download')
         #: A list of Addon() instances that have local file info and are enriched as appropriate with API info
         self.installed = []
+
+    def alt_location(self, path: pathlib.Path) -> Folder:
+        """ Returns a similarly-configured install folder at a different location. """
+        return Folder('game', {'game.addons': path, 'game.links': self.url_template})
 
     def scan(self, api=None):
         self.installed = self._scan(api)
@@ -262,7 +270,7 @@ class Folder:
                     shutil.copyfileobj(zfreader, out)
                 prog.update(info.file_size)
 
-    def unpack(self, addon, api, progress=None):
+    def unpack(self, addon, api, progress=None, url_override=None):
         """ Download and install, calls back to `progress` (100% until return means unzipping) """
         if progress is None:
             progress = SilentProgress
@@ -271,7 +279,7 @@ class Folder:
         # However, server-side caching means we can get stale versions if we use a version-independent url.
         # Do not use a random string, so we don’t defeat the purpose of server-side caching.
         fname = f'{addon.dir}-{addon.metadata["version"]}.zip'
-        url = self.url_template.format(id=addon.id) + urllib_quote(fname)
+        url = url_override or self.url_template.format(id=addon.id) + urllib_quote(fname)
 
         with requests.get(url, stream=True, allow_redirects=True) as dl:
             size = int(dl.headers.get('content-length', 0))
@@ -368,7 +376,7 @@ class Folder:
                 unused.append(addon)
         return unused
 
-    def update(self, api, progress=None, opt=False, deps=False):
+    def update(self, api, progress=None, opt=False, deps=False, patch=False):
         updates = []
         for addon in self.installed:
             if not addon.can_update():
@@ -378,14 +386,16 @@ class Folder:
             except Exception as err:
                 warnings.warn(f'Failed to install addon dependence {addon.dir!r}: {err}')
                 continue
+            if patch and (patch_file := self.root / '.gru' / f'{addon.dir}.patch').exists():
+                addon_patch(addon, patch_file)
             updates.append(addon)
 
         if deps:
-            return (len(updates), self.install_deps(updates, api, progress=progress, opt=opt))
+            return (len(updates), self.install_deps(updates, api, progress=progress, opt=opt, patch=patch))
         else:
             return (len(updates), 0)
 
-    def install_deps(self, pool, api, progress=None, opt=False):
+    def install_deps(self, pool, api, progress=None, opt=False, patch=False):
         added = 0
         deps = (pool if pool is not None else self.installed)[:]
         while newdeps := self.all_missing_deps(deps, opt=opt):
@@ -402,6 +412,8 @@ class Folder:
                 except Exception as err:
                     warnings.warn(f'Failed to install addon dependence {addon.dir!r}: {err}')
                     continue
+                if patch and (patch_file := self.root / '.gru' / f'{addon.dir}.patch').exists():
+                    addon_patch(addon, patch_file)
                 added += 1
                 deps.append(addon)
 

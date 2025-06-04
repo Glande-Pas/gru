@@ -1,4 +1,7 @@
 """ Module holding classes of addon and dependency objects """
+
+from __future__ import annotations
+
 import re
 import unicodedata
 
@@ -27,6 +30,9 @@ class Addon:
             raise ValueError('At least one of id or path must be provided')
         else:
             assert getattr(self, 'dir', None) is not None, 'dir not set with id'
+
+    def alt_location(self, root: pathlib.Path):
+        return Addon(self.id, root / self.dir, self.metadata)
 
     def merge(self, infos):
         if isinstance(infos, Dependency):
@@ -64,6 +70,13 @@ class Addon:
         stat = self.manifest.stat()
         # NB. some file systems have 2s resolution, but addons should never get updates within 2s
         return datetime.datetime.from_timestamp(max(stat.st_mtime, stat.st_ctime) + 2) <= self.metadata['date']
+
+    @property
+    def files(self):
+        return [
+            path.relative_to(self.folder) for path in self.folder.rglob('*')
+            if path.is_file() and not any(part.startswith('.') or part == '__MACOSX' for part in path.parts)
+        ]
 
 
 class APIAddonInfo(Addon):

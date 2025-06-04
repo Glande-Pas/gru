@@ -39,6 +39,8 @@ download = https://cdn.esoui.com/downloads/file{id}/
 root =
 # Whether to include optional dependences by default
 optional = off
+# Whether to automatically re-apply patches on updates
+patch_updates = on
 # Sort equal matches in search according to one of: downloads, monthly, favorites
 sortkey = downloads
 
@@ -71,6 +73,8 @@ def user_home():
             return pathlib.Path(os.environ['HOMEDRIVE']) / userhome
         else:
             return pathlib.Path(userhome)
+    else:
+        return pathlib.Path('~').expanduser()
 
 
 def user_cache(*args):
@@ -178,6 +182,7 @@ def install_translation(domain, localedir):
         for nelang in gettext._expand_lang(lang):
             file = localedir.joinpath(nelang, 'LC_MESSAGES', domain + '.mo')
             if file.is_file():
+                # TODO: wrong, only breaks 1 level
                 break
     else:
         return NullFormatTranslations().install()
