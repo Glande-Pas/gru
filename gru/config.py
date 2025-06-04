@@ -1,5 +1,10 @@
 """ Module handling user configuration """
+
+from __future__ import annotations
+
+import charset_normalizer
 import configparser
+import contextlib
 import builtins
 import gettext
 import pathlib
@@ -40,6 +45,20 @@ sortkey = downloads
 [app]
 open_in_browser = off
 '''
+
+
+@contextlib.contextmanager
+def encoding_open(fname: pathlib.Path | str):
+    with open(fname, 'rb') as f:
+        # charset_normalizer does not recognize BOM?!
+        if f.read(3) == b'\xef\xbb\xbf':
+            encoding = 'utf_8_sig'
+        else:
+            f.seek(0)
+            encoding = charset_normalizer.from_fp(f).best().encoding
+
+    with open(fname, 'r', encoding=encoding) as f:
+        yield f
 
 
 def user_home():

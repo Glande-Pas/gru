@@ -9,9 +9,9 @@ import functools
 import operator
 import warnings
 import re
-import charset_normalizer
 from urllib.parse import quote as urllib_quote
 
+from .config import encoding_open
 from .addon import Addon, Dependency, atol
 
 
@@ -112,8 +112,7 @@ class Folder:
         """ Parse the manifest file """
         # Parse metadata handling multiple line entries
         metadata = {}
-        encoding = charset_normalizer.from_path(manifest_path).best().encoding
-        with open(manifest_path, encoding=encoding) as manifest:
+        with encoding_open(manifest_path) as manifest:
             for line in manifest:
                 if line.startswith('## ') and len(line) > 4:
                     try:
