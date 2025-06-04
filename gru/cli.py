@@ -354,7 +354,7 @@ def process_result(ctx, result, game, config_file):
 
 
 @main.command()
-@click.argument('addon', required=False)
+@click.argument('addon', required=False, nargs=-1)
 @click.option('--auto-deps/--no-auto-deps', default=True)
 @click.option('--opt/--no-opt', default=None, help='Include optional dependences')
 @click.pass_context
@@ -362,39 +362,39 @@ def get(ctx, addon, auto_deps=True, opt=None):
     """ Find, download, and install an addon """
     api = ctx.obj['api']
     local = ctx.obj['local']
+    game = ctx.obj["game"]
 
     if opt is None:
         opt = get_config_bool(ctx, '{game}.addons.optional')
 
-    if addon is None:
-        addon = click.prompt(f'Addon to install', prompt_suffix=':\n>> ')
+    addon_list = addon or [click.prompt(f'Addon to install', prompt_suffix=':\n>> ')]
 
-    addon = api.find(addon, local)
-    if not addon:
-        click.echo('No corresponding addon found')
-        click.echo()
-    if isinstance(addon, list):
-        addon = _prompt_addon(ctx, addon, 'Confirm installation?')
-    if not addon:
-        show_warnings(ctx)
-        return
+    for addon in addon_list:
+        addon = api.find(addon, local)
+        if not addon:
+            click.echo('No corresponding addon found')
+            click.echo()
+        if isinstance(addon, list):
+            addon = _prompt_addon(ctx, addon, 'Confirm installation?')
+        if not addon:
+            continue
 
-    installed_addon = local.find_installed(addon)
+        installed_addon = local.find_installed(addon)
 
-    # Try to reuse an existing install dir
-    if installed_addon is not None and installed_addon.folder is not None:
-        if not _confirm(f'Addon found at {installed_addon.folder}, update?'):
-            click.echo('Nothing to do.')
-            return
-    else:
-        installed_addon = Addon(addon.id, local.root / addon.dir)
+        # Try to reuse an existing install dir
+        if installed_addon is not None and installed_addon.folder is not None:
+            if not _confirm(f'Addon found at {installed_addon.folder}, update?'):
+                click.echo('Nothing to do.')
+                continue
+        else:
+            installed_addon = Addon(addon.id, local.root / addon.dir)
 
-    result = local.install(installed_addon.merge(addon), api, _progress, deps=auto_deps, opt=opt)
+        result = local.install(installed_addon.merge(addon), api, _progress, deps=auto_deps, opt=opt)
 
-    if result is None:
-        click.echo(f'Done installing {addon.metadata["title"]}')
-    else:
-        click.echo(f'Done installing {addon.metadata["title"]} and {result} dependence(s)')
+        if result is None:
+            click.echo(f'Done installing {addon.metadata["title"]}')
+        else:
+            click.echo(f'Done installing {addon.metadata["title"]} and {result} dependence(s)')
     show_warnings(ctx)
 
 
@@ -407,6 +407,7 @@ def remove(ctx, addon, clean_deps=False, opt=None):
     """ Find and uninstall an addon """
     api = ctx.obj['api']
     local = ctx.obj['local']
+    game = ctx.obj["game"]
 
     if opt is None:
         opt = get_config_bool(ctx, '{game}.addons.optional')
@@ -434,6 +435,7 @@ def update(ctx, auto_deps, opt, patch):
     """ Find out-of-date and missing addons and install them """
     api = ctx.obj['api']
     local = ctx.obj['local']
+    game = ctx.obj["game"]
 
     if opt is None:
         opt = get_config_bool(ctx, '{game}.addons.optional')
@@ -458,6 +460,7 @@ def cleanup(ctx, opt=None):
     """ Find and uninstall an addon """
     api = ctx.obj['api']
     local = ctx.obj['local']
+    game = ctx.obj["game"]
 
     if opt is None:
         opt = get_config_bool(ctx, '{game}.addons.optional')
