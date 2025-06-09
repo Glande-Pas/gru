@@ -55,8 +55,13 @@ class Folder:
 
     def _scan(self, api=None):
         """ List the root path """
-        candidates = collections.deque(self.root.iterdir())
         results = []
+        try:
+            candidates = collections.deque(self.root.iterdir())
+        except PermissionError:
+            warnings.warn('Skipping folder scan due to permission errors.')
+            return results
+
         while candidates:
             path = candidates.pop()
             if not path.is_dir():
@@ -64,12 +69,19 @@ class Folder:
 
             # Recursively check for depths up to 3
             if len(path.relative_to(self.root).parts) < 3:
-                candidates.extend(path.iterdir())
+                try:
+                    candidates.extend(path.iterdir())
+                except PermissionError as err:
+                    warnings.warn(f'Skipping folder scan {path.relative_to(self.root)} due to permission errors.')
+                    pass
 
             for ext in ('.txt', '.addon'):
                 manifest = path / f'{path.name}{ext}'
-                if manifest.exists():
-                    break
+                try:
+                    if manifest.exists():
+                        break
+                except PermissionError as err:
+                    pass
             else:
                 continue
 
