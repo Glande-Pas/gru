@@ -144,6 +144,25 @@ def load_config(config_file=None):
     return config
 
 
+def display_config(config, game):
+    # The cli-configurable sections and names under which they will appear
+    return {
+        **{f'app.{key}': value for key, value in config.items('app')},
+        **{f'addons.{key}': value for key, value in config.items(f'{game}.addons')},
+    }
+
+
+def update_config(config, game, values):
+    # The cli-configurable sections and names under which they will appear
+    sections = {'app': 'app', 'addons': f'{game}.addons'}
+
+    for (sec, entry), value in ((key.split('.', 1), value) for key, value in values.items()):
+        prev = config.get(sections[sec], entry)
+        if (prev in {'on', 'off'}) != (value in {'on', 'off'}):
+            raise ValueError
+        config.set(sections[sec], entry, value)
+
+
 def save_config(config, config_file=None):
     config_file = user_config() if config_file is None else pathlib.Path(config_file)
     with open(config_file, 'w') as f:

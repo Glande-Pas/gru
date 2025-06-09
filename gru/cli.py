@@ -18,7 +18,7 @@ import os
 import click_repl
 import prompt_toolkit.history as prompt_history
 
-from .config import load_config, save_config, user_cache
+from .config import load_config, save_config, user_cache, display_config, update_config
 from .api import API
 from .addon import Addon
 from .install import Folder
@@ -267,51 +267,40 @@ def main(ctx, game='ESO', config_file=None):
 @main.group()
 @click.pass_context
 def config(ctx):
-    # The cli-configurable sections and names under which they will appear
-    ctx.obj['sections'] = {
-        'app': 'app',
-        'addons': f'{ctx.obj["game"]}.addons',
-    }
+    pass
 
 
-@config.command
+@config.command('get')
 @click.pass_context
 @click.argument('entry', required=False)
-def show(ctx, entry=None):
+def config_get(ctx, entry=None):
+    config = display_config(ctx.obj['config'], ctx.obj['game'])
     if not entry:
-        for section_name, section in ctx.obj['sections'].items():
-            for key, value in ctx.obj['config'].items(section):
-                click.echo(f'{section_name}.{key} = {value!r}')
-        return
+        for key, value in config.items():
+            click.echo(f'{key} = {value!r}')
 
-    section_name, *opt_key = entry.split('.', 1)
-    try:
-        section = ctx.obj['sections'][section_name]
-    except KeyError:
-        click.echo(f'Error: section {section_name} not understood')
-        return
+    elif '.' not in entry:
+        items = [(key, value) for key, value in config.items() if key.split('.', 1)[0] == entry]
+        if not items:
+            click.echo(f'Error: section {entry} not understood')
+            return
+        for key, value in items:
+            click.echo(f'{key} = {value!r}')
 
-    try:
-        key = opt_key[0]
-    except IndexError:
-        key = None
-
-    if not key:
-        for key, value in ctx.obj['config'].items(section):
-            click.echo(f'{section_name}.{key} = {value!r}')
-        return
-
-    try:
-        click.echo(ctx.obj['config'].get(section, key))
-    except configparser.NoOptionError:
-        click.echo(f'Error: entry {key} not found in {section_name}')
+    else:
+        try:
+            value = config[entry]
+        except KeyError:
+            click.echo('Error: entry {0[1]} not found in {0[0]}'.format(entry.split('.', 1)))
+        else:
+            click.echo(value)
 
 
-@config.command
+@config.command('set')
 @click.pass_context
 @click.argument('entry')
 @click.argument('value')
-def set(ctx, entry, value):
+def config_set(ctx, entry, value):
     try:
         section_name, key = entry.split('.', 1)
     except ValueError:
@@ -319,23 +308,15 @@ def set(ctx, entry, value):
         return
 
     try:
-        section = ctx.obj['sections'][section_name]
+        section = update_config(ctx.obj['config'], ctx.obj['game'], {entry: value})
     except KeyError:
         click.echo(f'Error: section {section_name} not recognized')
-        return
-
-    try:
-        is_bool = ctx.obj['config'].get(section, key) in {'on', 'off'}
     except configparser.NoOptionError:
         click.echo(f'Error: entry {key} not found in {section_name} options')
-        return
-
-    if is_bool != (value in {'on', 'off'}):
-        click.echo(f'Error: value must be "on" or "off"{"" if is_bool else " only"} for boolean values')
-        return
-
-    ctx.obj['config'].set(section, key, value)
-    save_config(ctx.obj['config'], ctx.obj['config_file'])
+    except ValueError:
+        click.echo(f'Error: value must be "on" or "off" for boolean values only')
+    else:
+        save_config(ctx.obj['config'], ctx.obj['config_file'])
 
 
 def show_warnings(ctx):
