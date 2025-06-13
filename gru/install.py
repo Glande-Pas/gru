@@ -105,14 +105,12 @@ class Folder:
 
     def filter_installed(self, addons):
         # Do not match up by directory as it is flaky, reuse previous matching results through ids
-        installed = {
-            addon.id: addon for addon in self.installed if addon is not None}
+        installed = {addon.id: addon for addon in self.installed if addon is not None}
         return [installed[addon.id].merge(addon) for addon in addons if addon.id in installed]
 
     def check_installed(self, addons):
         # Do not match up by directory as it is flaky, reuse previous matching results through ids
-        installed = {
-            addon.id: addon for addon in self.installed if addon is not None}
+        installed = {addon.id: addon for addon in self.installed if addon is not None}
         return [installed[addon.id].merge(addon) if addon.id in installed else addon for addon in addons]
 
     def find_installed(self, addon, installed=None, version=0):

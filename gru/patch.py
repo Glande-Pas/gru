@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import sys
+import typing
 import pathlib
 import datetime
 import warnings
@@ -45,55 +46,63 @@ def line_diff(orig_text: str, changed_text: str) -> str:
     return ''.join(text_patch)
 
 
-def parse_diff(path: pathlib.Path) -> Patch:
+def parse_diff(handle: typing.IO) -> Patch:
     header: list[str] = []
     diff: FilePatch | None = None
     block: Blockpatch | None = None
     patch: Patch = {}
     mnemonic_top_dirs = tuple(map(set, ('ab', 'ci', 'co', 'cw', 'io', 'iw', 'ow', '12')))
 
-    with path.open() as f:
-        lines = iter(enumerate(ln.rstrip('\n') for ln in f))
-        for n, line in lines:
-            if line.startswith('--- '):
-                _, nextl = next(lines)
-                if not nextl.startswith('+++ '):
-                    raise ValueError(f'Missing +++ line after --- line at line {n}')
-                inout_files = tuple([
-                    pathlib.Path(string[4:].lstrip().split('\t', 1)[0]) for string in (line, nextl)
-                ])
-                # Drop mnemonics as first directory part
-                if set(file.parts[0] for file in inout_files) in mnemonic_top_dirs:
-                    inout_files = tuple(pathlib.Path(*file.parts[1:]) for file in inout_files)
+    lines = iter(enumerate(ln.rstrip('\n') for ln in handle))
+    for n, line in lines:
+        if line.startswith('--- '):
+            _, nextl = next(lines)
+            if not nextl.startswith('+++ '):
+                raise ValueError(f'Missing +++ line after --- line at line {n}')
+            inout_files = tuple([
+                pathlib.Path(string[4:].lstrip().split('\t', 1)[0]) for string in (line, nextl)
+            ])
+            # Drop mnemonics as first directory part
+            if set(file.parts[0] for file in inout_files) in mnemonic_top_dirs:
+                inout_files = tuple(pathlib.Path(*file.parts[1:]) for file in inout_files)
 
-                # We want either twice the same file or 1 file, 1 /dev/null -- no other combinations
-                if len(set(map(str, inout_files)) - {'/dev/null'}) != 1:
-                    raise ValueError(f'Incorrect file specification at line {n}')
+            # We want either twice the same file or 1 file, 1 /dev/null -- no other combinations
+            if len(set(map(str, inout_files)) - {'/dev/null'}) != 1:
+                raise ValueError(f'Incorrect file specification at line {n}')
 
-                diff = patch.setdefault(inout_files, [])
-                block = None
+            diff = patch.setdefault(inout_files, [])
+            block = None
 
-            elif diff is None:
-                header.append(line)
+        elif diff is None:
+            header.append(line)
 
-            elif line.startswith('@@ '):
-                _, block_header, _ = line.split('@@', 2)
-                block = []
-                diff.append((block_header.strip(), block))
+        elif line.startswith('@@ '):
+            _, block_header, _ = line.split('@@', 2)
+            block = []
+            diff.append((block_header.strip(), block))
 
-            elif block is None:
-                raise ValueError(f'Missing @@ header from diff block at line {n}')
+        elif block is None:
+            raise ValueError(f'Missing @@ header from diff block at line {n}')
 
-            elif line.startswith(('-', ' ', '+')):
-                if len(block) and block[-1][0] == line[0]:
-                    block[-1][1].append(line[1:])
-                else:
-                    block.append((line[0], [line[1:]]))
-
+        elif line.startswith(('-', ' ', '+')):
+            if len(block) and block[-1][0] == line[0]:
+                block[-1][1].append(line[1:])
             else:
-                raise ValueError(f'Malformed line at line {n}')
+                block.append((line[0], [line[1:]]))
 
-        return patch
+        elif line:
+            raise ValueError(f'Malformed line at line {n}')
+
+        else:
+            # If last line is empty, ignore it
+            try:
+                next(lines)
+            except StopIteration:
+                break
+            else:
+                raise ValueError(f'Malformed (empty) line at line {n}')
+
+    return patch
 
 
 def addon_diff(addon: gru.addon.Addon, orig_addon: gru.addon.Addon, out=sys.stdout) -> int:
@@ -158,15 +167,9 @@ def apply_patch(orig: str, patch: FilePatch) -> str:
     return ''.join(line_array[ord(char)] for char in result), values
 
 
-def addon_patch(addon: gru.addon.Addon, diff: pathlib.Path) -> tuple[int, int]:
-    try:
-        patch = parse_diff(diff)
-
-        if not all(str(file) == '/dev/null' or file.parts[0] == addon.folder.name for inout_files in patch for file in inout_files):
-            raise ValueError('Patch specifies changes outside of addon folder')
-    except Exception as err:
-        warnings.warn(f'Patch {diff.name} failed: {err}')
-        return 0, 0
+def addon_patch(addon: gru.addon.Addon, patch: Patch) -> tuple[int, int]:
+    if not all(str(file) == '/dev/null' or file.parts[0] == addon.folder.name for inout_files in patch for file in inout_files):
+        raise ValueError('Patch specifies changes outside of addon folder')
 
     n_changed_files = 0
     for (infile, outfile), changes in patch.items():
@@ -228,3 +231,14 @@ def addon_patch(addon: gru.addon.Addon, diff: pathlib.Path) -> tuple[int, int]:
         n_changed_files += 1
 
     return n_changed_files, len(patch)
+
+
+def addon_patch_file(addon: gru.addon.Addon, diff: pathlib.Path) -> tuple[int, int]:
+    try:
+        with diff.open() as f:
+            patch = parse_diff(f)
+    except Exception as err:
+        warnings.warn(f'Patch {diff.name} failed: {err}')
+        return 0, 0
+    else:
+        return addon_patch(addon, patch)

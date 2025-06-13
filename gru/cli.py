@@ -22,7 +22,7 @@ from .config import load_config, save_config, user_cache, display_config, update
 from .api import API
 from .addon import Addon
 from .install import Folder
-from .patch import addon_diff, addon_patch
+from .patch import addon_diff, addon_patch_file
 
 
 def get_config_bool(ctx, string):
@@ -114,7 +114,7 @@ def _display_folder(num, folder, gutter_width):
         f'Version: {folder.metadata["installed_version"]:10}',
     ]
     if 'Description' in folder.metadata:
-        infos.append(f'Description: {folder.metadata["description"]}')
+        infos.append(f'Description: {folder.metadata["Description"]}')
     _wrapped_display(gutter_width, infos)
     click.echo(' ' * gutter_width + 'NB: this add-on may be deprecated')
 
@@ -623,7 +623,7 @@ def patch(ctx, addon, patch):
             click.echo(f'No saved changes to be re-applied.')
             return
 
-    done, total = addon_patch(installed_addon, patch)
+    done, total = addon_patch_file(installed_addon, patch)
     if not total:
         click.echo(f'No changes to be apply in patch.')
     elif done == total:
