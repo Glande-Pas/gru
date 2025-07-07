@@ -15,7 +15,7 @@ import re
 from urllib.parse import quote as urllib_quote
 
 from .config import encoding_open
-from .addon import Addon, Dependency, atol
+from .addon import Addon, Dependency, atol, GARBAGE
 from .patch import addon_patch
 
 
@@ -186,8 +186,7 @@ class Folder:
         - a list of file infos from the zip, such that their extracted path ends up in addon.root
         """
         # NB: always ignore macos garbage
-        garbage = ('__MACOSX', '.DS_Store')
-        files = [info for info in zf.infolist() if not info.filename.startswith(garbage)]
+        files = [info for info in zf.infolist() if not info.filename.startswith(tuple(GARBAGE))]
         toplevels = {pathlib.Path(info.filename).parts[0] for info in files}
 
         # Try to find a single manifest at expected location with expected name: standard case

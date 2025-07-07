@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 import unicodedata
 
+GARBAGE = {'__MACOSX', '.DS_STORE'}
+
 
 def atol(val):
     """ Convert to int() with C atol semantics, i.e. ignore leading whitespace and stop at first non-numeric char """
@@ -74,8 +76,8 @@ class Addon:
     @property
     def files(self):
         return [
-            path.relative_to(self.folder) for path in self.folder.rglob('*')
-            if path.is_file() and not any(part.startswith('.') or part == '__MACOSX' for part in path.parts)
+            path for path in (path.relative_to(self.folder) for path in self.folder.rglob('*') if path.is_file())
+            if not any(part.startswith('.') or part in GARBAGE for part in path.parts)
         ]
 
 
@@ -83,7 +85,7 @@ class APIAddonInfo(Addon):
     invalid_chars = re.compile(r'[^\w-]')
 
     def __init__(self, id_, infos):
-        dirs = set(infos['directories']) - {'__MACOSX'}
+        dirs = set(infos['directories']) - GARBAGE
         if len(dirs) != 1 or {'lang', 'libs', 'EsoUI', 'gamedata'} & dirs:
             self.dir = self.slugify(infos['title'])
         else:
