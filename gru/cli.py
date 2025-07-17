@@ -337,9 +337,10 @@ def process_result(ctx, result, game, config_file):
 @main.command()
 @click.argument('addon', required=False, nargs=-1)
 @click.option('--auto-deps/--no-auto-deps', default=True)
+@click.option('--yes', '-y', 'batch', is_flag=True, default=False)
 @click.option('--opt/--no-opt', default=None, help='Include optional dependences')
 @click.pass_context
-def get(ctx, addon, auto_deps=True, opt=None):
+def get(ctx, addon, auto_deps=True, opt=None, batch=False):
     """ Find, download, and install an addon """
     api = ctx.obj['api']
     local = ctx.obj['local']
@@ -350,13 +351,22 @@ def get(ctx, addon, auto_deps=True, opt=None):
 
     addon_list = addon or [click.prompt(f'Addon to install', prompt_suffix=':\n>> ')]
 
-    for addon in addon_list:
-        addon = api.find(addon, local)
+    for addon_spec in addon_list:
+        addon = api.find(addon_spec, local)
         if not addon:
             click.echo('No corresponding addon found')
             click.echo()
+            if batch:
+                warnings.warn(f'Skipped install of unmatched addon {addon_spec}')
         if isinstance(addon, list):
-            addon = _prompt_addon(ctx, addon, 'Confirm installation?')
+            if not batch:
+                addon = _prompt_addon(ctx, addon, 'Confirm installation?')
+            elif len(addon) == 1:
+                addon = addon[0]
+            else:
+                click.echo(f'Ambiguous addon specificiation {addon_spec}, skipping')
+                warnings.warn(f'Skipped install of ambiguous addon {addon_spec}')
+                addon = None
         if not addon:
             continue
 
@@ -364,13 +374,18 @@ def get(ctx, addon, auto_deps=True, opt=None):
 
         # Try to reuse an existing install dir
         if installed_addon is not None and installed_addon.folder is not None:
-            if not _confirm(f'Addon found at {installed_addon.folder}, update?'):
+            if not batch and not _confirm(f'Addon found at {installed_addon.folder}, update?'):
                 click.echo('Nothing to do.')
                 continue
         else:
             installed_addon = Addon(addon.id, local.root / addon.dir)
 
-        result = local.install(installed_addon.merge(addon), api, _progress, deps=auto_deps, opt=opt)
+        try:
+            result = local.install(installed_addon.merge(addon), api, _progress, deps=auto_deps, opt=opt)
+        except KeyError as exc:
+            click.echo(f'Failed installing {addon_spec}: {type(exc).__name__} {exc}')
+            if not batch:
+                break
 
         if result is None:
             click.echo(f'Done installing {addon.metadata["title"]}')
