@@ -9,6 +9,7 @@ import functools
 import collections
 from collections.abc import Iterable, Mapping
 
+from .config import user_cache
 from .addon import APIAddonInfo
 
 
@@ -49,7 +50,7 @@ def _exception_root_cause(err):
 
 
 class API:
-    session = requests_cache.CachedSession('gru', expire_after=datetime.timedelta(hours=1))
+    session = requests_cache.CachedSession(user_cache('api'), expire_after=datetime.timedelta(hours=1))
 
     def _load(self, url, fallback=None):
         """ Load a page and return the JSON, ensure we use cached page if <1h old """

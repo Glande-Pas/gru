@@ -92,10 +92,11 @@ def user_cache(*args):
         base_dir = pathlib.Path(os.getenv('XDG_CACHE_HOME', '~/.cache')).expanduser()
 
     base_dir /= 'gru'
-    if not base_dir.exists():
-        base_dir.mkdir(parents=True)
+    base_dir.mkdir(parents=True, exist_ok=True)
 
-    return base_dir.joinpath(*args)
+    file = base_dir.joinpath(*args)
+    file.parent.mkdir(parents=True, exist_ok=True)
+    return file
 
 
 def user_config():

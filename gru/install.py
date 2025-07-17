@@ -14,7 +14,7 @@ import warnings
 import re
 from urllib.parse import quote as urllib_quote
 
-from .config import encoding_open
+from .config import encoding_open, user_cache
 from .addon import Addon, Dependency, atol, GARBAGE
 from .patch import addon_patch
 
@@ -290,18 +290,32 @@ class Folder:
         fname = f'{addon.dir}-{addon.metadata["version"]}.zip'
         url = url_override or self.url_template.format(id=addon.id) + urllib_quote(fname)
 
-        with requests.get(url, stream=True, allow_redirects=True) as dl:
-            size = int(dl.headers.get('content-length', 0))
-            # Try to get suggested filename from headers
-            for tok in map(str.strip, dl.headers.get('Content-disposition', '').split(';')):
-                if tok.startswith('filename='):
-                    fname = tok[10:].strip('"')
-                    break
+        with requests.head(url, allow_redirects=True) as check:
+            headers = {key.lower(): value for key, value in check.headers.items()}
 
-            # Download
-            zippath = self.root / fname
-            with open(zippath, 'wb') as fd:
-                self._download(dl, fd, progress(size, f'Downloading {fname}...'))
+        size = int(headers.get('content-length', 0))
+        if changed := headers.get('last-modified'):
+            changed = datetime.datetime.strptime(changed, r'%a, %d %b %Y %H:%M:%S %Z')
+        # Try to get suggested filename from headers
+        for tok in map(str.strip, headers.get('content-disposition', '').split(';')):
+            if tok.startswith('filename='):
+                fname = tok[10:].strip('"')
+                break
+
+        if (zippath := user_cache('dl', fname)).exists():
+            stat = zippath.stat()
+            # NB. this is correct on *nix and NTFS, but not FAT which uses local timezone
+            # Hopefully FAT is not used too much anymore? Otherwise we need a config() function to handle this
+            freshness = datetime.datetime.utcfromtimestamp(stat.st_mtime)
+            fresh = size == stat.st_size and changed and changed < freshness
+
+        # Download
+        if zippath.exists() and fresh:
+            print(f'Using cache {fname}')
+        else:
+            with requests.get(url, stream=True, allow_redirects=True) as dl:
+                with open(zippath, 'wb') as fd:
+                    self._download(dl, fd, progress(size, f'Downloading {fname}...'))
 
         # Default install dir -- requires a temporary addon object that’s not the RO-API one,
         # and can’t be the one initialized with metadata from the manifest
@@ -322,8 +336,6 @@ class Folder:
 
             extract_size = sum(getattr(info, 'file_size', 0) for info in extract)
             self._unzip(zf, extract, dest, progress(extract_size, f'Extracting  {fname}...'))
-
-        zippath.unlink()
 
         # Update our list of installed addons
         metadata = self.parse_manifest(addon.manifest)
