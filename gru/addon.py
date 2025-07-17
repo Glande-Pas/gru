@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import warnings
 import unicodedata
 
 GARBAGE = {'__MACOSX', '.DS_STORE'}
@@ -21,7 +22,7 @@ class Dependency:
 
 
 class Addon:
-    def __init__(self, id_, path, infos=None):
+    def __init__(self, id_: int | None, path: pathlib.Path | None, infos: dict | None = None):
         self.id = id_
         self.folder = path
         self.metadata = infos or {}
@@ -33,10 +34,7 @@ class Addon:
         else:
             assert getattr(self, 'dir', None) is not None, 'dir not set with id'
 
-    def alt_location(self, root: pathlib.Path):
-        return Addon(self.id, root / self.dir, self.metadata)
-
-    def merge(self, infos):
+    def merge(self, infos: Addon):
         if isinstance(infos, Dependency):
             return self
 
@@ -86,7 +84,11 @@ class APIAddonInfo(Addon):
 
     def __init__(self, id_, infos):
         dirs = set(infos['directories']) - GARBAGE
-        if len(dirs) != 1 or {'lang', 'libs', 'EsoUI', 'gamedata'} & dirs:
+        # TODO: assumption here of >1 dir is “naked” addon, but e.g. LibGroupBroadcast
+        # declares 2 top-levels: LibGroupBroadcast, LibGroupSocket
+        if {'lang', 'libs', 'EsoUI', 'gamedata'} & dirs:
+            self.dir = self.slugify(infos['title'])
+        elif len(dirs) != 1:
             self.dir = self.slugify(infos['title'])
         else:
             self.dir = infos['directories'][0]

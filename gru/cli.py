@@ -526,8 +526,9 @@ def list_(ctx):
 
 
 @main.command(help='export installed add-ons')
+@click.option('--recurse', '-r', help='Recurse into subdirectories (will show private libraries)', default=False)
 @click.pass_context
-def export(ctx):
+def export(ctx, recurse=False):
     api = ctx.obj['api']
     local = ctx.obj['local']
 
@@ -538,8 +539,11 @@ def export(ctx):
     export_path = local.root / '.gru' / 'addons.txt'
     export_path.parent.mkdir(parents=True, exist_ok=True)
     with export_path.open('w') as out:
+        addon_dirs = {addon.folder.resolve() for addon in local.installed}
         for addon in local.installed:
-            print(f'{addon.dir} = {addon.metadata["installed_version"]}', file=out)
+            # Maybe allow recursive if parent is not an addon
+            if recurse or addon.folder.parent.resolve() not in addon_dirs:
+                print(f'{addon.dir} = {addon.metadata["installed_version"]}', file=out)
 
     click.echo(f'All {len(local.installed)} addon(s) exported to:\n{export_path.resolve()}')
     show_warnings(ctx)
@@ -608,7 +612,7 @@ def diff(ctx, addon, url=None):
     result_path = local.root / '.gru' / f'{addon.dir}.patch'
     result_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with unmodified_addon(api, local, addon, url=url) as ref_addon, result_path.open('w') as out:
+    with local.unmodified_addon(addon, api, url=url) as ref_addon, result_path.open('w') as out:
         nfiles = addon_diff(ref_addon, addon, out=out)
 
     if nfiles > 0:

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import collections
+import contextlib
+import tempfile
 import pathlib
 import zipfile
 import requests
@@ -11,6 +13,7 @@ import datetime
 import functools
 import operator
 import warnings
+import shutil
 import re
 from urllib.parse import quote as urllib_quote
 
@@ -46,9 +49,20 @@ class Folder:
         #: A list of Addon() instances that have local file info and are enriched as appropriate with API info
         self.installed = []
 
-    def alt_location(self, path: pathlib.Path) -> Folder:
-        """ Returns a similarly-configured install folder at a different location. """
-        return Folder('game', {'game.addons': path, 'game.links': self.url_template})
+    @contextlib.contextmanager
+    def temp_root(self):
+        """ Yields a similarly-configured install folder at a temporary location. """
+        with tempfile.TemporaryDirectory() as tempdir:
+            yield Folder('game', {'game.addons': tempdir, 'game.links': self.url_template})
+
+    @contextlib.contextmanager
+    def unmodified_addon(self, addon, api, url=None):
+        with self.temp_root() as temp_root:
+            temp_location = temp_root.root.joinpath(addon.dir)
+            temp_addon = Addon(addon.id, temp_location, addon.metadata)
+            temp_root.unpack(temp_addon, api, url_override=url)
+            yield temp_addon
+            shutil.rmtree(temp_location)
 
     def scan(self, api=None):
         self.installed = self._scan(api)
@@ -93,11 +107,13 @@ class Folder:
 
             addon = Addon(None, path, infos)
             try:
-                if api is None:
-                    raise StopIteration
-                addon.merge(api.dir(path.name))
-            except (StopIteration, ValueError) as err:
-                if not isinstance(err, StopIteration):
+                if api:
+                    addon.merge(api.dir(path.name))
+            except ValueError as err:
+                containing = {dir_ for dir_ in path.parents if dir_.is_relative_to(self.root)}
+                existing = {alt.folder for alt in results}
+                # Skip lookup error warning for sub-addon
+                if not (containing & existing):
                     warnings.warn(f'Addon at {path.relative_to(self.root)} not found in database')
 
             results.append(addon)
@@ -187,7 +203,7 @@ class Folder:
         """
         # NB: always ignore macos garbage
         files = [info for info in zf.infolist() if not info.filename.startswith(tuple(GARBAGE))]
-        toplevels = {pathlib.Path(info.filename).parts[0] for info in files}
+        toplevels = collections.Counter(pathlib.Path(info.filename).parts[0] for info in files)
 
         # Try to find a single manifest at expected location with expected name: standard case
         expected_manifest = any(f.filename in {f'{addon.dir}/{addon.dir}.txt', f'{addon.dir}/{addon.dir}.addon'} for f in files)
