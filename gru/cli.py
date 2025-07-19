@@ -11,16 +11,18 @@ import asyncio
 import pathlib
 import locale
 import shutil
+import struct
 import click
 import math
 import sys
 import os
+import re
 import click_repl
 import prompt_toolkit.history as prompt_history
 
 from .config import load_config, save_config, user_cache, display_config, update_config
 from .api import API
-from .addon import Addon
+from .addon import DisplayAddonProtocol
 from .install import Folder
 from .patch import addon_diff, addon_patch_file
 
@@ -81,42 +83,81 @@ def _wrapped_display(gutter_width, *infos):
         click.echo(pfx + batch)
 
 
-def _display_addon(ctx, num, addon, gutter_width):
+_eso_colored_text = re.compile(r'\|c(?P<color>[0-9a-fA-F]{6})(?P<text>[^|]+)\|r')
+def _render_eso_text(text):
+    return _eso_colored_text.sub(lambda match: click.style(
+        match.group('text'),
+        fg=struct.unpack('BBB', bytes.fromhex(match.group('color')))
+    ), text)
+
+def _styled_width(text, width):
+    text = _render_eso_text(text)
+    return text + ' ' * max(0, width - len(click.unstyle(text)))
+
+def _display_installed(ctx, num, addon, gutter_width):
     """ Show addon info from the API endpoint """
     click.echo()
-    click.echo(f'{num:{gutter_width}}{addon.metadata["title"]} (id {addon.id})' + (
-        '' if addon.folder is None else
-        f'  [installed]' if not addon.can_update() else
-        f'  [installed - {click.style("update available", bold=True)}]'
-    ))
+    update = '' if not addon.can_update else f'{click.style("update available", bold=True)} - '
+    infos = addon.infos
+    parent = f' as part of {infos.title}' if len(infos.folders) > 1 else f' as {infos.title}' if addon.title.strip() != infos.title.strip() else ''
+    click.echo(f'{num:{gutter_width}}{_render_eso_text(addon.title)} [{update}installed{parent}]')
     # TODO: Based on verbosity level, only click.echo a number of those:
     _wrapped_display(gutter_width, [
-        f'Author: {addon.metadata["author"]:20}',
-        f'Version: {addon.metadata["version" if addon.folder is None else "installed_version"]:10}',
-        f'Updated: {addon.metadata["date"].strftime("%x"):10}',
-        f'Category: {" > ".join(ctx.obj["api"].cat_name_hierarchy(addon.metadata["category"]))}',
+        f'Author: {_styled_width(addon.author, 25)}',
+        f'Version: {addon.version:10}',
+        f'Updated: {addon.infos.metadata["date"].strftime("%x"):10}',
     ], [
-        f'Directory: {addon.dir:40}',
-        f'Favorites: {addon.metadata["favorites"]:8n}',
-        f'Downloads: {addon.metadata["downloads"]:n} [{addon.metadata["monthly"]:n} / Month]',
+        f'Category: {" > ".join(ctx.obj["api"].cat_name_hierarchy(addon.infos.metadata["category"])):23}',
+        f'Favorites: {addon.infos.metadata["favorites"]:<8n}',
+        f'Downloads: {addon.infos.metadata["downloads"]:<n} [{addon.infos.metadata["monthly"]:<n} / Month]',
+    ], [
+        f'Directory: {addon.folder.relative_to(ctx.obj["local"].root)}',
+    ])
+    click.echo(' ' * gutter_width + addon.infos.metadata['link'])
+
+
+def _display_addon_info(ctx, num, addon, gutter_width):
+    """ Show addon info from the API endpoint """
+    # TODO: Based on verbosity level, only click.echo a number of those:
+    title = f'{num:{gutter_width}}{addon.title}'
+    if addon.folders:
+        dirs = ", ".join(str(dir_.relative_to(ctx.obj["local"].root)) for dir_ in addon.folders)
+        title += ' - ' + click.style(f'installed at: {dirs}', bold=True)
+    click.echo()
+    click.echo(title)
+    _wrapped_display(gutter_width, [
+        f'Author: {addon.author:25}',
+        f'Version: {addon.version:10}',
+        f'Updated: {addon.metadata["date"].strftime("%x"):10}',
+    ], [
+        f'Category: {" > ".join(ctx.obj["api"].cat_name_hierarchy(addon.metadata["category"])):23}',
+        f'Favorites: {addon.metadata["favorites"]:<8n}',
+        f'Downloads: {addon.metadata["downloads"]:<n} [{addon.metadata["monthly"]:<n} / Month]',
     ])
     click.echo(' ' * gutter_width + addon.metadata['link'])
 
 
-def _display_folder(num, folder, gutter_width):
+def _display_folder(ctx, num, folder, gutter_width):
     """ Show addon info from a local folder that was not matched with the API endpoint """
     click.echo()
-    click.echo(f'{num:{gutter_width}}{folder.metadata["title"]} (id not found)  [installed]')
     # Based on verbosity level, only click.echo a number of those:
-    # TODO: move to an “Addon” object
+    parent_text = ''
+    while (parent := folder.parent) is not None:
+        if parent.id:
+            parent_text = f' as sub-addon of {parent.infos.title}'
+            break
+    click.echo(f'{num:{gutter_width}}{_render_eso_text(folder.title)}  [installed{parent_text}]')
     infos = [
-        f'Author: {folder.metadata["author"]:20}',
-        f'Version: {folder.metadata["installed_version"]:10}',
+        f'Author: {_styled_width(folder.author, 20)}',
+        f'Version: {folder.version:10}',
+    ], [
+        f'Directory: {folder.folder.relative_to(ctx.obj["local"].root)}',
     ]
     if 'Description' in folder.metadata:
         infos.append(f'Description: {folder.metadata["Description"]}')
-    _wrapped_display(gutter_width, infos)
-    click.echo(' ' * gutter_width + 'NB: this add-on may be deprecated')
+    _wrapped_display(gutter_width, *infos)
+    if folder.parent is not None:
+        click.echo(' ' * gutter_width + 'NB: this add-on could not be matched online and may be deprecated')
 
 
 def _display_unknown(num, folder, gutter_width):
@@ -126,22 +167,21 @@ def _display_unknown(num, folder, gutter_width):
     click.echo(' ' * gutter_width + f'NB: this add-on may be deprecated')
 
 
-def _display(ctx, results, num_from=0):
+def _display(ctx, results: list[AddonInfo | InstalledAddon], num_from=0):
     """ Show a list of addons """
     api = ctx.obj['api']
     gutter_width = 2 + math.ceil(math.log(len(results), 10))
 
     for n, addon in enumerate(results, num_from + 1):
         num = f'{n:{gutter_width - 2}}: ' if len(results) > 1 else ''
-        if addon.id is not None:
-            local = ctx.obj['local'].find_installed(addon)
-            if local is not None:
-                addon = local.merge(addon)
-            _display_addon(ctx, num, addon, gutter_width)
-        elif addon.folder is not None:
-            _display_folder(num, addon, gutter_width)
+        if addon.is_local and addon.id is not None:
+            _display_installed(ctx, num, addon, gutter_width)
+        elif addon.is_local:
+            _display_folder(ctx, num, addon, gutter_width)
         else:
-            _display_unknown(num, addon, gutter_width)
+            _display_addon_info(ctx, num, addon, gutter_width)
+        #else:
+        #	_display_unknown(num, addon, gutter_width)
 
     click.echo()
 
@@ -352,6 +392,7 @@ def get(ctx, addon, auto_deps=True, opt=None, batch=False):
     addon_list = addon or [click.prompt(f'Addon to install', prompt_suffix=':\n>> ')]
 
     for addon_spec in addon_list:
+
         addon = api.find(addon_spec, local)
         if not addon:
             click.echo('No corresponding addon found')
@@ -370,27 +411,34 @@ def get(ctx, addon, auto_deps=True, opt=None, batch=False):
         if not addon:
             continue
 
+        for ad in local.installed:
+            if ad.dir == addon.dir:
+                break
+        else:
+            print(f'No addon with dir {addon.dir}')
+
         installed_addon = local.find_installed(addon)
 
         # Try to reuse an existing install dir
-        if installed_addon is not None and installed_addon.folder is not None:
+        if installed_addon is not None:
             if not batch and not _confirm(f'Addon found at {installed_addon.folder}, update?'):
                 click.echo('Nothing to do.')
                 continue
+            install_path = installed_addon.folder
         else:
-            installed_addon = Addon(addon.id, local.root / addon.dir)
+            install_path = None
 
         try:
-            result = local.install(installed_addon.merge(addon), api, _progress, deps=auto_deps, opt=opt)
+            result = local.install(addon, api, _progress, path=install_path, deps=auto_deps, opt=opt)
         except KeyError as exc:
             click.echo(f'Failed installing {addon_spec}: {type(exc).__name__} {exc}')
             if not batch:
                 break
 
         if result is None:
-            click.echo(f'Done installing {addon.metadata["title"]}')
+            click.echo(f'Done installing {addon.title}')
         else:
-            click.echo(f'Done installing {addon.metadata["title"]} and {result} dependence(s)')
+            click.echo(f'Done installing {addon.title} and {result} dependence(s)')
     show_warnings(ctx)
 
 
@@ -408,6 +456,11 @@ def remove(ctx, addon, clean_deps=False, opt=None):
     if opt is None:
         opt = get_config_bool(ctx, '{game}.addons.optional')
 
+    # TODO: remove one of several matches e.g. lib media provider?
+    # prefer
+    # - unmatched
+    # - top-level / non-subaddon ?
+    # TODO: handle removal of several linked local addons (same online addon)
     installed_addon = _find_installed(ctx, api, local, addon, 'Confirm removal?')
     if installed_addon is None:
         show_warnings(ctx)
@@ -416,9 +469,9 @@ def remove(ctx, addon, clean_deps=False, opt=None):
     nremoved = local.remove(installed_addon, deps=clean_deps, opt=opt)
 
     if not clean_deps:
-        click.echo(f'Removed addon {installed_addon.metadata["title"]}.')
+        click.echo(f'Removed addon {installed_addon.title}.')
     else:
-        click.echo(f'Removed addon {installed_addon.metadata["title"]} and {nremoved} unused dependence(s).')
+        click.echo(f'Removed addon {installed_addon.title} and {nremoved} unused dependence(s).')
     show_warnings(ctx)
 
 
@@ -539,11 +592,9 @@ def export(ctx, recurse=False):
     export_path = local.root / '.gru' / 'addons.txt'
     export_path.parent.mkdir(parents=True, exist_ok=True)
     with export_path.open('w') as out:
-        addon_dirs = {addon.folder.resolve() for addon in local.installed}
         for addon in local.installed:
-            # Maybe allow recursive if parent is not an addon
-            if recurse or addon.folder.parent.resolve() not in addon_dirs:
-                print(f'{addon.dir} = {addon.metadata["installed_version"]}', file=out)
+            if recurse or addon.parent is None:
+                print(f'{addon.dir} = {addon.version}', file=out)
 
     click.echo(f'All {len(local.installed)} addon(s) exported to:\n{export_path.resolve()}')
     show_warnings(ctx)
@@ -584,7 +635,7 @@ def unmodified_addon(api: gru.api.API, local: gru.install.Folder, addon: gru.add
         # Be sure to compare to installed version not up-to-date upstream
         ref_local.unpack(ref_addon, api, url_override=url)
 
-        if ref_addon.metadata['installed_version'] != addon.metadata['installed_version']:
+        if ref_addon.metadata['version'] != addon.metadata['version']:
             raise ValueError('Downloaded addon does not have same version as installed addon!')
 
         yield ref_addon
@@ -603,10 +654,10 @@ def diff(ctx, addon, url=None):
         show_warnings(ctx)
         return
 
-    if not url and addon.metadata['version'] != addon.metadata['installed_version']:
+    if not url and addon.info.metadata['version'] != addon.metadata['version']:
         click.echo(f'Addon is out of date!  Can not fetch unmodified source automatically.')
         click.echo()
-        url = click.prompt(f'Please manually specify {addon.metadata["installed_version"]} download url',
+        url = click.prompt(f'Please manually specify {addon.version} download url',
                               prompt_suffix=':\n>> ', type=str)
 
     result_path = local.root / '.gru' / f'{addon.dir}.patch'

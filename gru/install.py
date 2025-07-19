@@ -1,4 +1,9 @@
-""" Module handling an install location """
+""" Module handling an install location
+
+AddOns are identified by their manifest matching the directory name: {dir}/{dir}.txt or {dir}/{dir}.txt.
+However, this does not always match what zip file structures contain.
+
+"""
 
 from __future__ import annotations
 
@@ -11,25 +16,34 @@ import requests
 import shutil
 import datetime
 import functools
-import operator
 import warnings
 import shutil
 import re
 from urllib.parse import quote as urllib_quote
 
 from .config import encoding_open, user_cache
-from .addon import Addon, Dependency, atol, GARBAGE
+from .addon import InstalledAddon, Dependency, GARBAGE, MANIFEST_EXTS
 from .patch import addon_patch
+
+from typing import Protocol
+from collections.abc import Iterator, Iterable
+
+
+class ProgressProtocol(Protocol):
+    def __init__(self, size: int, message: str): ...
+    def __enter__(self) -> SilentProgress: ...
+    def __exit__(self, *args, **kwargs): ...
+    def update(self, size: int): ...
 
 
 class SilentProgress:
-    """ NOP class "implementing" progress """
+    """ NOP class "implementing" progress as context manager """
 
-    def __init__(self, size, message):
+    def __init__(self, size: int, message: str):
         """ Display progress with given total size and message """
         pass
 
-    def __enter__(self):
+    def __enter__(self) -> SilentProgress:
         """ Start of progress """
         return self
 
@@ -37,41 +51,56 @@ class SilentProgress:
         """ End of progress """
         pass
 
-    def update(self, size):
+    def update(self, size: int):
         """ Update progress with given chunk size """
         pass
 
 
 class Folder:
-    def __init__(self, game, config):
-        self.root = pathlib.Path(config.get(f'{game}.addons', 'root'))
-        self.url_template = config.get(f'{game}.links', 'download')
-        #: A list of Addon() instances that have local file info and are enriched as appropriate with API info
-        self.installed = []
+    def __init__(self, game: str, config: configparser.ConfigParser):
+        self.root: pathlib.Path = pathlib.Path(config.get(f'{game}.addons', 'root'))
+        self.url_template: str = config.get(f'{game}.links', 'download')
+        #: A list of addons that have local file info and are enriched as appropriate with API info
+        self._installed: dict[pathlib.Path, gru.addon.InstalledAddon] = {}
+
+    @property
+    def installed(self) -> Iterable[gru.addon.InstalledAddon]:
+        return self._installed.values()
 
     @contextlib.contextmanager
-    def temp_root(self):
+    def temp_root(self) -> Iterator[Folder]:
         """ Yields a similarly-configured install folder at a temporary location. """
         with tempfile.TemporaryDirectory() as tempdir:
             yield Folder('game', {'game.addons': tempdir, 'game.links': self.url_template})
 
     @contextlib.contextmanager
-    def unmodified_addon(self, addon, api, url=None):
+    def unmodified_addon(self, addon: gru.addon.AddonInfo, api: gru.api.API, url: str | None = None) -> Iterator[gru.addon.InstalledAddon]:
         with self.temp_root() as temp_root:
-            temp_location = temp_root.root.joinpath(addon.dir)
-            temp_addon = Addon(addon.id, temp_location, addon.metadata)
-            temp_root.unpack(temp_addon, api, url_override=url)
+            temp_location = temp_root.root / addon.dir
+            temp_addon = temp_root.unpack(addon, api, url_override=url)
             yield temp_addon
             shutil.rmtree(temp_location)
 
-    def scan(self, api=None):
-        self.installed = self._scan(api)
+    def scan(self, api: gru.api.API | None = None):
+        self._installed = self._scan(self.root, api)
 
-    def _scan(self, api=None):
+    def _scan(self, root: pathlib.Path, api: gru.api.API | None = None) -> dict[pathlib.Path, gru.addon.InstalledAddon]:
         """ List the root path """
-        results = []
+        results: dict[pathlib.Path, gru.addon.InstalledAddon] = {}
+
+        # Additional housekeeping for partial parsing
+        if root != self.root:
+            if not root.relative_to(self.root):
+                raise PermissionError('Can only scan within install folder')
+            for parent_dir in root.parents:
+                if parent_dir == self.root:
+                    break
+                elif path in getattr(self, '_installed', {}):
+                    results[path] = self._installed[path]
+                    break
+
         try:
-            candidates = collections.deque(self.root.iterdir())
+            candidates = collections.deque([root] if root != self.root else self.root.iterdir())
         except PermissionError:
             warnings.warn('Skipping folder scan due to permission errors.')
             return results
@@ -89,106 +118,43 @@ class Folder:
                     warnings.warn(f'Skipping folder scan {path.relative_to(self.root)} due to permission errors.')
                     pass
 
-            for ext in ('.txt', '.addon'):
-                manifest = path / f'{path.name}{ext}'
-                try:
-                    if manifest.exists():
-                        break
-                except PermissionError as err:
-                    pass
-            else:
-                continue
-
+            parent = next((results[dir_] for dir_ in path.parents if dir_ in results), None)
             try:
-                infos = self.parse_manifest(manifest)
+                addon = InstalledAddon(path, parent)
+            except FileNotFoundError:
+                # No manifest, ignore directory
+                continue
             except Exception as err:
                 warnings.warn(f'Skipping addon at {path.relative_to(self.root)} due to {type(err).__name__} {err}')
                 continue
 
-            addon = Addon(None, path, infos)
             try:
                 if api:
-                    addon.merge(api.dir(path.name))
-            except ValueError as err:
-                containing = {dir_ for dir_ in path.parents if dir_.is_relative_to(self.root)}
-                existing = {alt.folder for alt in results}
-                # Skip lookup error warning for sub-addon
-                if not (containing & existing):
+                    addon.link(api.dir(path.name))
+            except FileNotFoundError as err:
+                # Only warn for lookup error on top-level addons
+                if parent is None:
                     warnings.warn(f'Addon at {path.relative_to(self.root)} not found in database')
 
-            results.append(addon)
+            results[path] = addon
+
+        # Now we may have several addons claiming ownership of the same directories
         return results
 
-    def filter_installed(self, addons):
-        # Do not match up by directory as it is flaky, reuse previous matching results through ids
-        installed = {addon.id: addon for addon in self.installed if addon is not None}
-        return [installed[addon.id].merge(addon) for addon in addons if addon.id in installed]
-
-    def check_installed(self, addons):
-        # Do not match up by directory as it is flaky, reuse previous matching results through ids
-        installed = {addon.id: addon for addon in self.installed if addon is not None}
-        return [installed[addon.id].merge(addon) if addon.id in installed else addon for addon in addons]
-
-    def find_installed(self, addon, installed=None, version=0):
-        if installed is None:
-            installed = self.installed
-
-        for folder in installed:
-            if folder.dir == addon.dir and folder.metadata['dep_version'] >= version:
-                return folder
+    def find_installed(self, spec: gru.addon.Dependency | gru.addon.AddonInfo) -> gru.addon.InstalledAddon | None:
+        if isinstance(spec, Dependency):
+            for folder in self._installed.values():
+                if folder.dir == spec.dir and folder.dep_version >= spec.dep_version:
+                    return folder
         else:
-            return None
+            for folder in self._installed.values():
+                if folder.id == spec.id:
+                    return folder
 
     def __repr__(self):
         return f'Folder({self.root})'
 
-    def parse_manifest(self, manifest_path):
-        """ Parse the manifest file """
-        # Parse metadata handling multiple line entries
-        metadata = {}
-        with encoding_open(manifest_path) as manifest:
-            for line in manifest:
-                if line.startswith('## ') and len(line) > 4:
-                    try:
-                        key, val = line.lstrip('#').split(':', 1)
-                    except ValueError:
-                        continue
-                    metadata.setdefault(key.strip(), []).append(val.strip())
-
-        metadata = {key: ' '.join(val) for key, val in metadata.items()}
-        missing_mandatory_keys = {'Title', 'APIVersion'} - metadata.keys()
-
-        # Now handle all interesting metadata
-        infos = {}
-        infos['dep_version'] = atol(metadata.get('AddOnVersion', '1'))
-        infos['api'] = [atol(api) for api in metadata.pop('APIVersion').split()]
-        infos['installed_version'] = metadata.pop('Version', '')
-        assert 1 <= len(infos['api']) <= 2 and 100003 <= min(infos['api']) and max(infos['api']) <= 999999, \
-            f'Unexpected API Version format {infos["api"]!r}'
-
-        islib = metadata.pop('IsLibrary', 'false').lower()
-        assert islib in {'true', 'false'}, f'Unexpected value for IsLibrary {islib!r}'
-        infos['library'] = islib == 'true'
-
-        infos['deps'] = [Dependency(name, atol(version[0]) if version else 0) for name, *version in (
-            dep.split('>=') for dep in metadata.pop('DependsOn', '').split()
-        )]
-        infos['optdeps'] = [Dependency(name, atol(version[0]) if version else 0) for name, *version in (
-            dep.split('>=') for dep in metadata.pop('OptionalDependsOn', '').split()
-        )]
-
-        # Whatever remains: title, author, etc.
-        infos.update({key.lower(): val for key,
-                     val in metadata.items() if key.lower() not in infos})
-
-        # NB. emit warning last
-        if missing_mandatory_keys:
-            warnings.warn(f'Missing mandatory key(s) {", ".join(map(repr, missing_mandatory_keys))}'
-                 f' in {manifest_path.relative_to(self.root)}')
-
-        return infos
-
-    def _inspect_bundle(self, addon, zf, api):
+    def _inspect_bundle(self, path: pathlib.Path, zf: zipfile.ZipFile, api: gru.api.API) -> tuple[pathlib.Path, list[pathlib.Path], list[tuple[pathlib.Path, bool, int]]]:
         """ This is the annoying bit where we need to handle non-standard zip bundles
 
         General logic:
@@ -199,65 +165,76 @@ class Folder:
 
         Returns a tuple of:
         - a destination directory for zip contents,
+        - a lits of directories to remove
         - a list of file infos from the zip, such that their extracted path ends up in addon.root
         """
         # NB: always ignore macos garbage
-        files = [info for info in zf.infolist() if not info.filename.startswith(tuple(GARBAGE))]
-        toplevels = collections.Counter(pathlib.Path(info.filename).parts[0] for info in files)
+        files = [(pathlib.Path(info.filename), info.is_dir(), getattr(info, 'file_size', 0)) for info in zf.infolist() if not info.filename.startswith(tuple(GARBAGE))]
+        # Ignore files that would end up outside target directory
+        path = path.resolve()
+        files = [(fn, *_) for fn, *_ in files if (path / fn).resolve(strict=False).is_relative_to(path)]
+        # Extract specific files we’re interested in
+        manifests = {fn.with_suffix('') for fn, *_ in files if (fn.stem == fn.parent.name or len(fn.parts) == 1) and fn.suffix in MANIFEST_EXTS}
+        toplevels = collections.Counter(fn.parts[0] for fn, *_ in files)
 
         # Try to find a single manifest at expected location with expected name: standard case
-        expected_manifest = any(f.filename in {f'{addon.dir}/{addon.dir}.txt', f'{addon.dir}/{addon.dir}.addon'} for f in files)
+        expected_manifest = pathlib.Path(path.name, path.name) in manifests
         if expected_manifest and len(toplevels) == 1:
-            return addon.folder.parent, files
+            return path.parent, [path], files
 
-        # Try to find a single manifest at expected location with any name
-        manifest_depth1 = [f.filename for f in files if re.match(r'([^/]+)/\1.(txt|addon)$', f.filename)]
+        # Try to find a single manifest at expected location with any name: really should not happen
+        manifest_depth1 = [fn for fn in manifests if len(fn.parts) == 2]
         if len(manifest_depth1) == 1 and len(toplevels) == 1:
-            addon.dir = pathlib.Path(manifest_depth1[0]).stem
-            warnings.warn(f'Using {addon.dir} as install dir instead of {addon.folder.name}')
-            addon.folder = addon.folder.parent / addon.dir
-            return addon.folder.parent, files
+            warnings.warn(f'Using {manifest_depth1[0].name} as install dir instead of {path.name}')
+            path = path.parent / manifest_depth1[0].name
+            return path.parent, [path], files
 
-        # Try to find a single top-level manifest with expected name
-        if any(f.filename in {f'{addon.dir}.txt', f'{addon.dir}.addon'} for f in files):
-            warnings.warn(f'Addon bundle missing top-level dir, prepending {addon.dir}/ to zip contents')
-            return addon.folder, files
+        # Try to find a single top-level manifest with expected name: missing top-level directory
+        if pathlib.Path(path.name) in manifests:
+            warnings.warn(f'Addon bundle missing top-level dir, prepending {path.name}/ to zip contents')
+            return path, [path], files
 
         # Try to find a single top-level manifest with any name
-        manifest_depth0 = [f.filename for f in files if re.match(r'([^/]+).(txt|addon)$', f.filename)]
+        manifest_depth0 = [fn for fn in manifests if len(fn.parts) == 1]
         # If needed, try to reduce top-level manifest candidates to files whose stem appears in zip’s name
         # i.e. {addon}.txt in {addon.zip}, {addon}-{version}.zip, {addon}r{release}.zip, etc.
         if len(manifest_depth0) > 1:
-            manifest_depth0 = [f for f in manifest_depth0 if zf.filename.startswith(pathlib.Path(f).stem)]
+            manifest_depth0 = [fn for fn in manifest_depth0 if zf.filename.startswith(fn.name)]
 
         if len(manifest_depth0) == 1:
-            addon.dir = pathlib.Path(manifest_depth0[0]).stem
-            warnings.warn(f'Using {addon.dir} as install dir instead of {addon.folder.name}')
-            addon.folder = addon.folder.parent / addon.dir
-            warnings.warn(f'Addon bundle missing top-level dir, prepending {addon.dir}/ to zip contents')
-            return addon.folder, files
+            warnings.warn(f'Addon bundle missing top-level dir and unexpected manifest name, prepending {manifest_depth0[0].name}/ to zip contents, instead of {path.name}')
+            path = path.parent / manifest_depth0[0].name
+            return path, [path], files
 
         # Try to find any manifest? Do not take into account non-single top-level .txt files
-        manifest_depth1plus = manifest_depth1 + sorted(
-            (f.filename for f in files if re.search(r'/([^/]+)/\1.(txt|addon)$', f.filename) is not None),
-            key=lambda f: f.count('/')
-        )
+        manifest_depth1plus = [fn for fn in manifests if len(fn.parts) > 1]
 
         if not manifest_depth1plus:
-            # TODO: if it’s a single Foo/Foo.lua, can we provide a template manifest? We don’t know API version
             raise ValueError(f'No addon manifest in bundle {zf.filename}')
 
+        # Try to match zip contents to where addon is already installed
+        # E.g. we are updating Foo at {root}/dir/Foo/Foo.txt, zip contains (Foo/Foo.txt, Bar/): install at {root}/dir
+        if len(toplevels) > 1:
+            for parent in path.parents:
+                if parent == self.root or not parent.is_relative_to(self.root):
+                    break
+                siblings = [parent / top for top in toplevels]
+                if all(dir_.exists() for dir_ in siblings):
+                    warnings.warn(f'Found local install matching non-standard zip at {parent}, installing under {parent}')
+                    return parent, siblings, files
+
         # Some addons bundle gamedata, EsoUI (etc) as top-level folders, install to a subdirectory
-        if len(toplevels) > 1 and not all(f'{name}/{name}.txt' in manifest_depth1 or f'{name}/{name}.addon' in manifest_depth1 for name in toplevels):
-            warnings.warn(f'Multiple-directory addon, prepending {addon.dir}/ to zip contents')
-            return addon.folder, files
+        if len(toplevels) > 1 and not all(pathlib.Path(name, name) in manifest_depth1 for name in toplevels):
+            warnings.warn(f'Multiple-directory addon, prepending {path.name}/ to zip contents')
+            return path, [path], files
 
         # We have a guess of what we’re really installing -- does not really matter in terms of addon clashes as it’s all 1 dir
         if len(toplevels) == 1:
-            addon.dir = pathlib.Path(manifest_anydepth[0]).stem
-            addon.folder = addon.folder.parent / toplevels.pop()
-            warnings.warn(f'Using {addon.dir} as addon dir, installing under {addon.folder.name}')
-            return addon.folder.parent, files
+            top_dir = next(iter(toplevels))
+            if top_dir != path.name:
+                warnings.warn(f'Using {top_dir} as addon dir, installing under {top_dir}')
+                path = path.parent / top_dir
+            return path.parent, [path], files
 
         # So now we know we have several top-level addons, i.e. risk of clashing
         # install all directories that resolve to this addon (bundle’s main addon) or to no addon (not standalone)
@@ -271,39 +248,39 @@ class Folder:
                     toplevels.remove(dir_)
 
         if len(toplevels) > 1:
-            warnings.warn(f'Installing {len(toplevels)} addons as part of {addon.dir}: {", ".join(toplevels)}')
-        return addon.folder.parent, [info for info in files if pathlib.Path(info.filename).parts[0] in toplevels]
+            warnings.warn(f'Installing {len(toplevels)} addons as part of {path.name}: {", ".join(toplevels)}')
+        return path.parent, [path.parent / top for top in toplevels], [(fn, *_) for fn, *_ in files if fn.parts[0] in toplevels]
 
-    def _download(self, dl, fd, progress):
+    def _download(self, dl: requests.Response, fd: typing.BinaryIO, progress: ProgressProtocol):
         with progress as prog:
             for chunk in dl.iter_content(chunk_size=1024):
                 fd.write(chunk)
                 prog.update(len(chunk))
 
-    def _unzip(self, zf, fileinfos, dest, progress):
+    def _unzip(self, zf: zipfile.ZipFile, files: list[tuple[pathlib.Path, bool, int]], dest: pathlib.Path, progress: ProgressProtocol):
+        dest = dest.resolve()
+        dest.mkdir(parents=True, exist_ok=True)
         with progress as prog:
-            for info in fileinfos:
-                filename = dest.joinpath(info.filename).resolve()
-                if not filename.is_relative_to(dest):
+            for file, is_dir, size in files:
+                file_dest = (dest / file).resolve()
+                if not file_dest.is_relative_to(dest):
                     continue
 
-                (filename if info.is_dir() else filename.parent).mkdir(exist_ok=True, parents=True)
-                if info.is_dir():
+                if is_dir:
+                    file_dest.mkdir(exist_ok=True, parents=True)
                     continue
 
-                with zf.open(info, 'r') as zfreader, open(filename, 'wb') as out:
+                file_dest.parent.mkdir(exist_ok=True, parents=True)
+                with zf.open(str(file), 'r') as zfreader, open(file_dest, 'wb') as out:
                     shutil.copyfileobj(zfreader, out)
-                prog.update(info.file_size)
+                prog.update(size)
 
-    def unpack(self, addon, api, progress=None, url_override=None):
+    def unpack(self, addon: gru.addon.AddonInfo, api: gru.api.API, progress: type[ProgressProtocol] = SilentProgress, path : pathlib.Path | None = None, url_override: str | None = None) -> dict[pathlib.Path, gru.addon.InstalledAddon]:
         """ Download and install, calls back to `progress` (100% until return means unzipping) """
-        if progress is None:
-            progress = SilentProgress
-
         # NB. any file name returns correct file eventually, and “correct” file names are underterministic.
         # However, server-side caching means we can get stale versions if we use a version-independent url.
         # Do not use a random string, so we don’t defeat the purpose of server-side caching.
-        fname = f'{addon.dir}-{addon.metadata["version"]}.zip'
+        fname = f'{addon.dir}-{addon.version}.zip'
         url = url_override or self.url_template.format(id=addon.id) + urllib_quote(fname)
 
         with requests.head(url, allow_redirects=True) as check:
@@ -333,87 +310,73 @@ class Folder:
                 with open(zippath, 'wb') as fd:
                     self._download(dl, fd, progress(size, f'Downloading {fname}...'))
 
-        # Default install dir -- requires a temporary addon object that’s not the RO-API one,
+        # Default install dir -- requires a temporary addon object that’s not the (read-only) API one,
         # and can’t be the one initialized with metadata from the manifest
-        if addon.folder is None:
-            addon = Addon(addon.id, self.root / addon.dir, addon.metadata)
+        install_folder = path or self.root / addon.dir
 
         # Inspect, extract
         with zipfile.ZipFile(zippath) as zf:
             files = zf.infolist()
-            dest, extract = self._inspect_bundle(addon, zf, api)
-            # Safety: only extract files that resolve into Folder root, i.e. ignore AddOnName/../../../../.bashrc
-            extract = [
-                info for info in files if (dest / info.filename).resolve().is_relative_to(self.root)
-            ]
+            dest, erase_dirs, extract = self._inspect_bundle(install_folder, zf, api)
 
-            if addon.folder.exists():
-                shutil.rmtree(addon.folder)
+            for erased in erase_dirs:
+                if not erased.exists():
+                    continue
+                shutil.rmtree(erased)
 
-            extract_size = sum(getattr(info, 'file_size', 0) for info in extract)
+            extract_size = sum(sz for fn, dr, sz in extract)
             self._unzip(zf, extract, dest, progress(extract_size, f'Extracting  {fname}...'))
 
         # Update our list of installed addons
-        metadata = self.parse_manifest(addon.manifest)
-        local_addon = Addon(addon.id, addon.folder, metadata).merge(addon)
+        self._installed = {path: inst for path, inst in self._installed.items()
+                           if any(path.is_relative_to(erased) for erased in erase_dirs)}
         try:
-            idx = next(n for n, inst in enumerate(self.installed) if inst.folder == local_addon.folder)
-        except StopIteration:
-            self.installed.append(local_addon)
-        else:
-            self.installed[idx] = local_addon
-        return local_addon
+            installed_addons = {install_folder: InstalledAddon(install_folder)}  # TODO: nesting?
+        except FileNotFoundError: # Manifest not in expected location
+            # Not the simple case, maybe a multi-directory addon -- defer to our more complex logic handling
+            installed_addons = self._scan(install_folder, api)
 
-        return self.remove_unused_deps(opt=opt) if deps else 0
+        for inst in installed_addons.values():
+            inst.link(addon)
+        self._installed.update(installed_addons)
+        return installed_addons.values()
 
-    def install(self, addon, api, progress=None, deps=True, opt=False):
-        installed = self.unpack(addon, api, progress=progress)
+    def install(self, addon: gru.addon.AddonInfo, api: gru.api.API, progress: ProgressProtocol | None = None, path: pathlib.Path | None = None, deps: bool = True, opt: bool = False):
+        installed = self.unpack(addon, api, path=path, progress=progress)
 
         if deps:
-            return self.install_deps([installed], api, progress=progress, opt=opt)
+            return self.install_deps(installed, api, progress=progress, opt=opt)
 
-
-    def _dedup_deps(self, deps):
+    def _dedup_deps(self, deps: Iterable[gru.addon.Dependency]):
         dedup = {}
         for dep in deps:
             dedup.setdefault(dep.dir, []).append(dep)
-        return [max(dep_versions, key=operator.attrgetter('version')) for dep_versions in dedup.values()]
+        return [max(dep_versions, key=lambda dep: dep.dep_version) for dep_versions in dedup.values()]
 
-    def missing_deps(self, addon, installed=None, opt=False):
+    def missing_deps(self, pool: Iterable[gru.addon.InstalledAddon], opt: bool = False):
         """ Return dependencies that are missing from `installed` """
-        if self.installed is None:
-            installed = self.installed
-
-        missing = []
-        for dep in addon.metadata['deps'] + (addon.metadata['optdeps'] if opt else []):
-            if self.find_installed(dep, installed) is None:
-                missing.append(dep)
-        return self._dedup_deps(missing)
-
-    def all_missing_deps(self, pool, installed=None, opt=False):
-        missing = []
+        deps = []
         for addon in pool:
-            missing.extend(self.missing_deps(addon, installed, opt=opt))
-        return self._dedup_deps(missing)
+            deps.extend(addon.deps)
+            if opt:
+                deps.extend(addon.optdeps)
+        return [dep for dep in self._dedup_deps(deps) if self.find_installed(dep) is None]
 
-    def depcount(self, lib, installed=None, opt=True):
-        """ Count the number of times this addon is dependend on in `installed` """
-        if installed is None:
-            installed = self.installed
-
-        refcount = sum(lib.dir == dep.dir for addon in installed for dep in addon.metadata['deps'])
+    def depcount(self, lib: gru.addon.InstalledAddon, opt: bool = True):
+        """ Count the number of times this addon is depended on """
+        refcount = sum(lib.dir == dep.dir for addon in self.installed for dep in addon.metadata['deps'])
         if opt:
-            refcount += sum(lib.dir == dep.dir for addon in installed for dep in addon.metadata['optdeps'])
+            refcount += sum(lib.dir == dep.dir for addon in self.installed for dep in addon.metadata['optdeps'])
         return refcount
 
-    def all_unused_deps(self, pool, installed=None, opt=False):
+    def unused_deps(self, pool: Iterable[gru.addon.InstalledAddon], opt: bool = False):
         unused = []
         for addon in pool:
-            if addon.metadata['library'] and self.depcount(addon, installed=installed, opt=opt) == 0:
+            if addon.is_lib and self.depcount(addon, opt=opt) == 0:
                 unused.append(addon)
         return unused
 
-    def update(self, api, progress=None, opt=False, deps=False, patch=False):
+    def update(self, api: gru.api.API, progress: ProgressProtocol | None = None, opt: bool = False, deps: bool = False, patch: bool = False):
         updates = []
         for addon in self.installed:
             if not addon.can_update():
@@ -432,11 +395,11 @@ class Folder:
         else:
             return (len(updates), 0)
 
-    def install_deps(self, pool, api, progress=None, opt=False, patch=False):
+    def install_deps(self, pool: Iterable[gru.addon.InstalledAddon], api: api.API, progress: ProgressProtocol | None = None, opt: bool = False, patch: bool = False):
         added = 0
-        deps = (pool if pool is not None else self.installed)[:]
-        while newdeps := self.all_missing_deps(deps, opt=opt):
-            deps.clear()
+        deps = [*(pool or self.installed)]
+        while newdeps := self.missing_deps(deps, opt=opt):
+            deps = []
             for dep in newdeps:
                 # Do not check if installed as it’s a missing dep
                 try:
@@ -445,37 +408,40 @@ class Folder:
                     warnings.warn(f'Failed to look up addon dependence {dep.dir!r}')
                     continue
                 try:
-                    addon = self.unpack(addon, api, progress=progress)
+                    addons = self.unpack(addon, api, progress=progress)
                 except Exception as err:
                     warnings.warn(f'Failed to install addon dependence {addon.dir!r}: {err}')
                     continue
-                if patch and (patch_file := self.root / '.gru' / f'{addon.dir}.patch').exists():
-                    addon_patch(addon, patch_file)
+                for addon in addons:
+                    if patch and (patch_file := self.root / '.gru' / f'{addon.dir}.patch').exists():
+                        addon_patch(addons, patch_file)
                 added += 1
-                deps.append(addon)
+                deps.extend(addons)
 
         return added
 
-    def remove(self, addon, deps=False, opt=True):
+    def remove(self, addon: gru.addon.InstalledAddon | gru.addon.AddonInfo, deps: bool = False, opt: bool = True):
         """ Uninstall addon """
-        if addon.folder is None:
-            addon = self.check_installed([addon])[0]
-        if addon.folder is None:
-            raise ValueError(f'Addon {addon.title} is not installed')
+        if not addon.is_local:
+            if not addon.folders:
+                raise ValueError(f'Addon {addon.title} is not installed')
+            addon = list(addon.folders.values())[0]
 
         shutil.rmtree(addon.folder)
-        self.installed = [inst for inst in self.installed if inst.folder != addon.folder]
+        del self._installed[addon.folder]
+        if addon.id:
+            addon.infos.deregister(addon)
 
         if not deps:
             return 0
 
         return self.remove_unused_deps(opt=opt)
 
-    def remove_unused_deps(self, opt=True):
+    def remove_unused_deps(self, opt: bool = True):
         removed = 0
-        while remove := self.all_unused_deps(self.installed, opt=opt):
-            for lib in remove:
-                removed += 1
-                self.remove(lib)
+        while unused := self.unused_deps(self.installed, opt=opt):
+            for dep in unused:
+                self.remove(dep)
+            removed += len(unused)
 
         return removed

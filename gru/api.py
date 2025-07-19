@@ -10,7 +10,7 @@ import collections
 from collections.abc import Iterable, Mapping
 
 from .config import user_cache
-from .addon import APIAddonInfo
+from .addon import AddonInfo
 
 
 def to_list(arg: Iterable | None) -> list:
@@ -88,7 +88,7 @@ class API:
         matcher = difflib.SequenceMatcher(str.isspace, term.lower(), None)
 
         for addon in source:
-            matcher.set_seq2(addon.metadata[attr].lower())
+            matcher.set_seq2(getattr(addon, attr).lower())
             matches = [match.size for match in matcher.get_matching_blocks()]
             # For debug log:
             #print(addon[attr], [repr(term[b.a:b.a + b.size]) for b in matcher.get_matching_blocks() if b.size])
@@ -104,10 +104,11 @@ class API:
     def _lookup(self, source, attr, match):
         """ Search with exact match """
         for addon in source:
-            value = addon.metadata[attr]
+            value = getattr(addon, attr)
             if match in value if isinstance(value, list) else value == match:
                 return addon
         else:
+            # TODO: type of error?
             raise ValueError(f'{attr} {value!r} not found in list')
 
     def search(self, term, tiebreakattr=None, maxlen=30):
@@ -128,11 +129,15 @@ class API:
 
     def dir(self, dir_):
         """ Lookup an addon by directory """
+        partial = []
         for addon in self.addons.values():
             if addon.dir == dir_:
                 return addon
-        else:
-            raise ValueError(f'Directory {dir_!r} not found in list')
+            elif dir_ in addon.metadata['directories']:
+                partial.append(addon)
+        if len(partial) == 1:
+            return partial[0]
+        raise FileNotFoundError(f'Directory {dir_!r} not found in list')
 
     def name(self, name):
         """ Lookup an addon by name (exact match) """
@@ -153,15 +158,13 @@ class API:
 
         try:
             return self.dir(val)
-        except ValueError:
+        except FileNotFoundError:
             pass
 
-        try:
-            idx = [folder.dir for folder in local.installed].index(val)
-        except ValueError:
-            pass
-        else:
-            return local.installed[idx]
+        # Find by dir but locally, not from API
+        for addon in local.installed:
+            if addon.dir == val:
+                return addon
 
         # Otherwise revert to search and return a list of candidates
         return self.search(val)
@@ -208,7 +211,7 @@ class ESOUIv3(API):
         'UIDownloadTotal':   ('downloads', int),
         'UIDownloadMonthly': ('monthly', int),
         'UIFavoriteTotal':   ('favorites', int),
-        'UICompatibility':   ('api_versions', str),
+        'UICompatibility':   ('api', str),
         'UIDir':             ('directories', to_list),
         'UIIMG_Thumbs':      ('thumbnails', to_list),
         'UIIMGs':            ('images', to_list),
@@ -241,7 +244,7 @@ class ESOUIv3(API):
         data = {}
         for addon in self._load(self.pages['filelist'], []):
             infos = {new: typ(addon[old]) for old, (new, typ) in self.fileinfo_rename.items()}
-            data[infos['id']] = APIAddonInfo(infos['id'], infos)
+            data[infos['id']] = AddonInfo(infos['id'], infos)
         return data
 
     @functools.cached_property
