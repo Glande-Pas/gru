@@ -1,4 +1,7 @@
 """ Module handling fetching info from the API """
+
+from __future__ import annotations
+
 import requests
 import requests_cache
 import datetime
@@ -49,6 +52,50 @@ def _exception_root_cause(err):
     return str(err)
 
 
+def _fuzz(source, attr, term, cutoff, maxlen, tiebreakattr=[]):
+    """ Fuzzy search that prioritises maximal subset matches, then longest match, then by tie breakers.
+
+    Matches `term` in the `attr` attribute within the `source` iterable, returning at most `maxlen` items.
+    `tiebreakattr` is a list of numerical attributes to act as tie breakers. Search ignores case and any whitespace.
+
+    Not using SequenceMatcher.ratio() as that compares full strings and we want sub-strings to match.
+    """
+    cutoff *= len(term)
+    candidates = []
+    matcher = difflib.SequenceMatcher(str.isspace, term.lower(), None)
+
+    for addon in source:
+        matcher.set_seq2(getattr(addon, attr).lower())
+        matches = [match.size for match in matcher.get_matching_blocks()]
+        # For debug log:
+        #print(addon[attr], [repr(term[b.a:b.a + b.size]) for b in matcher.get_matching_blocks() if b.size])
+        if sum(matches) < cutoff:
+            continue
+        # NB. cast for numerical attributes represented as strings in json
+        prio = (sum(matches), max(matches), *(addon.metadata[tie] for tie in tiebreakattr))
+        candidates.append((prio, addon))
+
+    candidates = sorted(candidates, key=operator.itemgetter(0), reverse=True)
+    return [addon for prio, addon in candidates[:maxlen]]
+
+def _lookup(source, attr, match):
+    """ Search with exact match """
+    for addon in source:
+        value = getattr(addon, attr)
+        if match in value if isinstance(value, list) else value == match:
+            return addon
+    else:
+        # TODO: type of error?
+        raise ValueError(f'{attr} {value!r} not found in list')
+
+def _filter(source, attr, match):
+    """ Search with exact match """
+    results =  []
+    for addon in source:
+        value = getattr(addon, attr)
+        if match in value if isinstance(value, list) else value == match:
+            yield addon
+
 class API:
     session = requests_cache.CachedSession(user_cache('api'), expire_after=datetime.timedelta(hours=1))
 
@@ -75,59 +122,23 @@ class API:
         """ Clear the cache """
         requests_cache.clear()
 
-    def _fuzz(self, source, attr, term, cutoff, maxlen, tiebreakattr=[]):
-        """ Fuzzy search that prioritises maximal subset matches, then longest match, then by tie breakers.
-
-        Matches `term` in the `attr` attribute within the `source` iterable, returning at most `maxlen` items.
-        `tiebreakattr` is a list of numerical attributes to act as tie breakers. Search ignores case and any whitespace.
-
-        Not using SequenceMatcher.ratio() as that compares full strings and we want sub-strings to match.
-        """
-        cutoff *= len(term)
-        candidates = []
-        matcher = difflib.SequenceMatcher(str.isspace, term.lower(), None)
-
-        for addon in source:
-            matcher.set_seq2(getattr(addon, attr).lower())
-            matches = [match.size for match in matcher.get_matching_blocks()]
-            # For debug log:
-            #print(addon[attr], [repr(term[b.a:b.a + b.size]) for b in matcher.get_matching_blocks() if b.size])
-            if sum(matches) < cutoff:
-                continue
-            # NB. cast for numerical attributes represented as strings in json
-            prio = (sum(matches), max(matches), *(addon.metadata[tie] for tie in tiebreakattr))
-            candidates.append((prio, addon))
-
-        candidates = sorted(candidates, key=operator.itemgetter(0), reverse=True)
-        return [addon for prio, addon in candidates[:maxlen]]
-
-    def _lookup(self, source, attr, match):
-        """ Search with exact match """
-        for addon in source:
-            value = getattr(addon, attr)
-            if match in value if isinstance(value, list) else value == match:
-                return addon
-        else:
-            # TODO: type of error?
-            raise ValueError(f'{attr} {value!r} not found in list')
-
-    def search(self, term, tiebreakattr=None, maxlen=30):
+    def search(self, term: str, tiebreakattr: str | None = None, maxlen: int = 30):
         """ Search `term` in addon names """
         # We want at least 75% of search string in result
         if tiebreakattr is None:
             tiebreakattr = 'downloads'
-        return self._fuzz(self.addons.values(), 'title', term, cutoff=.75 if len(term) > 3 else 1, maxlen=maxlen,
-                          tiebreakattr=[tiebreakattr])
+        return _fuzz(self.addons.values(), 'title', term, cutoff=.75 if len(term) > 3 else 1, maxlen=maxlen,
+                     tiebreakattr=[tiebreakattr])
 
-    def addon(self, id_):
+    def addon(self, id_: int):
         """ Lookup an addon by id """
         return self.addons[id_]
 
-    def cat(self, id_):
+    def cat(self, id_: int):
         """ Lookup a category by id """
         return self.categories[id_]
 
-    def dir(self, dir_):
+    def dir(self, dir_: str):
         """ Lookup an addon by directory """
         partial = []
         for addon in self.addons.values():
@@ -139,11 +150,11 @@ class API:
             return partial[0]
         raise FileNotFoundError(f'Directory {dir_!r} not found in list')
 
-    def name(self, name):
+    def name(self, name: str):
         """ Lookup an addon by name (exact match) """
-        return self._lookup(self.addons.values(), 'title', str(name))
+        return _lookup(self.addons.values(), 'title', str(name))
 
-    def find(self, val, local):
+    def find(self, val: str, local: gru.install.Folder):
         """ Search for an addon generically """
         # Various methods of exact matches
         try:

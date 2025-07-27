@@ -50,7 +50,7 @@ open_in_browser = off
 
 
 @contextlib.contextmanager
-def encoding_open(fname: pathlib.Path | str):
+def encoding_open(fname: pathlib.Path | str) -> Iterator[typing.IO]:
     with open(fname, 'rb') as f:
         # charset_normalizer does not recognize BOM?!
         if f.read(3) == b'\xef\xbb\xbf':
@@ -63,7 +63,7 @@ def encoding_open(fname: pathlib.Path | str):
         yield f
 
 
-def user_home():
+def user_home() -> pathlib.Path:
     if (userhome := os.environ.get('HOME')) is not None:
         return pathlib.Path(userhome)
     elif (userhome := os.environ.get('USERPROFILE')) is not None:
@@ -77,7 +77,7 @@ def user_home():
         return pathlib.Path('~').expanduser()
 
 
-def user_cache(*args):
+def user_cache(*args: str) -> pathlib.Path:
     """ Returns the appropriate path to the cache file in the user app dirs.
 
     Returns:
@@ -99,7 +99,7 @@ def user_cache(*args):
     return file
 
 
-def user_config():
+def user_config() -> pathlib.Path:
     """ Returns the path to the configuration file in the user config directory
 
     Returns:
@@ -116,7 +116,7 @@ def user_config():
         return base_dir / 'gru'
 
 
-def load_config(config_file=None):
+def load_config(config_file: pathlib.Path | str | None = None) -> configparser.ConfigParser:
     config = configparser.ConfigParser(delimiters=['='])
     config.read_file(io.StringIO(defaults))
 
@@ -145,7 +145,7 @@ def load_config(config_file=None):
     return config
 
 
-def display_config(config, game):
+def display_config(config: configparser.ConfigParser, game: str) -> dict[str]:
     # The cli-configurable sections and names under which they will appear
     return {
         **{f'app.{key}': value for key, value in config.items('app')},
@@ -153,7 +153,7 @@ def display_config(config, game):
     }
 
 
-def update_config(config, game, values):
+def update_config(config: configparser.ConfigParser, game: str, values):
     # The cli-configurable sections and names under which they will appear
     sections = {'app': 'app', 'addons': f'{game}.addons'}
 
@@ -164,7 +164,7 @@ def update_config(config, game, values):
         config.set(sections[sec], entry, value)
 
 
-def save_config(config, config_file=None):
+def save_config(config: configparser.ConfigParser, config_file: pathlib.Path | str | None = None):
     config_file = user_config() if config_file is None else pathlib.Path(config_file)
     with open(config_file, 'w') as f:
         config.write(f)
@@ -187,7 +187,7 @@ class GNUFormatTranslations(FormatMixin, gettext.GNUTranslations):
     pass
 
 
-def install_translation(domain, localedir):
+def install_translation(domain: str, localedir: pathlib.Path):
     """ Installs a gettext translation object.
 
     This re-implements gettext’s translation() and find() followed by .install(), to use a Traversable as localedir

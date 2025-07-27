@@ -23,6 +23,7 @@ from urllib.parse import quote as urllib_quote
 
 from .config import encoding_open, user_cache
 from .addon import InstalledAddon, Dependency, GARBAGE, MANIFEST_EXTS
+from .api import _fuzz, _lookup, _filter
 from .patch import addon_patch
 
 from typing import Protocol
@@ -68,7 +69,7 @@ class Folder:
         return self._installed.values()
 
     @contextlib.contextmanager
-    def temp_root(self) -> Iterator[Folder]:
+    def temp_root(self) -> Iterator[gru.addon.Folder]:
         """ Yields a similarly-configured install folder at a temporary location. """
         with tempfile.TemporaryDirectory() as tempdir:
             yield Folder('game', {'game.addons': tempdir, 'game.links': self.url_template})
@@ -141,15 +142,47 @@ class Folder:
         # Now we may have several addons claiming ownership of the same directories
         return results
 
-    def find_installed(self, spec: gru.addon.Dependency | gru.addon.AddonInfo) -> gru.addon.InstalledAddon | None:
-        if isinstance(spec, Dependency):
-            for folder in self._installed.values():
-                if folder.dir == spec.dir and folder.dep_version >= spec.dep_version:
-                    return folder
-        else:
-            for folder in self._installed.values():
-                if folder.id == spec.id:
-                    return folder
+    def name(self, name: str):
+        """ Lookup addons by name (exact match) """
+        return _filter(self.installed, 'title', str(name))
+
+    def dir(self, dir_: str):
+        """ Lookup addons by name (exact match) """
+        return _filter(self.installed, 'dir', str(dir_))
+
+    def id(self, id_: int):
+        """ Lookup addons by id (exact match) """
+        return _filter(self.installed, 'id', id_)
+
+    def find(self, val: str, api: gru.api.API):
+        """ Search for an installed addon generically """
+        # Various methods of exact matches
+        if by_name := self.name(val):
+            return by_name
+
+        if by_dir := self.dir(val):
+            return by_dir
+
+        # Otherwise revert to search and return a list of candidates
+        if search := self.search(val):
+            return search
+
+        return sum((self.id(addon.id) for addon in api.search(val)), [])
+
+    def search(self, term: str, tiebreakattr: str | None = None, maxlen: int = 30):
+        """ Search `term` in addon names """
+        # We want at least 75% of search string in result
+        return [
+            *_fuzz(self.installed.values(), 'title', term, cutoff=.75 if len(term) > 3 else 1, maxlen=maxlen,
+                   tiebreakattr=[tiebreakattr]),
+            *_fuzz(self.installed.values(), 'dir', term, cutoff=.75 if len(term) > 3 else 1, maxlen=maxlen,
+                   tiebreakattr=[tiebreakattr]),
+        ]
+
+    def find_installed(self, spec: gru.addon.Dependency) -> gru.addon.InstalledAddon | None:
+        for folder in self.dir(spec.dir):
+            if folder.dep_version >= spec.dep_version:
+                return folder
 
     def __repr__(self):
         return f'Folder({self.root})'
@@ -379,16 +412,16 @@ class Folder:
     def update(self, api: gru.api.API, progress: ProgressProtocol | None = None, opt: bool = False, deps: bool = False, patch: bool = False):
         updates = []
         for addon in self.installed:
-            if not addon.can_update():
+            if not addon.can_update:
                 continue
             try:
-                addon = self.unpack(addon, api, progress=progress)
+                updates.extend(self.unpack(addon.infos, api, progress=progress))
             except Exception as err:
                 warnings.warn(f'Failed to install addon dependence {addon.dir!r}: {err}')
-                continue
+
+        for addon in updates:
             if patch and (patch_file := self.root / '.gru' / f'{addon.dir}.patch').exists():
                 addon_patch(addon, patch_file)
-            updates.append(addon)
 
         if deps:
             return (len(updates), self.install_deps(updates, api, progress=progress, opt=opt, patch=patch))

@@ -20,6 +20,20 @@ def atol(val: str) -> int:
     return int(num.group(0)) if num is not None else 0
 
 
+# AddonInfo
+# id api version title author
+# date link category directories
+# downloads monthly favorites
+# thumbnails images donate
+
+# InstalledAddon
+# api version author title
+# library
+# dep_version (numerical version for comparison)
+# description savedvariables contributors
+# optdeps deps pcdependson consoledependson
+
+
 class DisplayAddonProtocol(Protocol):
     id: int | None
     title: str
@@ -37,6 +51,11 @@ class Dependency:
         self.dir = dir_
         self.dep_version = version
 
+
+# id category directories
+# version date title author link api
+# downloads monthly favorites
+# thumbnails images donate
 
 class AddonInfo(DisplayAddonProtocol):
     """ Addon information from API """
@@ -60,6 +79,7 @@ class AddonInfo(DisplayAddonProtocol):
         if {'lang', 'libs', 'EsoUI', 'gamedata', ''} & dirs:
             self.dir = self.slugify(self.title)
         elif len(dirs) != 1:
+            #warnings.warn(f'Addon {self.title} declares several directories: {", ".join(map(repr, dirs))}')
             self.dir = self.slugify(self.title)
         else:
             self.dir = self.metadata['directories'][0]
@@ -82,6 +102,20 @@ class AddonInfo(DisplayAddonProtocol):
 
         # How stale is this info?
         return any(inst.can_update() for inst in self.folders.values() if inst.folder.exists())
+
+
+# 122 api
+#  59 library
+# 121 version  # display version string
+# 121 author
+# 112 title
+#  94 dep_version  # numerical version for comparison
+#  90 description
+#  82 savedvariables
+#  68 optdeps
+#  65 deps
+#   6 contributors
+#   4 pcdependson, consoledependson
 
 
 class InstalledAddon(Dependency, DisplayAddonProtocol):

@@ -19,6 +19,7 @@ import os
 import re
 import click_repl
 import prompt_toolkit.history as prompt_history
+from collections.abc import Iterable
 
 from .config import load_config, save_config, user_cache, display_config, update_config
 from .api import API
@@ -27,7 +28,12 @@ from .install import Folder
 from .patch import addon_diff, addon_patch_file
 
 
-def get_config_bool(ctx, string):
+def get_config_bool(ctx: click.Context, string: str):
+    section, key = string.format(**ctx.obj).rsplit('.', maxsplit=1)
+    return ctx.obj['config'].getboolean(section, key)
+
+
+def get_config_bool(ctx: click.Context, string: str):
     section, key = string.format(**ctx.obj).rsplit('.', maxsplit=1)
     return ctx.obj['config'].getboolean(section, key)
 
@@ -65,135 +71,131 @@ class SectionedHelpGroup(click.Group):
                     formatter.write_dl(rows)
 
 
-def _wrapped_display(gutter_width, *infos):
-    pfx = ' ' * gutter_width
-    width = shutil.get_terminal_size()[0] - gutter_width
-    sep = ' |  '
-    for i0, *inext in infos:
-        batch = i0
-        for term in inext:
-            if len(batch) + len(sep) + len(term) < width:
-                batch += sep + term
-                continue
+class TermDisplay:
+    _eso_colored_text = re.compile(r'\|c(?P<color>[0-9a-fA-F]{6})(?P<text>[^|]+)\|r')
+
+    def _wrapped(self, *infos: list[str, ...]):
+        pfx = ' ' * self.gutter
+        width = shutil.get_terminal_size()[0] - self.gutter
+        sep = ' |  '
+        for i0, *inext in infos:
+            batch = i0
+            for term in inext:
+                if len(batch) + len(sep) + len(term) < width:
+                    batch += sep + term
+                    continue
+                click.echo(pfx + batch)
+                if len(i0) + len(sep) + len(term) < width:
+                    batch = ' ' * len(i0) + sep + term
+                else:
+                    batch = term
             click.echo(pfx + batch)
-            if len(i0) + len(sep) + len(term) < width:
-                batch = ' ' * len(i0) + sep + term
+
+
+    def _render_eso_text(self, text: str):
+        return self._eso_colored_text.sub(lambda match: click.style(
+            match.group('text'),
+            fg=struct.unpack('BBB', bytes.fromhex(match.group('color')))
+        ), text)
+
+    def _styled_width(self, text: str, width: int):
+        text = self._render_eso_text(text)
+        return text + ' ' * max(0, width - len(click.unstyle(text)))
+
+    def _installed(self, item: str, addon: gru.addon.InstalledAddon):
+        """ Show addon info from the API endpoint """
+        click.echo()
+        update = '' if not addon.can_update else f'{click.style("update available", bold=True)} - '
+        infos = addon.infos
+        parent = f' as part of {infos.title}' if len(infos.folders) > 1 else f' as {infos.title}' if addon.title.strip() != infos.title.strip() else ''
+        click.echo(f'{item:{self.gutter}}{self._render_eso_text(addon.title)} [{update}installed{parent}]')
+        # TODO: Based on verbosity level, only click.echo a number of those:
+        self._wrapped([
+            f'Author: {self._styled_width(addon.author, 25)}',
+            f'Version: {addon.version:10}',
+            f'Updated: {addon.infos.metadata["date"].strftime("%x"):10}',
+        ], [
+            f'Category: {" > ".join(self.cat_name_hierarchy(addon.infos.metadata["category"])):23}',
+            f'Favorites: {addon.infos.metadata["favorites"]:<8n}',
+            f'Downloads: {addon.infos.metadata["downloads"]:<n} [{addon.infos.metadata["monthly"]:<n} / Month]',
+        ], [
+            f'Directory: {self.rel_path(addon.folder)}',
+        ])
+        click.echo(' ' * self.gutter + addon.infos.metadata['link'])
+
+
+    def _addon_info(self, item: int, addon: gru.addon.Addon):
+        """ Show addon info from the API endpoint """
+        # TODO: Based on verbosity level, only click.echo a number of those:
+        title = f'{item:{self.gutter}}{addon.title}'
+        if addon.folders:
+            dirs = ", ".join(str(self.rel_path(dir_)) for dir_ in addon.folders)
+            title += ' - ' + click.style(f'installed at: {dirs}', bold=True)
+        click.echo()
+        click.echo(title)
+        self._wrapped([
+            f'Author: {addon.author:25}',
+            f'Version: {addon.version:10}',
+            f'Updated: {addon.metadata["date"].strftime("%x"):10}',
+        ], [
+            f'Category: {" > ".join(self.cat_name_hierarchy(addon.metadata["category"])):23}',
+            f'Favorites: {addon.metadata["favorites"]:<8n}',
+            f'Downloads: {addon.metadata["downloads"]:<n} [{addon.metadata["monthly"]:<n} / Month]',
+        ])
+        click.echo(' ' * self.gutter + addon.metadata['link'])
+
+
+    def _folder(self, item: int, folder: gru.addon.InstalledAddon):
+        """ Show addon info from a local folder that was not matched with the API endpoint """
+        click.echo()
+        # Based on verbosity level, only click.echo a number of those:
+        parent_text = ''
+        while (parent := folder.parent) is not None:
+            if parent.id:
+                parent_text = f' as sub-addon of {parent.infos.title}'
+                break
+        click.echo(f'{item:{self.gutter}}{self._render_eso_text(folder.title)}  [installed{parent_text}]')
+        infos = [
+            f'Author: {self._styled_width(folder.author, 20)}',
+            f'Version: {folder.version:10}',
+        ], [
+            f'Directory: {self.rel_path(folder.folder)}',
+        ]
+        if 'Description' in folder.metadata:
+            infos.append(f'Description: {folder.metadata["Description"]}')
+        self._wrapped(*infos)
+        if folder.parent is not None:
+            click.echo(' ' * self.gutter + 'NB: this add-on could not be matched online and may be deprecated')
+
+
+    def __init__(self, results: list[AddonInfo | InstalledAddon], num_from: int = 0):
+        """ Show a list of addons """
+        self.gutter = 2 + math.ceil(math.log(num_from + len(results), 10))
+        ctx = click.get_current_context()
+        self.cat_name_hierarchy = ctx.obj['api'].cat_name_hierarchy
+        self.rel_path = lambda path, root=ctx.obj['local'].root: path.relative_to(root)
+
+        for n, addon in enumerate(results, num_from + 1):
+            item = f'{n:{self.gutter - 2}}: ' if len(results) > 1 else ''
+            if addon.is_local and addon.id is not None:
+                self._installed(item, addon)
+            elif addon.is_local:
+                self._folder(item, addon)
             else:
-                batch = term
-        click.echo(pfx + batch)
+                self._addon_info(item, addon)
+
+        click.echo()
 
 
-_eso_colored_text = re.compile(r'\|c(?P<color>[0-9a-fA-F]{6})(?P<text>[^|]+)\|r')
-def _render_eso_text(text):
-    return _eso_colored_text.sub(lambda match: click.style(
-        match.group('text'),
-        fg=struct.unpack('BBB', bytes.fromhex(match.group('color')))
-    ), text)
-
-def _styled_width(text, width):
-    text = _render_eso_text(text)
-    return text + ' ' * max(0, width - len(click.unstyle(text)))
-
-def _display_installed(ctx, num, addon, gutter_width):
-    """ Show addon info from the API endpoint """
-    click.echo()
-    update = '' if not addon.can_update else f'{click.style("update available", bold=True)} - '
-    infos = addon.infos
-    parent = f' as part of {infos.title}' if len(infos.folders) > 1 else f' as {infos.title}' if addon.title.strip() != infos.title.strip() else ''
-    click.echo(f'{num:{gutter_width}}{_render_eso_text(addon.title)} [{update}installed{parent}]')
-    # TODO: Based on verbosity level, only click.echo a number of those:
-    _wrapped_display(gutter_width, [
-        f'Author: {_styled_width(addon.author, 25)}',
-        f'Version: {addon.version:10}',
-        f'Updated: {addon.infos.metadata["date"].strftime("%x"):10}',
-    ], [
-        f'Category: {" > ".join(ctx.obj["api"].cat_name_hierarchy(addon.infos.metadata["category"])):23}',
-        f'Favorites: {addon.infos.metadata["favorites"]:<8n}',
-        f'Downloads: {addon.infos.metadata["downloads"]:<n} [{addon.infos.metadata["monthly"]:<n} / Month]',
-    ], [
-        f'Directory: {addon.folder.relative_to(ctx.obj["local"].root)}',
-    ])
-    click.echo(' ' * gutter_width + addon.infos.metadata['link'])
-
-
-def _display_addon_info(ctx, num, addon, gutter_width):
-    """ Show addon info from the API endpoint """
-    # TODO: Based on verbosity level, only click.echo a number of those:
-    title = f'{num:{gutter_width}}{addon.title}'
-    if addon.folders:
-        dirs = ", ".join(str(dir_.relative_to(ctx.obj["local"].root)) for dir_ in addon.folders)
-        title += ' - ' + click.style(f'installed at: {dirs}', bold=True)
-    click.echo()
-    click.echo(title)
-    _wrapped_display(gutter_width, [
-        f'Author: {addon.author:25}',
-        f'Version: {addon.version:10}',
-        f'Updated: {addon.metadata["date"].strftime("%x"):10}',
-    ], [
-        f'Category: {" > ".join(ctx.obj["api"].cat_name_hierarchy(addon.metadata["category"])):23}',
-        f'Favorites: {addon.metadata["favorites"]:<8n}',
-        f'Downloads: {addon.metadata["downloads"]:<n} [{addon.metadata["monthly"]:<n} / Month]',
-    ])
-    click.echo(' ' * gutter_width + addon.metadata['link'])
-
-
-def _display_folder(ctx, num, folder, gutter_width):
-    """ Show addon info from a local folder that was not matched with the API endpoint """
-    click.echo()
-    # Based on verbosity level, only click.echo a number of those:
-    parent_text = ''
-    while (parent := folder.parent) is not None:
-        if parent.id:
-            parent_text = f' as sub-addon of {parent.infos.title}'
-            break
-    click.echo(f'{num:{gutter_width}}{_render_eso_text(folder.title)}  [installed{parent_text}]')
-    infos = [
-        f'Author: {_styled_width(folder.author, 20)}',
-        f'Version: {folder.version:10}',
-    ], [
-        f'Directory: {folder.folder.relative_to(ctx.obj["local"].root)}',
-    ]
-    if 'Description' in folder.metadata:
-        infos.append(f'Description: {folder.metadata["Description"]}')
-    _wrapped_display(gutter_width, *infos)
-    if folder.parent is not None:
-        click.echo(' ' * gutter_width + 'NB: this add-on could not be matched online and may be deprecated')
-
-
-def _display_unknown(num, folder, gutter_width):
-    """ Show a missing and unresolved dependence """
-    click.echo()
-    click.echo(f'{num:{gutter_width}}{folder} (id not found)')
-    click.echo(' ' * gutter_width + f'NB: this add-on may be deprecated')
-
-
-def _display(ctx, results: list[AddonInfo | InstalledAddon], num_from=0):
-    """ Show a list of addons """
-    api = ctx.obj['api']
-    gutter_width = 2 + math.ceil(math.log(len(results), 10))
-
-    for n, addon in enumerate(results, num_from + 1):
-        num = f'{n:{gutter_width - 2}}: ' if len(results) > 1 else ''
-        if addon.is_local and addon.id is not None:
-            _display_installed(ctx, num, addon, gutter_width)
-        elif addon.is_local:
-            _display_folder(ctx, num, addon, gutter_width)
-        else:
-            _display_addon_info(ctx, num, addon, gutter_width)
-        #else:
-        #	_display_unknown(num, addon, gutter_width)
-
-    click.echo()
-
-
-def _confirm(query):
+def _confirm(query: str):
     answer = click.confirm(query, prompt_suffix=':\n>> ')
     click.echo()
     return answer
 
 
-def _prompt_addon(ctx, results, confirm_prompt=None, show_batch=None):
+def _prompt_addon(results: Iterable[gru.addon.DisplayAddonProtocol], confirm_prompt: str | None = None, show_batch: bool | None = None):
     """ Pick an addon from a list of addons """
+    results = list(results)
     if not results:
         click.echo('No addon found')
         return None
@@ -206,7 +208,7 @@ def _prompt_addon(ctx, results, confirm_prompt=None, show_batch=None):
         f'{len(results)} possible results:' if len(results) > 1 else 'Only approximate result:'
     ]))
 
-    _display(ctx, results[:show_batch])
+    TermDisplay(results[:show_batch])
 
     if len(results) == 1:
         return results[0] if _confirm(confirm_prompt) else None
@@ -217,7 +219,7 @@ def _prompt_addon(ctx, results, confirm_prompt=None, show_batch=None):
         if answer >= 0:
             break
 
-        _display(ctx, results[shown:shown+show_batch], num_from=shown)
+        TermDisplay(results[shown:shown+show_batch], num_from=shown)
     else:
         answer = click.prompt(f'Select (1-{len(results)}, 0 cancels)', prompt_suffix=':\n>> ',
                               type=click.IntRange(0, len(results) + 1))
@@ -232,33 +234,31 @@ def _prompt_addon(ctx, results, confirm_prompt=None, show_batch=None):
         return results[answer - 1]
 
 
-def _find_installed(ctx, api, local, addon, confirm_prompt=None):
-    # TODO: make case-insensitive
-    if addon is None:
-        addon = local.installed
+def _find_installed(local: gru.install.Folder, api: gru.api.API, term: str, confirm_prompt: str | None = None) -> gru.addon.InstalledAddon | None:
+    if term:
+        addon = local.find(term.lower(), api)
     else:
-        addon = api.find(addon, local)
-        if isinstance(addon, list):
-            addon = local.filter_installed(addon)
+        addon = local.installed
 
     if not addon:
         click.echo('No corresponding addon found.')
         return
 
-    if isinstance(addon, list):
-        addon = _prompt_addon(ctx, addon, confirm_prompt)
+    if isinstance(addon, Iterable):
+        addon = _prompt_addon(addon, confirm_prompt)
     if not addon:
         click.echo('Nothing do to.')
         return None
 
-    return local.find_installed(addon)
+    return addon
 
 
-def _progress(size, message):
+def _progress(size: int, message: str) -> ProgressProtocol:
     return click.progressbar(length=size, label=message, width=0)
 
 
-def add_repl_commands(group):
+def add_repl_commands(group: click.Group):
+    """ Adds commands that are only useful in REPL mode to a click group """
     @group.command('help', help='Print CLI help')
     def print_help():
         with click.Context(group) as ctx:
@@ -271,11 +271,11 @@ def add_repl_commands(group):
 
 @click.group(cls=SectionedHelpGroup, invoke_without_command=True, context_settings=dict(help_option_names=['-h', '--help']))
 @click.option('--config', 'config_file', help='path to config file',
-              type=click.Path(dir_okay=False, writable=True), default=None)
+              type=click.Path(dir_okay=False, writable=True, path_type=pathlib.Path), default=None)
 @click.option('--game', 'game', help='Choice of game', hidden=True,
               type=click.Choice(['ESO']), default='ESO')
 @click.pass_context
-def main(ctx, game='ESO', config_file=None):
+def main(ctx: click.Context, game: str = 'ESO', config_file: pathlib.Path | None = None):
     locale.setlocale(locale.LC_ALL, '')
 
     ctx.ensure_object(dict)
@@ -306,14 +306,14 @@ def main(ctx, game='ESO', config_file=None):
 
 @main.group()
 @click.pass_context
-def config(ctx):
+def config(ctx: click.Context):
     pass
 
 
 @config.command('get')
 @click.pass_context
 @click.argument('entry', required=False)
-def config_get(ctx, entry=None):
+def config_get(ctx: click.Context, entry: str | None = None):
     config = display_config(ctx.obj['config'], ctx.obj['game'])
     if not entry:
         for key, value in config.items():
@@ -340,7 +340,7 @@ def config_get(ctx, entry=None):
 @click.pass_context
 @click.argument('entry')
 @click.argument('value')
-def config_set(ctx, entry, value):
+def config_set(ctx: click.Context, entry: str, value: str):
     try:
         section_name, key = entry.split('.', 1)
     except ValueError:
@@ -359,7 +359,7 @@ def config_set(ctx, entry, value):
         save_config(ctx.obj['config'], ctx.obj['config_file'])
 
 
-def show_warnings(ctx):
+def show_warnings(ctx: click.Context):
     if not ctx.obj['warnings']:
         return
 
@@ -370,7 +370,7 @@ def show_warnings(ctx):
 
 @main.result_callback()
 @click.pass_context
-def process_result(ctx, result, game, config_file):
+def process_result(ctx: click.Context, result: typing.Any, game: str, config_file: str | None):
     show_warnings(ctx)
 
 
@@ -380,7 +380,7 @@ def process_result(ctx, result, game, config_file):
 @click.option('--yes', '-y', 'batch', is_flag=True, default=False)
 @click.option('--opt/--no-opt', default=None, help='Include optional dependences')
 @click.pass_context
-def get(ctx, addon, auto_deps=True, opt=None, batch=False):
+def get(ctx: click.Context, addon: list[str], auto_deps: bool = True, opt: bool | None = None, batch: bool = False):
     """ Find, download, and install an addon """
     api = ctx.obj['api']
     local = ctx.obj['local']
@@ -399,34 +399,30 @@ def get(ctx, addon, auto_deps=True, opt=None, batch=False):
             click.echo()
             if batch:
                 warnings.warn(f'Skipped install of unmatched addon {addon_spec}')
-        if isinstance(addon, list):
+        if isinstance(addon, Iterable):
             if not batch:
-                addon = _prompt_addon(ctx, addon, 'Confirm installation?')
+                addon = _prompt_addon(addon, 'Confirm installation?')
             elif len(addon) == 1:
                 addon = addon[0]
             else:
                 click.echo(f'Ambiguous addon specificiation {addon_spec}, skipping')
                 warnings.warn(f'Skipped install of ambiguous addon {addon_spec}')
                 addon = None
+
         if not addon:
             continue
 
-        for ad in local.installed:
-            if ad.dir == addon.dir:
-                break
-        else:
-            print(f'No addon with dir {addon.dir}')
-
-        installed_addon = local.find_installed(addon)
-
         # Try to reuse an existing install dir
-        if installed_addon is not None:
-            if not batch and not _confirm(f'Addon found at {installed_addon.folder}, update?'):
+        install_path = None
+        try:
+            installed_addon = next(ad for ad in local.id(addon.id) if ad.parent is None)
+            if batch or _confirm(f'Addon found at {installed_addon.folder}, update?'):
+                install_path = installed_addon.folder
+            else:
                 click.echo('Nothing to do.')
                 continue
-            install_path = installed_addon.folder
-        else:
-            install_path = None
+        except StopIteration:
+            pass
 
         try:
             result = local.install(addon, api, _progress, path=install_path, deps=auto_deps, opt=opt)
@@ -447,7 +443,7 @@ def get(ctx, addon, auto_deps=True, opt=None, batch=False):
 @click.option('--clean-deps/--no-clean-deps', default=False, help='Clean up unused dependences')
 @click.option('--opt/--no-opt', default=None, help='Keep optional dependences')
 @click.pass_context
-def remove(ctx, addon, clean_deps=False, opt=None):
+def remove(ctx: click.Context, addon: str | None, clean_deps: bool = False, opt: bool | None = None):
     """ Find and uninstall an addon """
     api = ctx.obj['api']
     local = ctx.obj['local']
@@ -461,7 +457,8 @@ def remove(ctx, addon, clean_deps=False, opt=None):
     # - unmatched
     # - top-level / non-subaddon ?
     # TODO: handle removal of several linked local addons (same online addon)
-    installed_addon = _find_installed(ctx, api, local, addon, 'Confirm removal?')
+    installed_addon = _find_installed(local, api, addon, 'Confirm removal?')
+    print(installed_addon)
     if installed_addon is None:
         show_warnings(ctx)
         return
@@ -480,7 +477,7 @@ def remove(ctx, addon, clean_deps=False, opt=None):
 @click.option('--opt/--no-opt', default=None, help='Include optional dependences')
 @click.option('--patch/--no-patch', default=None, help='Automatically re-apply patches')
 @click.pass_context
-def update(ctx, auto_deps, opt, patch):
+def update(ctx: click.Context, auto_deps: bool, opt: bool | None, patch: bool | None):
     """ Find out-of-date and missing addons and install them """
     api = ctx.obj['api']
     local = ctx.obj['local']
@@ -505,7 +502,7 @@ def update(ctx, auto_deps, opt, patch):
 @main.command(help='Remove unused dependences')
 @click.option('--opt/--no-opt', default=True, help='Keep optional dependences')
 @click.pass_context
-def cleanup(ctx, opt=None):
+def cleanup(ctx: click.Context, opt: bool | None = None):
     """ Find and uninstall an addon """
     api = ctx.obj['api']
     local = ctx.obj['local']
@@ -522,7 +519,7 @@ def cleanup(ctx, opt=None):
 
 @main.command()
 @click.pass_context
-def check_api_release(ctx, hidden=True):
+def check_api_release(ctx: click.Context, hidden: bool = True):
     alpha_ok, live_ok = False, False
     try:
         if ctx.obj['api'].globalconf['API']['Version'] == 'LIVE':
@@ -550,7 +547,7 @@ def check_api_release(ctx, hidden=True):
 @click.argument('term', required=False)
 @click.option('-m', '--max', 'max_', help='max number of matches', default=10)
 @click.pass_context
-def search(ctx, term, max_=10):
+def search(ctx: click.Context, term: str | None, max_: int = 10):
     if term is None:
         term = click.prompt(f'Term to search for', prompt_suffix=':\n>> ')
 
@@ -565,7 +562,7 @@ def search(ctx, term, max_=10):
 
 @main.command('list', help='list installed add-ons')
 @click.pass_context
-def list_(ctx):
+def list_(ctx: click.Context):
     api = ctx.obj['api']
     local = ctx.obj['local']
 
@@ -574,14 +571,14 @@ def list_(ctx):
         return
 
     click.echo(f'Found {len(local.installed)} addon(s):')
-    _display(ctx, local.installed)
+    TermDisplay(local.installed)
     show_warnings(ctx)
 
 
 @main.command(help='export installed add-ons')
 @click.option('--recurse', '-r', help='Recurse into subdirectories (will show private libraries)', default=False)
 @click.pass_context
-def export(ctx, recurse=False):
+def export(ctx: click.Context, recurse: bool = False):
     api = ctx.obj['api']
     local = ctx.obj['local']
 
@@ -603,7 +600,7 @@ def export(ctx, recurse=False):
 @main.command(help='List missing dependences')
 @click.option('--opt/--no-opt', help='include optional dependences')
 @click.pass_context
-def miss(ctx, opt):
+def miss(ctx: click.Context, opt: bool):
     api = ctx.obj['api']
     local = ctx.obj['local']
     missing = local.all_missing_deps(local.installed, opt=opt)
@@ -627,7 +624,7 @@ def miss(ctx, opt):
 
 
 @contextlib.contextmanager
-def unmodified_addon(api: gru.api.API, local: gru.install.Folder, addon: gru.addon.Addon, url=None):
+def unmodified_addon(api: gru.api.API, local: gru.install.Folder, addon: gru.addon.AddonInfo, url: str = None) -> Iterator[gru.addon.InstalledAddon]:
     # Code to acquire resource, e.g.:
     with tempfile.TemporaryDirectory() as tempdir:
         ref_local = local.alt_location(pathlib.Path(tempdir))
@@ -645,11 +642,11 @@ def unmodified_addon(api: gru.api.API, local: gru.install.Folder, addon: gru.add
 @click.argument('addon', required=False)
 @click.option('--url', help='Download url for installed version', required=False)
 @click.pass_context
-def diff(ctx, addon, url=None):
+def diff(ctx: click.Context, addon: str | None, url: str | None = None):
     api = ctx.obj['api']
     local = ctx.obj['local']
 
-    addon = _find_installed(ctx, api, local, addon, 'Confirm diff saving?')
+    addon = _find_installed(local, api, addon, 'Confirm diff saving?')
     if addon is None:
         show_warnings(ctx)
         return
@@ -678,11 +675,11 @@ def diff(ctx, addon, url=None):
 @click.argument('addon', required=False)
 @click.argument('patch', type=click.Path(dir_okay=False, path_type=pathlib.Path), required=False)
 @click.pass_context
-def patch(ctx, addon, patch):
+def patch(ctx: click.Context, addon: str | None, patch: parthlib.Path):
     api = ctx.obj['api']
     local = ctx.obj['local']
 
-    installed_addon = _find_installed(ctx, api, local, addon, 'Confirm patch target?')
+    installed_addon = _find_installed(local, api, addon, 'Confirm patch target?')
     if installed_addon is None:
         show_warnings(ctx)
         return
@@ -702,17 +699,9 @@ def patch(ctx, addon, patch):
         click.echo(f'Applied {done} / {total} hunks in patch.')
 
 
-@main.command(help='Save the diff between current addon and upstream')
-@click.pass_context
-def patch_all(ctx):
-    api = ctx.obj['api']
-    local = ctx.obj['local']
-    missing = local.all_missing_deps(local.installed, opt=opt)
-
-
 @main.command()
 @click.pass_context
-def clear_caches(ctx):
+def clear_caches(ctx: click.Context):
     api = ctx.obj['api']
     local = ctx.obj['local']
     api.reset()
