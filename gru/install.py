@@ -95,8 +95,8 @@ class Folder:
             for parent_dir in root.parents:
                 if parent_dir == self.root:
                     break
-                elif path in getattr(self, '_installed', {}):
-                    results[path] = self._installed[path]
+                elif parent_dir in getattr(self, '_installed', {}):
+                    results[parent_dir] = self._installed[parent_dir]
                     break
 
         try:
