@@ -358,9 +358,9 @@ def show_warnings(ctx: click.Context):
     if not ctx.obj['warnings']:
         return
 
-    click.echo(f'\n{len(ctx.obj["warnings"])} warning(s):')
+    click.echo(f'\n{len(ctx.obj["warnings"])} warning(s):', err=True)
     while ctx.obj['warnings']:
-        click.echo(f'- {ctx.obj["warnings"].pop(0).message}')
+        click.echo(f'- {ctx.obj["warnings"].pop(0).message}', err=True)
 
 
 @main.result_callback()
