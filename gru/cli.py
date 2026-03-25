@@ -33,11 +33,6 @@ def get_config_bool(ctx: click.Context, string: str):
     return ctx.obj['config'].getboolean(section, key)
 
 
-def get_config_bool(ctx: click.Context, string: str):
-    section, key = string.format(**ctx.obj).rsplit('.', maxsplit=1)
-    return ctx.obj['config'].getboolean(section, key)
-
-
 class SectionedHelpGroup(click.Group):
     """ Sections commands into help groups """
 
@@ -675,7 +670,7 @@ def diff(ctx: click.Context, addon: str | None, url: str | None = None):
 @click.argument('addon', required=False)
 @click.argument('patch', type=click.Path(dir_okay=False, path_type=pathlib.Path), required=False)
 @click.pass_context
-def patch(ctx: click.Context, addon: str | None, patch: parthlib.Path):
+def patch(ctx: click.Context, addon: str | None, patch: pathlib.Path):
     api = ctx.obj['api']
     local = ctx.obj['local']
 

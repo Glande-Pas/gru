@@ -17,7 +17,6 @@ import shutil
 import datetime
 import functools
 import warnings
-import shutil
 import re
 from urllib.parse import quote as urllib_quote
 

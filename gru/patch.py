@@ -49,7 +49,7 @@ def line_diff(orig_text: str, changed_text: str) -> str:
 def parse_diff(handle: typing.IO) -> Patch:
     header: list[str] = []
     diff: FilePatch | None = None
-    block: Blockpatch | None = None
+    block: BlockPatch | None = None
     patch: Patch = {}
     mnemonic_top_dirs = tuple(map(set, ('ab', 'ci', 'co', 'cw', 'io', 'iw', 'ow', '12')))
 
