@@ -183,7 +183,7 @@ class InstalledAddon(Dependency, DisplayAddonProtocol):
         # NB. emit warning last
         if missing_mandatory_keys:
             warnings.warn(f'Missing mandatory key(s) {", ".join(map(repr, missing_mandatory_keys))}'
-                 f' in {manifest_path.relative_to(self.root)}')
+                 f' in {self.manifest.relative_to(self.folder.parent)}')
 
         return infos
 
