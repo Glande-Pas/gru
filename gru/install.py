@@ -361,7 +361,7 @@ class Folder:
 
         # Update our list of installed addons
         self._installed = {path: inst for path, inst in self._installed.items()
-                           if any(path.is_relative_to(erased) for erased in erase_dirs)}
+                           if not any(path.is_relative_to(erased) for erased in erase_dirs)}
         try:
             installed_addons = {install_folder: InstalledAddon(install_folder)}  # TODO: nesting?
         except FileNotFoundError: # Manifest not in expected location
