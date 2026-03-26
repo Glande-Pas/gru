@@ -244,23 +244,8 @@ class Folder:
         if not manifest_depth1plus:
             raise ValueError(f'No addon manifest in bundle {zf.filename}')
 
-        # Try to match zip contents to where addon is already installed
-        # E.g. we are updating Foo at {root}/dir/Foo/Foo.txt, zip contains (Foo/Foo.txt, Bar/): install at {root}/dir
-        if len(toplevels) > 1:
-            for parent in path.parents:
-                if parent == self.root or not parent.is_relative_to(self.root):
-                    break
-                siblings = [parent / top for top in toplevels]
-                if all(dir_.exists() for dir_ in siblings):
-                    warnings.warn(f'Found local install matching non-standard zip at {parent}, installing under {parent}')
-                    return parent, siblings, files
-
-        # Some addons bundle gamedata, EsoUI (etc) as top-level folders, install to a subdirectory
-        if len(toplevels) > 1 and not all(pathlib.Path(name, name) in manifest_depth1 for name in toplevels):
-            warnings.warn(f'Multiple-directory addon, prepending {path.name}/ to zip contents')
-            return path, [path], files
-
-        # We have a guess of what we’re really installing -- does not really matter in terms of addon clashes as it’s all 1 dir
+        # No identified manifest, we have to guess what we’re really installing
+        # In 1-dir case does not really matter
         if len(toplevels) == 1:
             top_dir = next(iter(toplevels))
             if top_dir != path.name:
@@ -268,16 +253,41 @@ class Folder:
                 path = path.parent / top_dir
             return path.parent, [path], files
 
-        # So now we know we have several top-level addons, i.e. risk of clashing
-        # install all directories that resolve to this addon (bundle’s main addon) or to no addon (not standalone)
+        # From here on we handle several top-level directories, i.e. risk of clashing
+        # as some secondary top-levels might be owned by other addons
+
+        # Try to match zip contents to where addon is already installed
+        # E.g. we are updating Foo at {root}/dir/Foo/Foo.txt, zip contains (Foo/Foo.txt, Bar/): install at {root}/dir
+        for parent in path.parents:
+            if parent == self.root or not parent.is_relative_to(self.root):
+                break
+            siblings = [parent / top for top in toplevels]
+            if all(dir_.exists() for dir_ in siblings):
+                warnings.warn(f'Found local install matching non-standard zip at {parent}, installing under {parent}')
+                return parent, siblings, files
+
+        # Some addons bundle gamedata, EsoUI (etc) as top-level folders, install to a subdirectory
+        if not all(pathlib.Path(name, name) in manifest_depth1 for name in toplevels):
+            warnings.warn(f'Multiple-directory addon, prepending {path.name}/ to zip contents')
+            return path, [path], files
+
+        # So now we know we have several top-level *addons*
+        # install all directories that resolve:
+        # - to this addon (bundle’s main addon), or
+        # - to no other addon (not available standalone)
+        try:
+            main_id = api.dir(path.name).id
+        except FileNotFoundError:
+            main_id = path.name
+
         for dir_ in list(toplevels):
             try:
                 dep = api.dir(dir_)
-            except KeyError:
-                install.append(dir_)
+            except FileNotFoundError:
+                pass  # not a standalone addon, keep it
             else:
-                if dep['id'] != dep.id:
-                    toplevels.remove(dir_)
+                if dep.id != main_id:
+                    del toplevels[dir_]
 
         if len(toplevels) > 1:
             warnings.warn(f'Installing {len(toplevels)} addons as part of {path.name}: {", ".join(toplevels)}')
