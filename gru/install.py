@@ -256,15 +256,21 @@ class Folder:
         # From here on we handle several top-level directories, i.e. risk of clashing
         # as some secondary top-levels might be owned by other addons
 
+        def find_siblings(tops):
+            for parent in path.parents:
+                if parent == self.root or not parent.is_relative_to(self.root):
+                    break
+                siblings = [parent / top for top in tops]
+                if all(dir_.exists() for dir_ in siblings):
+                    return parent, siblings
+            return None, None
+
         # Try to match zip contents to where addon is already installed
         # E.g. we are updating Foo at {root}/dir/Foo/Foo.txt, zip contains (Foo/Foo.txt, Bar/): install at {root}/dir
-        for parent in path.parents:
-            if parent == self.root or not parent.is_relative_to(self.root):
-                break
-            siblings = [parent / top for top in toplevels]
-            if all(dir_.exists() for dir_ in siblings):
-                warnings.warn(f'Found local install matching non-standard zip at {parent}, installing under {parent}')
-                return parent, siblings, files
+        parent, siblings = find_siblings(toplevels)
+        if parent is not None:
+            warnings.warn(f'Found local install matching non-standard zip at {parent}, installing under {parent}')
+            return parent, siblings, files
 
         # Some addons bundle gamedata, EsoUI (etc) as top-level folders, install to a subdirectory
         if not all(pathlib.Path(name, name) in manifest_depth1 for name in toplevels):
@@ -288,6 +294,12 @@ class Folder:
             else:
                 if dep.id != main_id:
                     del toplevels[dir_]
+
+        # After pruning, check again whether the remaining dirs match an existing install
+        parent, siblings = find_siblings(toplevels)
+        if parent is not None:
+            warnings.warn(f'Found local install matching pruned non-standard zip at {parent}, installing under {parent}')
+            return parent, siblings, [(fn, *_) for fn, *_ in files if fn.parts[0] in toplevels]
 
         if len(toplevels) > 1:
             warnings.warn(f'Installing {len(toplevels)} addons as part of {path.name}: {", ".join(toplevels)}')
@@ -424,7 +436,7 @@ class Folder:
             if not addon.can_update:
                 continue
             try:
-                updates.extend(self.unpack(addon.infos, api, progress=progress))
+                updates.extend(self.unpack(addon.infos, api, progress=progress, path=addon.folder))
             except Exception as err:
                 warnings.warn(f'Failed to install addon dependence {addon.dir!r}: {err}')
 

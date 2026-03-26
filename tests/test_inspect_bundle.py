@@ -130,6 +130,27 @@ class TestMultiDirBundle:
         top_dirs = {fn.parts[0] for fn, *_ in files}
         assert top_dirs == {'MyAddon', 'LibFoo'}
 
+    def test_existing_siblings_after_pruning(self, folder, addon_root):
+        """After pruning a standalone, remaining dirs match siblings on disk — use their parent."""
+        subdir = addon_root / 'subdir'
+        (subdir / 'MyAddon').mkdir(parents=True)
+        (subdir / 'LibPrivate').mkdir(parents=True)
+
+        api = StubAPI({
+            'MyAddon': StubAddon(1, 'MyAddon'),
+            'OtherAddon': StubAddon(2, 'OtherAddon'),
+        })
+        zf = make_zip({
+            'MyAddon/MyAddon.txt': MANIFEST.format(title='MyAddon'),
+            'LibPrivate/LibPrivate.txt': MANIFEST.format(title='LibPrivate'),
+            'OtherAddon/OtherAddon.txt': MANIFEST.format(title='OtherAddon'),
+        })
+        dest, erase, files = folder._inspect_bundle(subdir / 'MyAddon', zf, api)
+        assert dest == subdir
+        assert set(erase) == {subdir / 'MyAddon', subdir / 'LibPrivate'}
+        top_dirs = {fn.parts[0] for fn, *_ in files}
+        assert 'OtherAddon' not in top_dirs
+
     def test_other_standalone_removed(self, folder, addon_root):
         """Bundle includes another addon that exists in the API — exclude it."""
         api = StubAPI({
