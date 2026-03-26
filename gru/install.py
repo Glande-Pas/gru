@@ -418,9 +418,9 @@ class Folder:
 
     def depcount(self, lib: gru.addon.InstalledAddon, opt: bool = True):
         """ Count the number of times this addon is depended on """
-        refcount = sum(lib.dir == dep.dir for addon in self.installed for dep in addon.metadata.deps)
+        refcount = sum(lib.dir == dep.dir for addon in self.installed for dep in addon.deps)
         if opt:
-            refcount += sum(lib.dir == dep.dir for addon in self.installed for dep in addon.metadata.optdeps)
+            refcount += sum(lib.dir == dep.dir for addon in self.installed for dep in addon.optdeps)
         return refcount
 
     def unused_deps(self, pool: Iterable[gru.addon.InstalledAddon], opt: bool = False):

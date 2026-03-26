@@ -101,7 +101,7 @@ class AddonInfo(DisplayAddonProtocol):
             return False # Not installed: can install, but not update
 
         # How stale is this info?
-        return any(inst.can_update() for inst in self.folders.values() if inst.folder.exists())
+        return any(inst.can_update for inst in self.folders.values() if inst.folder.exists())
 
 
 # 122 api
