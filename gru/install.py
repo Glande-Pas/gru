@@ -17,6 +17,7 @@ import shutil
 import datetime
 import functools
 import warnings
+import traceback
 import re
 from urllib.parse import quote as urllib_quote
 
@@ -329,11 +330,12 @@ class Folder:
                     shutil.copyfileobj(zfreader, out)
                 prog.update(size)
 
-    def unpack(self, addon: gru.addon.AddonInfo, api: gru.api.API, progress: type[ProgressProtocol] = SilentProgress, path : pathlib.Path | None = None, url_override: str | None = None) -> dict[pathlib.Path, gru.addon.InstalledAddon]:
+    def unpack(self, addon: gru.addon.AddonInfo, api: gru.api.API, progress: type[ProgressProtocol] | None = None, path : pathlib.Path | None = None, url_override: str | None = None) -> dict[pathlib.Path, gru.addon.InstalledAddon]:
         """ Download and install, calls back to `progress` (100% until return means unzipping) """
         # NB. any file name returns correct file eventually, and “correct” file names are underterministic.
         # However, server-side caching means we can get stale versions if we use a version-independent url.
         # Do not use a random string, so we don’t defeat the purpose of server-side caching.
+        progress = progress or SilentProgress
         fname = f'{addon.dir}-{addon.version}.zip'
         url = url_override or self.url_template.format(id=addon.id) + urllib_quote(fname)
 
@@ -438,7 +440,7 @@ class Folder:
             try:
                 updates.extend(self.unpack(addon.infos, api, progress=progress, path=addon.folder))
             except Exception as err:
-                warnings.warn(f'Failed to install addon dependence {addon.dir!r}: {err}')
+                warnings.warn(f'Failed to install addon dependence {addon.dir!r}: {err}\n{"".join(traceback.format_exc())}')
 
         for addon in updates:
             if patch and (patch_file := self.root / '.gru' / f'{addon.dir}.patch').exists():
@@ -458,13 +460,13 @@ class Folder:
                 # Do not check if installed as it’s a missing dep
                 try:
                     addon = api.dir(dep.dir)
-                except ValueError:
+                except (ValueError, FileNotFoundError):
                     warnings.warn(f'Failed to look up addon dependence {dep.dir!r}')
                     continue
                 try:
                     addons = self.unpack(addon, api, progress=progress)
                 except Exception as err:
-                    warnings.warn(f'Failed to install addon dependence {addon.dir!r}: {err}')
+                    warnings.warn(f'Failed to install addon dependence {addon.dir!r}: {err}\n{"".join(traceback.format_exc())}')
                     continue
                 for addon in addons:
                     if patch and (patch_file := self.root / '.gru' / f'{addon.dir}.patch').exists():
@@ -481,7 +483,8 @@ class Folder:
                 raise ValueError(f'Addon {addon.title} is not installed')
             addon = list(addon.folders.values())[0]
 
-        shutil.rmtree(addon.folder)
+        if addon.folder.exists():
+            shutil.rmtree(addon.folder)
         del self._installed[addon.folder]
         if addon.id:
             addon.infos.deregister(addon)

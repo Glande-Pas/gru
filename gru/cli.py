@@ -627,7 +627,7 @@ def unmodified_addon(api: gru.api.API, local: gru.install.Folder, addon: gru.add
         # Be sure to compare to installed version not up-to-date upstream
         ref_local.unpack(ref_addon, api, url_override=url)
 
-        if ref_addon.metadata['version'] != addon.metadata['version']:
+        if ref_addon.version != addon.version:
             raise ValueError('Downloaded addon does not have same version as installed addon!')
 
         yield ref_addon
@@ -646,7 +646,7 @@ def diff(ctx: click.Context, addon: str | None, url: str | None = None):
         show_warnings(ctx)
         return
 
-    if not url and addon.info.metadata['version'] != addon.metadata['version']:
+    if not url and addon.info.version != addon.version:
         click.echo(f'Addon is out of date!  Can not fetch unmodified source automatically.')
         click.echo()
         url = click.prompt(f'Please manually specify {addon.version} download url',

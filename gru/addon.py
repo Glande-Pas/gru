@@ -163,8 +163,9 @@ class InstalledAddon(Dependency, DisplayAddonProtocol):
         assert 1 <= len(self.api) <= 2 and 100003 <= min(self.api) and max(self.api) <= 999999, \
             f'Unexpected API Version format {self.api!r}'
 
-        self.is_lib = metadata.pop('IsLibrary', 'false').lower()
-        assert self.is_lib in {'true', 'false'}, f'Unexpected value for IsLibrary {self.is_lib!r}'
+        is_lib_str = metadata.pop('IsLibrary', 'false').lower()
+        assert is_lib_str in {'true', 'false'}, f'Unexpected value for IsLibrary {is_lib_str!r}'
+        self.is_lib = is_lib_str == 'true'
 
         self.deps = [Dependency(name, atol(version[0]) if version else 0) for name, *version in (
             dep.split('>=') for dep in metadata.pop('DependsOn', '').split() + metadata.pop('PCDependsOn', '').split()
@@ -201,9 +202,9 @@ class InstalledAddon(Dependency, DisplayAddonProtocol):
             return False
 
         try:
-            is_local = tuple(atol(token) for token in self.metadata['version'].split('.'))
-            upstream = tuple(atol(token) for token in self.infos.metadata['version'].split('.'))
-        except KeyError:
+            is_local = tuple(atol(token) for token in self.version.split('.'))
+            upstream = tuple(atol(token) for token in self.infos.version.split('.'))
+        except (AttributeError, ValueError):
             pass
         else:
             return is_local < upstream
