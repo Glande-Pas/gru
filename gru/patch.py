@@ -109,7 +109,7 @@ def addon_diff(addon: gru.addon.Addon, orig_addon: gru.addon.Addon, out=sys.stdo
     # Output some metadata
     utcnow = datetime.datetime.now(datetime.UTC)
     print(
-        f'Addon: {addon.metadata["title"]}', f'Version: {addon.metadata["installed_version"]}',
+        f'Addon: {addon.title}', f'Version: {addon.version}',
         f'Date: {utcnow.ctime()} +0000', '', sep='\n', file=out
     )
 
@@ -121,7 +121,7 @@ def addon_diff(addon: gru.addon.Addon, orig_addon: gru.addon.Addon, out=sys.stdo
     n_diff_files = 0
     for file in files & orig_files:
         with encoding_open(addon.folder / file) as f, encoding_open(orig_addon.folder / file) as g:
-            diff = line_diff(f.read(), g.read())
+            diff = line_diff(g.read(), f.read())
         if diff.strip():
             n_diff_files += 1
             print(f'--- {addon.folder.name}/{file}', format_file_mtime(orig_addon.folder / file), sep='\t', file=out)
