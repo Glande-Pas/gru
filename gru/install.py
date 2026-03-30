@@ -15,6 +15,7 @@ import zipfile
 import requests
 import shutil
 import datetime
+import email.utils
 import functools
 import warnings
 import traceback
@@ -344,7 +345,7 @@ class Folder:
 
         size = int(headers.get('content-length', 0))
         if changed := headers.get('last-modified'):
-            changed = datetime.datetime.strptime(changed, r'%a, %d %b %Y %H:%M:%S %Z')
+            changed = email.utils.parsedate_to_datetime(changed).astimezone(datetime.timezone.utc).replace(tzinfo=None)
         # Try to get suggested filename from headers
         for tok in map(str.strip, headers.get('content-disposition', '').split(';')):
             if tok.startswith('filename='):
