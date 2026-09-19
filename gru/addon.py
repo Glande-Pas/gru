@@ -20,6 +20,13 @@ def atol(val: str) -> int:
     return int(num.group(0)) if num is not None else 0
 
 
+def _parse_version(value: str) -> tuple[int, ...] | None:
+    """ Parse a dotted version string into a tuple of ints, or None if it has no digits at all """
+    if not isinstance(value, str) or not any(char.isdigit() for char in value):
+        return None
+    return tuple(atol(token) for token in value.split('.'))
+
+
 # AddonInfo
 # id api version title author
 # date link category directories
@@ -64,11 +71,11 @@ class AddonInfo(DisplayAddonProtocol):
 
     def __init__(self, id_: int, metadata: dict) -> None:
         self.id = id_
-        self.metadata = metadata
-        self.title = metadata.pop('title')
-        self.author = metadata.pop('author')
-        self.version = metadata.pop('version')
-        self.api = metadata.pop('api').split()
+        self.metadata = {**metadata}
+        self.title = self.metadata.pop('title')
+        self.author = self.metadata.pop('author')
+        self.version = self.metadata.pop('version')
+        self.api = self.metadata.pop('api').split()
         self.folders: dict[pathlib.Path, InstalledAddon] = {}
 
         dirs = set(self.metadata['directories']) - GARBAGE
@@ -201,12 +208,9 @@ class InstalledAddon(Dependency, DisplayAddonProtocol):
         if self.id is None:
             return False
 
-        try:
-            is_local = tuple(atol(token) for token in self.version.split('.'))
-            upstream = tuple(atol(token) for token in self.infos.version.split('.'))
-        except (AttributeError, ValueError):
-            pass
-        else:
+        is_local = _parse_version(self.version)
+        upstream = _parse_version(self.infos.version)
+        if is_local is not None and upstream is not None:
             return is_local < upstream
 
         stat = self.manifest.stat()

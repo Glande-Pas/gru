@@ -5,7 +5,7 @@ import warnings
 
 import pytest
 
-from gru.addon import atol, AddonInfo, InstalledAddon, Dependency
+from gru.addon import atol, _parse_version, AddonInfo, InstalledAddon, Dependency
 
 from .conftest import make_addon_info, make_installed, write_manifest
 
@@ -25,6 +25,20 @@ class TestAtol:
     ])
     def test_atol(self, value, expected):
         assert atol(value) == expected
+
+
+class TestParseVersion:
+    def test_dotted_numeric(self):
+        assert _parse_version('1.20') == (1, 20)
+
+    def test_no_digits_returns_none(self):
+        assert _parse_version('unknown') is None
+
+    def test_non_string_returns_none(self):
+        assert _parse_version(None) is None
+
+    def test_mixed_digits_and_text_parses_leading_number(self):
+        assert _parse_version('1.2beta') == (1, 2)
 
 
 # ---------------------------------------------------------------------------
@@ -178,19 +192,17 @@ class TestInstalledAddonCanUpdate:
         installed.link(upstream)
         assert installed.can_update is False
 
-    def test_non_numeric_version_does_not_reach_date_fallback(self, tmp_path):
-        """atol() never raises, so non-numeric versions compare as (0,) < (0,), not a fallback."""
+    def test_non_numeric_version_falls_back_to_date(self, tmp_path):
         installed = make_installed(tmp_path, 'MyAddon', Version='unknown')
         upstream = make_addon_info(title='MyAddon', version='unknown', date=datetime.datetime(2100, 1, 1))
         installed.link(upstream)
-        assert installed.can_update is False
+        # manifest file was just written -> its mtime is way before the year 2100 upstream date
+        assert installed.can_update is True
 
-    def test_date_fallback_only_reachable_via_non_string_version(self, tmp_path):
-        """The except clause only triggers for a non-string version (e.g. None)."""
+    def test_non_string_version_falls_back_to_date(self, tmp_path):
         installed = make_installed(tmp_path, 'MyAddon', Version='1.0')
         upstream = make_addon_info(title='MyAddon', version=None, date=datetime.datetime(2100, 1, 1))
         installed.link(upstream)
-        # manifest file was just written -> its mtime is way before the year 2100 upstream date
         assert installed.can_update is True
 
 

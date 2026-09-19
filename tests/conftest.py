@@ -48,6 +48,9 @@ class StubAPI:
     def search(self, term: str) -> list:
         return []
 
+    def cat_name_hierarchy(self, start: int) -> list:
+        return []
+
     def dir(self, name: str) -> StubAddon:
         try:
             return self._addons[name]

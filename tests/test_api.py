@@ -191,13 +191,15 @@ class TestApiLookups:
 
 
 class TestApiFind:
+    """API.find() always returns a list (0, 1, or N matches)."""
+
     def test_find_by_numeric_id(self):
         addon = make_addon_info(id_=5, title='MyAddon')
         api = make_api(addons={5: addon})
 
         class Local:
             installed = []
-        assert api.find('5', Local()) is addon
+        assert api.find('5', Local()) == [addon]
 
     def test_find_by_exact_name(self):
         addon = make_addon_info(id_=1, title='MyAddon')
@@ -205,7 +207,7 @@ class TestApiFind:
 
         class Local:
             installed = []
-        assert api.find('myaddon', Local()) is addon
+        assert api.find('myaddon', Local()) == [addon]
 
     def test_find_by_local_installed_dir_not_in_api(self):
         api = make_api()
@@ -217,7 +219,7 @@ class TestApiFind:
             installed = [FakeInstalled()]
 
         result = api.find('LocalOnly', Local())
-        assert result is Local.installed[0]
+        assert result == Local.installed
 
     def test_find_falls_back_to_fuzzy_search(self):
         addon = make_addon_info(id_=1, title='SomewhatLongName')
@@ -228,6 +230,14 @@ class TestApiFind:
 
         result = api.find('SomewhatLong', Local())
         assert addon in result
+
+    def test_find_no_match_anywhere_returns_empty_list(self):
+        api = make_api()
+
+        class Local:
+            installed = []
+
+        assert api.find('nope', Local()) == []
 
 
 # ---------------------------------------------------------------------------

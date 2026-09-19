@@ -14,7 +14,7 @@ import configparser
 import typing
 from collections.abc import Iterable, Iterator, Mapping
 
-from .config import user_cache
+from . import config as gruconfig
 from .addon import AddonInfo, DisplayAddonProtocol
 
 
@@ -106,13 +106,12 @@ def _lookup(source: Iterable[DisplayAddonProtocol], attr: str, match: str | int 
         raise ValueError(f'{attr} {match!r} not found in list')
 
 class API:
-    session = requests_cache.CachedSession(user_cache('api'), expire_after=datetime.timedelta(hours=1))
-
     def  __init__(self, config: configparser.ConfigParser) -> None:
         self.pages = {}
         endpoint = config.get('api', 'endpoint')
         gamepaths = config.items(f'{self.game}UIv{self.version}.paths')
         self.pages = {key: endpoint.format(version=self.version, game=self.game, path=path) for key, path in gamepaths}
+        self.session = requests_cache.CachedSession(gruconfig.user_cache('api'), expire_after=datetime.timedelta(hours=1))
 
     def _load(self, url: str, fallback: typing.Any = None) -> typing.Any:
         """ Load a page and return the JSON, ensure we use cached page if <1h old """
@@ -169,28 +168,28 @@ class API:
         """ Lookup an addon by name (exact match) """
         return _lookup(self.addons.values(), 'title', str(name).lower())
 
-    def find(self, val: str, local: gru.install.Folder) -> AddonInfo | gru.addon.InstalledAddon | list[AddonInfo]:
-        """ Search for an addon generically """
+    def find(self, val: str, local: gru.install.Folder) -> list[AddonInfo | gru.addon.InstalledAddon]:
+        """ Search for an addon generically. Always returns a list (0, 1, or N matches). """
         # Various methods of exact matches
         try:
-            return self.addon(int(val))
+            return [self.addon(int(val))]
         except (ValueError, KeyError):
             pass
 
         try:
-            return self.name(val)
+            return [self.name(val)]
         except ValueError:
             pass
 
         try:
-            return self.dir(val)
+            return [self.dir(val)]
         except FileNotFoundError:
             pass
 
         # Find by dir but locally, not from API
         for addon in local.installed:
             if addon.dir == val:
-                return addon
+                return [addon]
 
         # Otherwise revert to search and return a list of candidates
         return self.search(val)

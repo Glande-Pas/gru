@@ -262,6 +262,28 @@ def add_repl_commands(group: click.Group) -> None:
         raise click_repl.ExitReplException()
 
 
+def resolve_addons_root(config: configparser.ConfigParser, game: str, config_file: pathlib.Path | None) -> None:
+    """ Ensure `config` has a valid addons root, prompting interactively (and saving) if missing """
+    root = config.get(f'{game}.addons', 'root')
+    if not root or not pathlib.Path(root).exists():
+        click.echo(f'{game} addons directory not found!')
+        root = click.prompt('Path to addons directory', prompt_suffix=':\n>> ',
+                            type=click.Path(exists=True, file_okay=False, path_type=pathlib.Path))
+        config.set(f'{game}.addons', 'root', str(root.resolve()))
+        save_config(config, config_file)
+
+
+def build_app(game: str, config_file: pathlib.Path | None) -> tuple[configparser.ConfigParser, API, Folder]:
+    """ Load config, ensure a valid addons root, and build a live API + scanned Folder.
+    The single seam a test needs to monkeypatch to drive commands without real network/disk. """
+    config = load_config(config_file)
+    resolve_addons_root(config, game, config_file)
+    api = API.live(config)
+    local = Folder(game, config)
+    local.scan(api)
+    return config, api, local
+
+
 @click.group(cls=SectionedHelpGroup, invoke_without_command=True, context_settings=dict(help_option_names=['-h', '--help']))
 @click.option('--config', 'config_file', help='path to config file',
               type=click.Path(dir_okay=False, writable=True, path_type=pathlib.Path), default=None)
@@ -274,21 +296,12 @@ def main(ctx: click.Context, game: str = 'ESO', config_file: pathlib.Path | None
     ctx.ensure_object(dict)
     ctx.obj['warnings'] = ctx.with_resource(warnings.catch_warnings(record=True, category=UserWarning))
 
-    config = ctx.obj['config'] = load_config(config_file)
+    config, api, local = build_app(game, config_file)
+    ctx.obj['config'] = config
     ctx.obj['game'] = game
     ctx.obj['config_file'] = config_file
-
-    root = config.get(f'{game}.addons', 'root')
-    if not root or not pathlib.Path(root).exists():
-        click.echo(f'{game} addons directory not found!')
-        root = click.prompt('Path to addons directory', prompt_suffix=':\n>> ',
-                            type=click.Path(exists=True, file_okay=False, path_type=pathlib.Path))
-        config.set(f'{game}.addons', 'root', str(root.resolve()))
-        save_config(config, config_file)
-
-    api = ctx.obj['api'] = API.live(config)
-    local = ctx.obj['local'] = Folder(game, config)
-    local.scan(api)
+    ctx.obj['api'] = api
+    ctx.obj['local'] = local
 
     if ctx.invoked_subcommand is None:
         add_repl_commands(main)
@@ -392,15 +405,16 @@ def get(ctx: click.Context, addon: list[str], auto_deps: bool = True, opt: bool 
             click.echo()
             if batch:
                 warnings.warn(f'Skipped install of unmatched addon {addon_spec}')
-        if isinstance(addon, Iterable):
-            if not batch:
-                addon = _prompt_addon(addon, 'Confirm installation?')
-            elif len(addon) == 1:
-                addon = addon[0]
-            else:
-                click.echo(f'Ambiguous addon specificiation {addon_spec}, skipping')
-                warnings.warn(f'Skipped install of ambiguous addon {addon_spec}')
-                addon = None
+            continue
+
+        if not batch:
+            addon = _prompt_addon(addon, 'Confirm installation?')
+        elif len(addon) == 1:
+            addon = addon[0]
+        else:
+            click.echo(f'Ambiguous addon specificiation {addon_spec}, skipping')
+            warnings.warn(f'Skipped install of ambiguous addon {addon_spec}')
+            addon = None
 
         if not addon:
             continue

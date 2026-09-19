@@ -315,6 +315,30 @@ class Folder:
                 fd.write(chunk)
                 prog.update(len(chunk))
 
+    @staticmethod
+    def _suggested_filename(headers: dict, default: str) -> str:
+        """ Extract the server-suggested filename from a Content-Disposition header, if any """
+        for tok in map(str.strip, headers.get('content-disposition', '').split(';')):
+            if tok.startswith('filename='):
+                return tok[10:].strip('"')
+        return default
+
+    @staticmethod
+    def _cache_is_fresh(headers: dict, zippath: pathlib.Path) -> bool:
+        """ Whether the cached zip at `zippath` is still up to date per HEAD response `headers` """
+        if not zippath.exists():
+            return False
+        changed = headers.get('last-modified')
+        if not changed:
+            return False
+        changed = email.utils.parsedate_to_datetime(changed).astimezone(datetime.timezone.utc).replace(tzinfo=None)
+        size = int(headers.get('content-length', 0))
+        stat = zippath.stat()
+        # NB. this is correct on *nix and NTFS, but not FAT which uses local timezone
+        # Hopefully FAT is not used too much anymore? Otherwise we need a config() function to handle this
+        freshness = datetime.datetime.fromtimestamp(stat.st_mtime, datetime.timezone.utc)
+        return size == stat.st_size and changed < freshness
+
     def _unzip(self, zf: zipfile.ZipFile, files: list[tuple[pathlib.Path, bool, int]], dest: pathlib.Path, progress: ProgressProtocol) -> None:
         dest = dest.resolve()
         dest.mkdir(parents=True, exist_ok=True)
@@ -345,26 +369,14 @@ class Folder:
         with requests.head(url, allow_redirects=True) as check:
             headers = {key.lower(): value for key, value in check.headers.items()}
 
-        size = int(headers.get('content-length', 0))
-        if changed := headers.get('last-modified'):
-            changed = email.utils.parsedate_to_datetime(changed).astimezone(datetime.timezone.utc).replace(tzinfo=None)
-        # Try to get suggested filename from headers
-        for tok in map(str.strip, headers.get('content-disposition', '').split(';')):
-            if tok.startswith('filename='):
-                fname = tok[10:].strip('"')
-                break
-
-        if (zippath := user_cache('dl', fname)).exists():
-            stat = zippath.stat()
-            # NB. this is correct on *nix and NTFS, but not FAT which uses local timezone
-            # Hopefully FAT is not used too much anymore? Otherwise we need a config() function to handle this
-            freshness = datetime.datetime.utcfromtimestamp(stat.st_mtime)
-            fresh = size == stat.st_size and changed and changed < freshness
+        fname = self._suggested_filename(headers, fname)
+        zippath = user_cache('dl', fname)
 
         # Download
-        if zippath.exists() and fresh:
+        if self._cache_is_fresh(headers, zippath):
             print(f'Using cache {fname}')
         else:
+            size = int(headers.get('content-length', 0))
             with requests.get(url, stream=True, allow_redirects=True) as dl:
                 with open(zippath, 'wb') as fd:
                     self._download(dl, fd, progress(size, f'Downloading {fname}...'))

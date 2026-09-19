@@ -262,3 +262,51 @@ class TestScan:
         make_installed(addon_root, 'Second')
         folder.scan()
         assert {a.dir for a in folder.installed} == {'First', 'Second'}
+
+
+# ---------------------------------------------------------------------------
+# unpack()'s extracted, network-free decision logic
+# ---------------------------------------------------------------------------
+
+class TestSuggestedFilename:
+    def test_uses_content_disposition_filename(self, folder):
+        headers = {'content-disposition': 'attachment; filename="Foo.zip"'}
+        assert folder._suggested_filename(headers, 'default.zip') == 'Foo.zip'
+
+    def test_falls_back_to_default_without_header(self, folder):
+        assert folder._suggested_filename({}, 'default.zip') == 'default.zip'
+
+
+class TestCacheIsFresh:
+    def test_missing_file_is_not_fresh(self, folder, tmp_path):
+        headers = {'last-modified': 'Wed, 21 Oct 2015 07:28:00 GMT', 'content-length': '5'}
+        assert folder._cache_is_fresh(headers, tmp_path / 'nope.zip') is False
+
+    def test_no_last_modified_header_is_not_fresh(self, folder, tmp_path):
+        zippath = tmp_path / 'cached.zip'
+        zippath.write_bytes(b'12345')
+        assert folder._cache_is_fresh({'content-length': '5'}, zippath) is False
+
+    def test_matching_size_and_newer_mtime_is_fresh(self, folder, tmp_path):
+        import os
+        zippath = tmp_path / 'cached.zip'
+        zippath.write_bytes(b'12345')
+        os.utime(zippath, (2000000000, 2000000000))  # 2033 -- well after the header date
+        headers = {'last-modified': 'Wed, 21 Oct 2015 07:28:00 GMT', 'content-length': '5'}
+        assert folder._cache_is_fresh(headers, zippath) is True
+
+    def test_size_mismatch_is_not_fresh(self, folder, tmp_path):
+        import os
+        zippath = tmp_path / 'cached.zip'
+        zippath.write_bytes(b'12345')
+        os.utime(zippath, (2000000000, 2000000000))
+        headers = {'last-modified': 'Wed, 21 Oct 2015 07:28:00 GMT', 'content-length': '999'}
+        assert folder._cache_is_fresh(headers, zippath) is False
+
+    def test_cache_older_than_last_modified_is_not_fresh(self, folder, tmp_path):
+        import os
+        zippath = tmp_path / 'cached.zip'
+        zippath.write_bytes(b'12345')
+        os.utime(zippath, (1000000000, 1000000000))  # 2001 -- before the header date
+        headers = {'last-modified': 'Wed, 21 Oct 2015 07:28:00 GMT', 'content-length': '5'}
+        assert folder._cache_is_fresh(headers, zippath) is False
