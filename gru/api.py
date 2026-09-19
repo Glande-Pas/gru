@@ -10,10 +10,12 @@ import difflib
 import warnings
 import functools
 import collections
-from collections.abc import Iterable, Mapping
+import configparser
+import typing
+from collections.abc import Iterable, Iterator, Mapping
 
 from .config import user_cache
-from .addon import AddonInfo
+from .addon import AddonInfo, DisplayAddonProtocol
 
 
 def to_list(arg: Iterable | None) -> list:
@@ -33,7 +35,7 @@ def epoch_ms(val: float) -> datetime.datetime:
     return datetime.datetime.fromtimestamp(int(val) / 1000)
 
 
-def _exception_root_cause(err):
+def _exception_root_cause(err: Exception) -> str:
     while True:
         if getattr(err, '__cause__', None) is not None:
             err = err.__cause__  # standard python exception chaining
@@ -52,7 +54,8 @@ def _exception_root_cause(err):
     return str(err)
 
 
-def _fuzz(source, attr, term, cutoff, maxlen, tiebreakattr=[]):
+def _fuzz(source: Iterable[DisplayAddonProtocol], attr: str, term: str, cutoff: float, maxlen: int,
+          tiebreakattr: list[str] = []) -> list[DisplayAddonProtocol]:
     """ Fuzzy search that prioritises maximal subset matches, then longest match, then by tie breakers.
 
     Matches `term` in the `attr` attribute within the `source` iterable, returning at most `maxlen` items.
@@ -78,7 +81,7 @@ def _fuzz(source, attr, term, cutoff, maxlen, tiebreakattr=[]):
     candidates = sorted(candidates, key=operator.itemgetter(0), reverse=True)
     return [addon for prio, addon in candidates[:maxlen]]
 
-def _filter(source, attr, match):
+def _filter(source: Iterable[DisplayAddonProtocol], attr: str, match: str | int | None) -> Iterator[DisplayAddonProtocol]:
     """ Search with exact match (lowercased) """
     for addon in source:
         value = getattr(addon, attr)
@@ -94,7 +97,7 @@ def _filter(source, attr, match):
         elif match == value:
             yield addon
 
-def _lookup(source, attr, match):
+def _lookup(source: Iterable[DisplayAddonProtocol], attr: str, match: str | int | None) -> DisplayAddonProtocol:
     """ Search with exact match (lowercased) """
     try:
         return next(_filter(source, attr, match))
@@ -105,11 +108,11 @@ def _lookup(source, attr, match):
 class API:
     session = requests_cache.CachedSession(user_cache('api'), expire_after=datetime.timedelta(hours=1))
 
-    def  __init__(self, game: str, version: int):
+    def  __init__(self, game: str, version: int) -> None:
         self.game = game
         self.version = version
 
-    def _load(self, url, fallback=None):
+    def _load(self, url: str, fallback: typing.Any = None) -> typing.Any:
         """ Load a page and return the JSON, ensure we use cached page if <1h old """
         try:
             response = self.session.get(url)
@@ -128,11 +131,11 @@ class API:
         return fallback
 
     @classmethod
-    def reset(cls):
+    def reset(cls) -> None:
         """ Clear the cache """
         requests_cache.clear()
 
-    def search(self, term: str, tiebreakattr: str | None = None, maxlen: int = 30):
+    def search(self, term: str, tiebreakattr: str | None = None, maxlen: int = 30) -> list[AddonInfo]:
         """ Search `term` in addon names """
         # We want at least 75% of search string in result
         if tiebreakattr is None:
@@ -140,15 +143,15 @@ class API:
         return _fuzz(self.addons.values(), 'title', term, cutoff=.75 if len(term) > 3 else 1, maxlen=maxlen,
                      tiebreakattr=[tiebreakattr])
 
-    def addon(self, id_: int):
+    def addon(self, id_: int) -> AddonInfo:
         """ Lookup an addon by id """
         return self.addons[id_]
 
-    def cat(self, id_: int):
+    def cat(self, id_: int) -> dict:
         """ Lookup a category by id """
         return self.categories[id_]
 
-    def dir(self, dir_: str):
+    def dir(self, dir_: str) -> AddonInfo:
         """ Lookup an addon by directory """
         partial = []
         for addon in self.addons.values():
@@ -160,11 +163,11 @@ class API:
             return partial[0]
         raise FileNotFoundError(f'Directory {dir_!r} not found in list')
 
-    def name(self, name: str):
+    def name(self, name: str) -> AddonInfo:
         """ Lookup an addon by name (exact match) """
         return _lookup(self.addons.values(), 'title', str(name).lower())
 
-    def find(self, val: str, local: gru.install.Folder):
+    def find(self, val: str, local: gru.install.Folder) -> AddonInfo | gru.addon.InstalledAddon | list[AddonInfo]:
         """ Search for an addon generically """
         # Various methods of exact matches
         try:
@@ -191,7 +194,7 @@ class API:
         return self.search(val)
 
     @classmethod
-    def _factory(cls, config, game, stable=True):
+    def _factory(cls, config: configparser.ConfigParser, game: str, stable: bool = True) -> API:
         version = config.getint('api', 'version') + int(not stable)
         if game == 'ESO' and version == 3:
             return ESOUIv3(config)
@@ -200,22 +203,22 @@ class API:
         raise NotImplementedError(f'API version {version} for {game} not implemented')
 
     @classmethod
-    def live(cls, config):
+    def live(cls, config: configparser.ConfigParser) -> API:
         return cls._factory(config, 'ESO', True)
 
     @classmethod
-    def alpha(cls, config):
+    def alpha(cls, config: configparser.ConfigParser) -> API:
         return cls._factory(config, 'ESO', False)
 
 
 class ESOUIv4(API):
-    def __init__(self, config):
+    def __init__(self, config: configparser.ConfigParser) -> None:
         super().__init__('ESO', 4)
         endpoint = config.get('api', 'endpoint')
         self.pages = {key: endpoint.format(version=4, path=val) for key, val in config.items('ESOUIv4.paths')}
 
     @functools.cached_property
-    def globalconf(self):
+    def globalconf(self) -> requests.structures.CaseInsensitiveDict:
         return case_insensitive(self._load(self.pages['globalconf'], {}))
 
 
@@ -247,21 +250,21 @@ class ESOUIv3(API):
         'UICATParentIDs': ('parent_ids', functools.partial(map, int)),
     }
 
-    def __init__(self, config):
+    def __init__(self, config: configparser.ConfigParser) -> None:
         super().__init__('ESO', 3)
         endpoint = config.get('api', 'endpoint')
         self.pages = {key: endpoint.format(version=3, path=val) for key, val in config.items('ESOUIv3.paths')}
 
     @functools.cached_property
-    def globalconf(self):
+    def globalconf(self) -> dict:
         return self._load(self.pages['globalconf'], {})
 
     @functools.cached_property
-    def gameconf(self):
+    def gameconf(self) -> dict:
         return self._load(self.pages['gameconf'], {})
 
     @functools.cached_property
-    def addons(self):
+    def addons(self) -> dict[int, AddonInfo]:
         data = {}
         for addon in self._load(self.pages['filelist'], []):
             infos = {new: typ(addon[old]) for old, (new, typ) in self.fileinfo_rename.items()}
@@ -269,7 +272,7 @@ class ESOUIv3(API):
         return data
 
     @functools.cached_property
-    def categories(self):
+    def categories(self) -> dict[int, dict]:
         categories = {}
         for cat in self._load(self.pages['catlist'], []):
             categories[int(cat['UICATID'])] = {new: typ(cat[old]) for old, (new, typ) in self.catlist_rename.items()}
@@ -279,7 +282,7 @@ class ESOUIv3(API):
 
         return categories
 
-    def cat_name_hierarchy(self, start):
+    def cat_name_hierarchy(self, start: int) -> list[str]:
         """ Go up parent category ids (if any) and return list of names """
         cat_list = [start]
         cat_names = []

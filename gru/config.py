@@ -8,9 +8,11 @@ import contextlib
 import builtins
 import gettext
 import pathlib
+import typing
 import sys
 import os
 import io
+from collections.abc import Iterator
 
 IS_POSIX = os.name == 'posix'
 IS_MAC_OS = sys.platform == 'darwin'
@@ -145,7 +147,7 @@ def load_config(config_file: pathlib.Path | str | None = None) -> configparser.C
     return config
 
 
-def display_config(config: configparser.ConfigParser, game: str) -> dict[str]:
+def display_config(config: configparser.ConfigParser, game: str) -> dict[str, str]:
     # The cli-configurable sections and names under which they will appear
     return {
         **{f'app.{key}': value for key, value in config.items('app')},
@@ -153,7 +155,7 @@ def display_config(config: configparser.ConfigParser, game: str) -> dict[str]:
     }
 
 
-def update_config(config: configparser.ConfigParser, game: str, values):
+def update_config(config: configparser.ConfigParser, game: str, values: dict[str, str]) -> None:
     # The cli-configurable sections and names under which they will appear
     sections = {'app': 'app', 'addons': f'{game}.addons'}
 
@@ -164,18 +166,18 @@ def update_config(config: configparser.ConfigParser, game: str, values):
         config.set(sections[sec], entry, value)
 
 
-def save_config(config: configparser.ConfigParser, config_file: pathlib.Path | str | None = None):
+def save_config(config: configparser.ConfigParser, config_file: pathlib.Path | str | None = None) -> None:
     config_file = user_config() if config_file is None else pathlib.Path(config_file)
     with open(config_file, 'w') as f:
         config.write(f)
 
 
 class FormatMixin():
-    def gettext_format(self, string, *args, **kwargs):
+    def gettext_format(self, string: str, *args: typing.Any, **kwargs: typing.Any) -> str:
         """ A function that condenses translation.gettext(string).format(...) in single function """
         return super().gettext(string).format(*args, **kwargs)
 
-    def install(self):
+    def install(self) -> None:
         builtins.__dict__['_'] = self.gettext_format
 
 
@@ -187,7 +189,7 @@ class GNUFormatTranslations(FormatMixin, gettext.GNUTranslations):
     pass
 
 
-def install_translation(domain: str, localedir: pathlib.Path):
+def install_translation(domain: str, localedir: pathlib.Path) -> None:
     """ Installs a gettext translation object.
 
     This re-implements gettext’s translation() and find() followed by .install(), to use a Traversable as localedir
@@ -205,7 +207,7 @@ def install_translation(domain: str, localedir: pathlib.Path):
         for nelang in gettext._expand_lang(lang):
             file = localedir.joinpath(nelang, 'LC_MESSAGES', domain + '.mo')
             if file.is_file():
-                with file.open() as fp:
+                with file.open('rb') as fp:
                     return GNUFormatTranslations(fp).install()
     else:
         return NullFormatTranslations().install()

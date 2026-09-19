@@ -47,7 +47,7 @@ class DisplayAddonProtocol(Protocol):
 
 
 class Dependency:
-    def __init__(self, dir_: str, version: int = 0):
+    def __init__(self, dir_: str, version: int = 0) -> None:
         self.dir = dir_
         self.dep_version = version
 
@@ -62,7 +62,7 @@ class AddonInfo(DisplayAddonProtocol):
     invalid_chars = re.compile(r'[^\w-]')
     is_local = False
 
-    def __init__(self, id_: int, metadata: dict):
+    def __init__(self, id_: int, metadata: dict) -> None:
         self.id = id_
         self.metadata = metadata
         self.title = metadata.pop('title')
@@ -85,14 +85,14 @@ class AddonInfo(DisplayAddonProtocol):
             self.dir = self.metadata['directories'][0]
 
     @classmethod
-    def slugify(cls, value):
+    def slugify(cls, value: str) -> str:
         value = unicodedata.normalize('NFKD', value).encode('ascii', 'ignore').decode('ascii')
         return cls.invalid_chars.sub('', value).strip('_-')
 
-    def register(self, addon: InstalledAddon):
+    def register(self, addon: InstalledAddon) -> None:
         self.folders[addon.folder] = addon
 
-    def deregister(self, addon: InstalledAddon):
+    def deregister(self, addon: InstalledAddon) -> None:
         del self.folders[addon.folder]
 
     @property
@@ -123,7 +123,7 @@ class InstalledAddon(Dependency, DisplayAddonProtocol):
     is_local = True
     is_lib: bool
 
-    def __init__(self, path: pathlib.Path, parent: InstalledAddon | None = None):
+    def __init__(self, path: pathlib.Path, parent: InstalledAddon | None = None) -> None:
         self.folder = path
         super().__init__(path.name, 0)  # set dir
         self.id = None
@@ -141,7 +141,7 @@ class InstalledAddon(Dependency, DisplayAddonProtocol):
                 return manifest
         raise FileNotFoundError('Invalid addon: Missing manifest')
 
-    def _parse_manifest(self):
+    def _parse_manifest(self) -> dict[str, str]:
         """ Parse the manifest file """
         # Parse metadata handling multiple line entries
         metadata = {}
@@ -191,7 +191,7 @@ class InstalledAddon(Dependency, DisplayAddonProtocol):
     def __repr__(self) -> str:
         return f'Addon[dir={getattr(self, "dir", None)}, id={getattr(self, "id", None)}]({", ".join([f"folder={self.folder}", f"nesting={self.parent is not None}", *(f"{key}={val}" for key, val in self.metadata.items())])})'
 
-    def link(self, infos: AddonInfo):
+    def link(self, infos: AddonInfo) -> None:
         self.id = infos.id
         self.infos = infos
         infos.register(self)
@@ -219,5 +219,4 @@ class InstalledAddon(Dependency, DisplayAddonProtocol):
             path for path in (path.relative_to(self.folder) for path in self.folder.rglob('*') if path.is_file())
             if not any(part.startswith('.') or part in GARBAGE for part in path.parts)
         ]
-
 

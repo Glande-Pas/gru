@@ -105,7 +105,7 @@ def parse_diff(handle: typing.IO) -> Patch:
     return patch
 
 
-def addon_diff(addon: gru.addon.Addon, orig_addon: gru.addon.Addon, out=sys.stdout) -> int:
+def addon_diff(addon: gru.addon.InstalledAddon, orig_addon: gru.addon.InstalledAddon, out: typing.IO = sys.stdout) -> int:
     # Output some metadata
     utcnow = datetime.datetime.now(datetime.UTC)
     print(
@@ -145,7 +145,7 @@ def addon_diff(addon: gru.addon.Addon, orig_addon: gru.addon.Addon, out=sys.stdo
     return n_diff_files
 
 
-def apply_patch(orig: str, patch: FilePatch) -> str:
+def apply_patch(orig: str, patch: FilePatch) -> tuple[str, list[bool]]:
     dmp = diff_match_patch.diff_match_patch()
 
     diff_lines = '\n'.join(sum((lines for header, changes in patch for op, lines in changes), []))
@@ -167,7 +167,7 @@ def apply_patch(orig: str, patch: FilePatch) -> str:
     return ''.join(line_array[ord(char)] for char in result), values
 
 
-def addon_patch(addon: gru.addon.Addon, patch: Patch) -> tuple[int, int]:
+def addon_patch(addon: gru.addon.InstalledAddon, patch: Patch) -> tuple[int, int]:
     if not all(str(file) == '/dev/null' or file.parts[0] == addon.folder.name for inout_files in patch for file in inout_files):
         raise ValueError('Patch specifies changes outside of addon folder')
 
@@ -244,7 +244,7 @@ def addon_patch(addon: gru.addon.Addon, patch: Patch) -> tuple[int, int]:
     return n_changed_files, len(patch)
 
 
-def addon_patch_file(addon: gru.addon.Addon, diff: pathlib.Path) -> tuple[int, int]:
+def addon_patch_file(addon: gru.addon.InstalledAddon, diff: pathlib.Path) -> tuple[int, int]:
     try:
         with diff.open() as f:
             patch = parse_diff(f)

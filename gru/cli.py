@@ -15,11 +15,12 @@ import struct
 import click
 import math
 import sys
+import typing
 import os
 import re
 import click_repl
 import prompt_toolkit.history as prompt_history
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 
 from .config import load_config, save_config, user_cache, display_config, update_config
 from .api import API
@@ -28,7 +29,7 @@ from .install import Folder
 from .patch import addon_diff, addon_patch_file
 
 
-def get_config_bool(ctx: click.Context, string: str):
+def get_config_bool(ctx: click.Context, string: str) -> bool:
     section, key = string.format(**ctx.obj).rsplit('.', maxsplit=1)
     return ctx.obj['config'].getboolean(section, key)
 
@@ -39,7 +40,7 @@ class SectionedHelpGroup(click.Group):
     _cmd_shortcuts = {'rm': 'remove', 'up': 'update', 'ls': 'list', 's': 'search', 'cc': 'clear-caches', 'df': 'diff'}
 
     @classmethod
-    def _cmd_group(cls, cmd):
+    def _cmd_group(cls, cmd: click.Command) -> str:
         if cmd.name in {'get', 'remove', 'update'}:
             return 'main'
         elif cmd.name in {'help', 'exit'}:
@@ -47,10 +48,10 @@ class SectionedHelpGroup(click.Group):
         else:
             return 'extra'
 
-    def get_command(self, ctx, cmd_name):
+    def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
         return super().get_command(ctx, self._cmd_shortcuts.get(cmd_name, cmd_name))
 
-    def format_commands(self, ctx, formatter):
+    def format_commands(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
         shortcuts = {long: short for short, long in self._cmd_shortcuts.items()}
         for group in ['main', 'extra', 'command line']:
             rows = []
@@ -69,7 +70,7 @@ class SectionedHelpGroup(click.Group):
 class TermDisplay:
     _eso_colored_text = re.compile(r'\|c(?P<color>[0-9a-fA-F]{6})(?P<text>[^|]+)\|r')
 
-    def _wrapped(self, *infos: list[str, ...]):
+    def _wrapped(self, *infos: list[str]) -> None:
         pfx = ' ' * self.gutter
         width = shutil.get_terminal_size()[0] - self.gutter
         sep = ' |  '
@@ -87,17 +88,17 @@ class TermDisplay:
             click.echo(pfx + batch)
 
 
-    def _render_eso_text(self, text: str):
+    def _render_eso_text(self, text: str) -> str:
         return self._eso_colored_text.sub(lambda match: click.style(
             match.group('text'),
             fg=struct.unpack('BBB', bytes.fromhex(match.group('color')))
         ), text)
 
-    def _styled_width(self, text: str, width: int):
+    def _styled_width(self, text: str, width: int) -> str:
         text = self._render_eso_text(text)
         return text + ' ' * max(0, width - len(click.unstyle(text)))
 
-    def _installed(self, item: str, addon: gru.addon.InstalledAddon):
+    def _installed(self, item: str, addon: gru.addon.InstalledAddon) -> None:
         """ Show addon info from the API endpoint """
         click.echo()
         update = '' if not addon.can_update else f'{click.style("update available", bold=True)} - '
@@ -119,7 +120,7 @@ class TermDisplay:
         click.echo(' ' * self.gutter + addon.infos.metadata['link'])
 
 
-    def _addon_info(self, item: int, addon: gru.addon.Addon):
+    def _addon_info(self, item: int, addon: gru.addon.AddonInfo) -> None:
         """ Show addon info from the API endpoint """
         # TODO: Based on verbosity level, only click.echo a number of those:
         title = f'{item:{self.gutter}}{addon.title}'
@@ -140,7 +141,7 @@ class TermDisplay:
         click.echo(' ' * self.gutter + addon.metadata['link'])
 
 
-    def _folder(self, item: int, folder: gru.addon.InstalledAddon):
+    def _folder(self, item: int, folder: gru.addon.InstalledAddon) -> None:
         """ Show addon info from a local folder that was not matched with the API endpoint """
         click.echo()
         # Based on verbosity level, only click.echo a number of those:
@@ -159,7 +160,7 @@ class TermDisplay:
             click.echo(' ' * self.gutter + 'NB: this add-on could not be matched online and may be deprecated')
 
 
-    def __init__(self, results: list[AddonInfo | InstalledAddon], num_from: int = 0):
+    def __init__(self, results: list[gru.addon.AddonInfo | gru.addon.InstalledAddon], num_from: int = 0) -> None:
         """ Show a list of addons """
         self.gutter = 2 + math.ceil(math.log(num_from + len(results), 10))
         ctx = click.get_current_context()
@@ -178,13 +179,13 @@ class TermDisplay:
         click.echo()
 
 
-def _confirm(query: str):
+def _confirm(query: str) -> bool:
     answer = click.confirm(query, prompt_suffix=':\n>> ')
     click.echo()
     return answer
 
 
-def _prompt_addon(results: Iterable[gru.addon.DisplayAddonProtocol], confirm_prompt: str | None = None, show_batch: bool | None = None):
+def _prompt_addon(results: Iterable[gru.addon.DisplayAddonProtocol], confirm_prompt: str | None = None, show_batch: int | None = None) -> gru.addon.DisplayAddonProtocol | None:
     """ Pick an addon from a list of addons """
     results = list(results)
     if not results:
@@ -244,19 +245,19 @@ def _find_installed(local: gru.install.Folder, api: gru.api.API, term: str, conf
     return addon
 
 
-def _progress(size: int, message: str) -> ProgressProtocol:
+def _progress(size: int, message: str) -> gru.install.ProgressProtocol:
     return click.progressbar(length=size, label=message, width=0)
 
 
-def add_repl_commands(group: click.Group):
+def add_repl_commands(group: click.Group) -> None:
     """ Adds commands that are only useful in REPL mode to a click group """
     @group.command('help', help='Print CLI help')
-    def print_help():
+    def print_help() -> None:
         with click.Context(group) as ctx:
             click.echo(group.get_help(ctx))
 
     @group.command('exit', help='Exit CLI')
-    def exit_repl():
+    def exit_repl() -> typing.NoReturn:
         raise click_repl.ExitReplException()
 
 
@@ -266,7 +267,7 @@ def add_repl_commands(group: click.Group):
 @click.option('--game', 'game', help='Choice of game', hidden=True,
               type=click.Choice(['ESO']), default='ESO')
 @click.pass_context
-def main(ctx: click.Context, game: str = 'ESO', config_file: pathlib.Path | None = None):
+def main(ctx: click.Context, game: str = 'ESO', config_file: pathlib.Path | None = None) -> None:
     locale.setlocale(locale.LC_ALL, '')
 
     ctx.ensure_object(dict)
@@ -297,14 +298,14 @@ def main(ctx: click.Context, game: str = 'ESO', config_file: pathlib.Path | None
 
 @main.group()
 @click.pass_context
-def config(ctx: click.Context):
+def config(ctx: click.Context) -> None:
     pass
 
 
 @config.command('get')
 @click.pass_context
 @click.argument('entry', required=False)
-def config_get(ctx: click.Context, entry: str | None = None):
+def config_get(ctx: click.Context, entry: str | None = None) -> None:
     config = display_config(ctx.obj['config'], ctx.obj['game'])
     if not entry:
         for key, value in config.items():
@@ -331,7 +332,7 @@ def config_get(ctx: click.Context, entry: str | None = None):
 @click.pass_context
 @click.argument('entry')
 @click.argument('value')
-def config_set(ctx: click.Context, entry: str, value: str):
+def config_set(ctx: click.Context, entry: str, value: str) -> None:
     try:
         section_name, key = entry.split('.', 1)
     except ValueError:
@@ -350,7 +351,7 @@ def config_set(ctx: click.Context, entry: str, value: str):
         save_config(ctx.obj['config'], ctx.obj['config_file'])
 
 
-def show_warnings(ctx: click.Context):
+def show_warnings(ctx: click.Context) -> None:
     if not ctx.obj['warnings']:
         return
 
@@ -361,7 +362,7 @@ def show_warnings(ctx: click.Context):
 
 @main.result_callback()
 @click.pass_context
-def process_result(ctx: click.Context, result: typing.Any, game: str, config_file: str | None):
+def process_result(ctx: click.Context, result: typing.Any, game: str, config_file: str | None) -> None:
     show_warnings(ctx)
 
 
@@ -371,7 +372,7 @@ def process_result(ctx: click.Context, result: typing.Any, game: str, config_fil
 @click.option('--yes', '-y', 'batch', is_flag=True, default=False)
 @click.option('--opt/--no-opt', default=None, help='Include optional dependences')
 @click.pass_context
-def get(ctx: click.Context, addon: list[str], auto_deps: bool = True, opt: bool | None = None, batch: bool = False):
+def get(ctx: click.Context, addon: list[str], auto_deps: bool = True, opt: bool | None = None, batch: bool = False) -> None:
     """ Find, download, and install an addon """
     api = ctx.obj['api']
     local = ctx.obj['local']
@@ -434,7 +435,7 @@ def get(ctx: click.Context, addon: list[str], auto_deps: bool = True, opt: bool 
 @click.option('--clean-deps/--no-clean-deps', default=False, help='Clean up unused dependences')
 @click.option('--opt/--no-opt', default=None, help='Keep optional dependences')
 @click.pass_context
-def remove(ctx: click.Context, addon: str | None, clean_deps: bool = False, opt: bool | None = None):
+def remove(ctx: click.Context, addon: str | None, clean_deps: bool = False, opt: bool | None = None) -> None:
     """ Find and uninstall an addon """
     api = ctx.obj['api']
     local = ctx.obj['local']
@@ -467,7 +468,7 @@ def remove(ctx: click.Context, addon: str | None, clean_deps: bool = False, opt:
 @click.option('--opt/--no-opt', default=None, help='Include optional dependences')
 @click.option('--patch/--no-patch', default=None, help='Automatically re-apply patches')
 @click.pass_context
-def update(ctx: click.Context, auto_deps: bool, opt: bool | None, patch: bool | None):
+def update(ctx: click.Context, auto_deps: bool, opt: bool | None, patch: bool | None) -> None:
     """ Find out-of-date and missing addons and install them """
     api = ctx.obj['api']
     local = ctx.obj['local']
@@ -492,7 +493,7 @@ def update(ctx: click.Context, auto_deps: bool, opt: bool | None, patch: bool | 
 @main.command(help='Remove unused dependences')
 @click.option('--opt/--no-opt', default=True, help='Keep optional dependences')
 @click.pass_context
-def cleanup(ctx: click.Context, opt: bool | None = None):
+def cleanup(ctx: click.Context, opt: bool | None = None) -> None:
     """ Find and uninstall an addon """
     api = ctx.obj['api']
     local = ctx.obj['local']
@@ -509,7 +510,7 @@ def cleanup(ctx: click.Context, opt: bool | None = None):
 
 @main.command()
 @click.pass_context
-def check_api_release(ctx: click.Context, hidden: bool = True):
+def check_api_release(ctx: click.Context, hidden: bool = True) -> None:
     alpha_ok, live_ok = False, False
     try:
         if ctx.obj['api'].globalconf['API']['Version'] == 'LIVE':
@@ -537,7 +538,7 @@ def check_api_release(ctx: click.Context, hidden: bool = True):
 @click.argument('term', required=False)
 @click.option('-m', '--max', 'max_', help='max number of matches', default=10)
 @click.pass_context
-def search(ctx: click.Context, term: str | None, max_: int = 10):
+def search(ctx: click.Context, term: str | None, max_: int = 10) -> None:
     if term is None:
         term = click.prompt(f'Term to search for', prompt_suffix=':\n>> ')
 
@@ -552,7 +553,7 @@ def search(ctx: click.Context, term: str | None, max_: int = 10):
 
 @main.command('list', help='list installed add-ons')
 @click.pass_context
-def list_(ctx: click.Context):
+def list_(ctx: click.Context) -> None:
     api = ctx.obj['api']
     local = ctx.obj['local']
 
@@ -568,7 +569,7 @@ def list_(ctx: click.Context):
 @main.command(help='export installed add-ons')
 @click.option('--recurse', '-r', help='Recurse into subdirectories (will show private libraries)', default=False)
 @click.pass_context
-def export(ctx: click.Context, recurse: bool = False):
+def export(ctx: click.Context, recurse: bool = False) -> None:
     api = ctx.obj['api']
     local = ctx.obj['local']
 
@@ -590,7 +591,7 @@ def export(ctx: click.Context, recurse: bool = False):
 @main.command(help='List missing dependences')
 @click.option('--opt/--no-opt', help='include optional dependences')
 @click.pass_context
-def miss(ctx: click.Context, opt: bool):
+def miss(ctx: click.Context, opt: bool) -> None:
     api = ctx.obj['api']
     local = ctx.obj['local']
     missing = local.missing_deps(local.installed, opt=opt)
@@ -613,11 +614,26 @@ def miss(ctx: click.Context, opt: bool):
     show_warnings(ctx)
 
 
+@contextlib.contextmanager
+def unmodified_addon(api: gru.api.API, local: gru.install.Folder, addon: gru.addon.AddonInfo, url: str = None) -> Iterator[gru.addon.InstalledAddon]:
+    # Code to acquire resource, e.g.:
+    with tempfile.TemporaryDirectory() as tempdir:
+        ref_local = local.alt_location(pathlib.Path(tempdir))
+        ref_addon = addon.alt_location(ref_local.root)
+        # Be sure to compare to installed version not up-to-date upstream
+        ref_local.unpack(ref_addon, api, url_override=url)
+
+        if ref_addon.version != addon.version:
+            raise ValueError('Downloaded addon does not have same version as installed addon!')
+
+        yield ref_addon
+
+
 @main.command(help='Save the diff between current addon and upstream as a patch')
 @click.argument('addon', required=False)
 @click.option('--url', help='Download url for installed version', required=False)
 @click.pass_context
-def diff(ctx: click.Context, addon: str | None, url: str | None = None):
+def diff(ctx: click.Context, addon: str | None, url: str | None = None) -> None:
     api = ctx.obj['api']
     local = ctx.obj['local']
 
@@ -650,7 +666,7 @@ def diff(ctx: click.Context, addon: str | None, url: str | None = None):
 @click.argument('addon', required=False)
 @click.argument('patch', type=click.Path(dir_okay=False, path_type=pathlib.Path), required=False)
 @click.pass_context
-def patch(ctx: click.Context, addon: str | None, patch: pathlib.Path):
+def patch(ctx: click.Context, addon: str | None, patch: pathlib.Path) -> None:
     api = ctx.obj['api']
     local = ctx.obj['local']
 
@@ -676,7 +692,7 @@ def patch(ctx: click.Context, addon: str | None, patch: pathlib.Path):
 
 @main.command()
 @click.pass_context
-def clear_caches(ctx: click.Context):
+def clear_caches(ctx: click.Context) -> None:
     api = ctx.obj['api']
     local = ctx.obj['local']
     api.reset()

@@ -19,6 +19,8 @@ import email.utils
 import functools
 import warnings
 import traceback
+import configparser
+import typing
 import re
 from urllib.parse import quote as urllib_quote
 
@@ -32,16 +34,16 @@ from collections.abc import Iterator, Iterable
 
 
 class ProgressProtocol(Protocol):
-    def __init__(self, size: int, message: str): ...
+    def __init__(self, size: int, message: str) -> None: ...
     def __enter__(self) -> SilentProgress: ...
-    def __exit__(self, *args, **kwargs): ...
-    def update(self, size: int): ...
+    def __exit__(self, *args, **kwargs) -> None: ...
+    def update(self, size: int) -> None: ...
 
 
 class SilentProgress:
     """ NOP class "implementing" progress as context manager """
 
-    def __init__(self, size: int, message: str):
+    def __init__(self, size: int, message: str) -> None:
         """ Display progress with given total size and message """
         pass
 
@@ -49,17 +51,17 @@ class SilentProgress:
         """ Start of progress """
         return self
 
-    def __exit__(self, *args, **kwargs):
+    def __exit__(self, *args, **kwargs) -> None:
         """ End of progress """
         pass
 
-    def update(self, size: int):
+    def update(self, size: int) -> None:
         """ Update progress with given chunk size """
         pass
 
 
 class Folder:
-    def __init__(self, game: str, config: configparser.ConfigParser):
+    def __init__(self, game: str, config: configparser.ConfigParser) -> None:
         self.root: pathlib.Path = pathlib.Path(config.get(f'{game}.addons', 'root'))
         self.url_template: str = config.get(f'{game}.links', 'download')
         #: A list of addons that have local file info and are enriched as appropriate with API info
@@ -70,7 +72,7 @@ class Folder:
         return self._installed.values()
 
     @contextlib.contextmanager
-    def temp_root(self) -> Iterator[gru.addon.Folder]:
+    def temp_root(self) -> Iterator[Folder]:
         """ Yields a similarly-configured install folder at a temporary location. """
         with tempfile.TemporaryDirectory() as tempdir:
             yield Folder('game', {'game.addons': tempdir, 'game.links': self.url_template})
@@ -83,7 +85,7 @@ class Folder:
             yield temp_addon
             shutil.rmtree(temp_location)
 
-    def scan(self, api: gru.api.API | None = None):
+    def scan(self, api: gru.api.API | None = None) -> None:
         self._installed = self._scan(self.root, api)
 
     def _scan(self, root: pathlib.Path, api: gru.api.API | None = None) -> dict[pathlib.Path, gru.addon.InstalledAddon]:
@@ -143,19 +145,19 @@ class Folder:
         # Now we may have several addons claiming ownership of the same directories
         return results
 
-    def name(self, name: str):
+    def name(self, name: str) -> Iterator[gru.addon.InstalledAddon]:
         """ Lookup addons by name (exact match) """
         return _filter(self.installed, 'title', str(name).lower())
 
-    def dir(self, dir_: str):
+    def dir(self, dir_: str) -> Iterator[gru.addon.InstalledAddon]:
         """ Lookup addons by name (exact match) """
         return _filter(self.installed, 'dir', str(dir_).lower())
 
-    def id(self, id_: int):
+    def id(self, id_: int) -> Iterator[gru.addon.InstalledAddon]:
         """ Lookup addons by id (exact match) """
         return _filter(self.installed, 'id', id_)
 
-    def find(self, val: str, api: gru.api.API):
+    def find(self, val: str, api: gru.api.API) -> list[gru.addon.InstalledAddon]:
         """ Search for an installed addon generically """
         # Various methods of exact matches
         if by_name := list(self.name(val)):
@@ -170,7 +172,7 @@ class Folder:
 
         return sum((self.id(addon.id) for addon in api.search(val)), [])
 
-    def search(self, term: str, tiebreakattr: str | None = None, maxlen: int = 30):
+    def search(self, term: str, tiebreakattr: str | None = None, maxlen: int = 30) -> list[gru.addon.InstalledAddon]:
         """ Search `term` in addon names """
         # We want at least 75% of search string in result
         return [
@@ -185,7 +187,7 @@ class Folder:
             if folder.dep_version >= spec.dep_version:
                 return folder
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f'Folder({self.root})'
 
     def _inspect_bundle(self, path: pathlib.Path, zf: zipfile.ZipFile, api: gru.api.API) -> tuple[pathlib.Path, list[pathlib.Path], list[tuple[pathlib.Path, bool, int]]]:
@@ -258,7 +260,7 @@ class Folder:
         # From here on we handle several top-level directories, i.e. risk of clashing
         # as some secondary top-levels might be owned by other addons
 
-        def find_siblings(tops):
+        def find_siblings(tops: Iterable[str]) -> tuple[pathlib.Path | None, list[pathlib.Path] | None]:
             for parent in path.parents:
                 if parent == self.root or not parent.is_relative_to(self.root):
                     break
@@ -307,13 +309,13 @@ class Folder:
             warnings.warn(f'Installing {len(toplevels)} addons as part of {path.name}: {", ".join(toplevels)}')
         return path.parent, [path.parent / top for top in toplevels], [(fn, *_) for fn, *_ in files if fn.parts[0] in toplevels]
 
-    def _download(self, dl: requests.Response, fd: typing.BinaryIO, progress: ProgressProtocol):
+    def _download(self, dl: requests.Response, fd: typing.BinaryIO, progress: ProgressProtocol) -> None:
         with progress as prog:
             for chunk in dl.iter_content(chunk_size=1024):
                 fd.write(chunk)
                 prog.update(len(chunk))
 
-    def _unzip(self, zf: zipfile.ZipFile, files: list[tuple[pathlib.Path, bool, int]], dest: pathlib.Path, progress: ProgressProtocol):
+    def _unzip(self, zf: zipfile.ZipFile, files: list[tuple[pathlib.Path, bool, int]], dest: pathlib.Path, progress: ProgressProtocol) -> None:
         dest = dest.resolve()
         dest.mkdir(parents=True, exist_ok=True)
         with progress as prog:
@@ -331,7 +333,7 @@ class Folder:
                     shutil.copyfileobj(zfreader, out)
                 prog.update(size)
 
-    def unpack(self, addon: gru.addon.AddonInfo, api: gru.api.API, progress: type[ProgressProtocol] | None = None, path : pathlib.Path | None = None, url_override: str | None = None) -> dict[pathlib.Path, gru.addon.InstalledAddon]:
+    def unpack(self, addon: gru.addon.AddonInfo, api: gru.api.API, progress: type[ProgressProtocol] | None = None, path : pathlib.Path | None = None, url_override: str | None = None) -> Iterable[gru.addon.InstalledAddon]:
         """ Download and install, calls back to `progress` (100% until return means unzipping) """
         # NB. any file name returns correct file eventually, and “correct” file names are underterministic.
         # However, server-side caching means we can get stale versions if we use a version-independent url.
@@ -398,19 +400,19 @@ class Folder:
         self._installed.update(installed_addons)
         return installed_addons.values()
 
-    def install(self, addon: gru.addon.AddonInfo, api: gru.api.API, progress: ProgressProtocol | None = None, path: pathlib.Path | None = None, deps: bool = True, opt: bool = False):
+    def install(self, addon: gru.addon.AddonInfo, api: gru.api.API, progress: ProgressProtocol | None = None, path: pathlib.Path | None = None, deps: bool = True, opt: bool = False) -> int | None:
         installed = self.unpack(addon, api, path=path, progress=progress)
 
         if deps:
             return self.install_deps(installed, api, progress=progress, opt=opt)
 
-    def _dedup_deps(self, deps: Iterable[gru.addon.Dependency]):
+    def _dedup_deps(self, deps: Iterable[gru.addon.Dependency]) -> list[gru.addon.Dependency]:
         dedup = {}
         for dep in deps:
             dedup.setdefault(dep.dir, []).append(dep)
         return [max(dep_versions, key=lambda dep: dep.dep_version) for dep_versions in dedup.values()]
 
-    def missing_deps(self, pool: Iterable[gru.addon.InstalledAddon], opt: bool = False):
+    def missing_deps(self, pool: Iterable[gru.addon.InstalledAddon], opt: bool = False) -> list[gru.addon.Dependency]:
         """ Return dependencies that are missing from `installed` """
         deps = []
         for addon in pool:
@@ -419,21 +421,21 @@ class Folder:
                 deps.extend(addon.optdeps)
         return [dep for dep in self._dedup_deps(deps) if self.find_installed(dep) is None]
 
-    def depcount(self, lib: gru.addon.InstalledAddon, opt: bool = True):
+    def depcount(self, lib: gru.addon.InstalledAddon, opt: bool = True) -> int:
         """ Count the number of times this addon is depended on """
         refcount = sum(lib.dir == dep.dir for addon in self.installed for dep in addon.deps)
         if opt:
             refcount += sum(lib.dir == dep.dir for addon in self.installed for dep in addon.optdeps)
         return refcount
 
-    def unused_deps(self, pool: Iterable[gru.addon.InstalledAddon], opt: bool = False):
+    def unused_deps(self, pool: Iterable[gru.addon.InstalledAddon], opt: bool = False) -> list[gru.addon.InstalledAddon]:
         unused = []
         for addon in pool:
             if addon.is_lib and self.depcount(addon, opt=opt) == 0:
                 unused.append(addon)
         return unused
 
-    def update(self, api: gru.api.API, progress: ProgressProtocol | None = None, opt: bool = False, deps: bool = False, patch: bool = False):
+    def update(self, api: gru.api.API, progress: ProgressProtocol | None = None, opt: bool = False, deps: bool = False, patch: bool = False) -> tuple[int, int]:
         updates = []
         for addon in self.installed:
             if not addon.can_update:
@@ -452,7 +454,7 @@ class Folder:
         else:
             return (len(updates), 0)
 
-    def install_deps(self, pool: Iterable[gru.addon.InstalledAddon], api: api.API, progress: ProgressProtocol | None = None, opt: bool = False, patch: bool = False):
+    def install_deps(self, pool: Iterable[gru.addon.InstalledAddon], api: gru.api.API, progress: ProgressProtocol | None = None, opt: bool = False, patch: bool = False) -> int:
         added = 0
         deps = [*(pool or self.installed)]
         while newdeps := self.missing_deps(deps, opt=opt):
@@ -477,7 +479,7 @@ class Folder:
 
         return added
 
-    def remove(self, addon: gru.addon.InstalledAddon | gru.addon.AddonInfo, deps: bool = False, opt: bool = True):
+    def remove(self, addon: gru.addon.InstalledAddon | gru.addon.AddonInfo, deps: bool = False, opt: bool = True) -> int:
         """ Uninstall addon """
         if not addon.is_local:
             if not addon.folders:
@@ -495,7 +497,7 @@ class Folder:
 
         return self.remove_unused_deps(opt=opt)
 
-    def remove_unused_deps(self, opt: bool = True):
+    def remove_unused_deps(self, opt: bool = True) -> int:
         removed = 0
         while unused := self.unused_deps(self.installed, opt=opt):
             for dep in unused:
