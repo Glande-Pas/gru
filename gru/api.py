@@ -78,26 +78,36 @@ def _fuzz(source, attr, term, cutoff, maxlen, tiebreakattr=[]):
     candidates = sorted(candidates, key=operator.itemgetter(0), reverse=True)
     return [addon for prio, addon in candidates[:maxlen]]
 
-def _lookup(source, attr, match):
-    """ Search with exact match """
-    for addon in source:
-        value = getattr(addon, attr)
-        if match in value if isinstance(value, list) else value == match:
-            return addon
-    else:
-        # TODO: type of error?
-        raise ValueError(f'{attr} {value!r} not found in list')
-
 def _filter(source, attr, match):
-    """ Search with exact match """
-    results =  []
+    """ Search with exact match (lowercased) """
     for addon in source:
         value = getattr(addon, attr)
-        if match in value if isinstance(value, list) else value == match:
+        if isinstance(match, str) and isinstance(value, (list, tuple)):
+            if match in [part.lower() for part in value if isinstance(part, str)]:
+                yield addon
+        elif isinstance(match, str):
+            if isinstance(value, str) and match == value.lower():
+                yield addon
+        elif isinstance(value, (list, tuple)):
+            if match in value:
+                yield addon
+        elif match == value:
             yield addon
+
+def _lookup(source, attr, match):
+    """ Search with exact match (lowercased) """
+    try:
+        return next(_filter(source, attr, match))
+    except StopIteration:
+        # TODO: type of error?
+        raise ValueError(f'{attr} {match!r} not found in list')
 
 class API:
     session = requests_cache.CachedSession(user_cache('api'), expire_after=datetime.timedelta(hours=1))
+
+    def  __init__(self, game: str, version: int):
+        self.game = game
+        self.version = version
 
     def _load(self, url, fallback=None):
         """ Load a page and return the JSON, ensure we use cached page if <1h old """
@@ -152,7 +162,7 @@ class API:
 
     def name(self, name: str):
         """ Lookup an addon by name (exact match) """
-        return _lookup(self.addons.values(), 'title', str(name))
+        return _lookup(self.addons.values(), 'title', str(name).lower())
 
     def find(self, val: str, local: gru.install.Folder):
         """ Search for an addon generically """
@@ -200,7 +210,7 @@ class API:
 
 class ESOUIv4(API):
     def __init__(self, config):
-        super().__init__()
+        super().__init__('ESO', 4)
         endpoint = config.get('api', 'endpoint')
         self.pages = {key: endpoint.format(version=4, path=val) for key, val in config.items('ESOUIv4.paths')}
 
@@ -238,7 +248,7 @@ class ESOUIv3(API):
     }
 
     def __init__(self, config):
-        super().__init__()
+        super().__init__('ESO', 3)
         endpoint = config.get('api', 'endpoint')
         self.pages = {key: endpoint.format(version=3, path=val) for key, val in config.items('ESOUIv3.paths')}
 

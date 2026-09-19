@@ -205,10 +205,7 @@ def install_translation(domain: str, localedir: pathlib.Path):
         for nelang in gettext._expand_lang(lang):
             file = localedir.joinpath(nelang, 'LC_MESSAGES', domain + '.mo')
             if file.is_file():
-                # TODO: wrong, only breaks 1 level
-                break
+                with file.open() as fp:
+                    return GNUFormatTranslations(fp).install()
     else:
         return NullFormatTranslations().install()
-
-    with file.open() as fp:
-        return GNUFormatTranslations(fp).install()

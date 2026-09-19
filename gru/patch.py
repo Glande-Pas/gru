@@ -176,21 +176,32 @@ def addon_patch(addon: gru.addon.Addon, patch: Patch) -> tuple[int, int]:
         inpath = addon.folder.joinpath(*infile.parts[1:]).resolve()
         outpath = addon.folder.joinpath(*outfile.parts[1:]).resolve()
 
+        # Op = str
+        # Lines = list[str]
+        # BlockPatch = list[tuple[Op, Lines]]
+        # BlockHeader = str
+        # FilePatch = list[tuple[BlockHeader, BlockPatch]]
+        # File = str
+        # Patch = dict[tuple[File, File], FilePatch]
+
         if str(infile) == '/dev/null':
-            if len(changes) != 1 or changes[0][0].split()[0] != '-0,0' or len(changes[0][1]) != 1 or changes[0][1][0] != '+':
+            header, block = changes[0] if changes else ('', [])
+            op, dat = block[0] if block else ('', [])
+            if len(changes) != 1 or header.split()[0] != '-0,0' or len(block) != 1 or op != '+':
                 raise ValueError(f'Malformed patch instructions on creating {outfile}')
 
             if outpath.exists():
                 warnings.warn(f'Patch failed for {outfile}: file already exists')
             else:
                 with outpath.open('w') as f:
-                    print(*changes[0][1][1], sep='\n', file=f)
+                    print(*dat, sep='\n', file=f)
                 n_changed_files += 1
             continue
 
         if str(outfile) == '/dev/null':
-            print(str(infile), str(outfile))
-            if len(changes) != 1 or changes[0][0].split()[-1] != '+0,0' or len(changes[0][1]) != 1 or changes[0][1][0] != '-':
+            header, block = changes[0] if changes else ('', [])
+            op, dat = block[0] if block else ('', [])
+            if len(changes) != 1 or header.split()[-1] != '+0,0' or len(block) != 1 or op != '-':
                 raise ValueError(f'Malformed patch instructions on removing {infile}')
 
             try:
@@ -200,7 +211,7 @@ def addon_patch(addon: gru.addon.Addon, patch: Patch) -> tuple[int, int]:
                 warnings.warn(f'Patch failed for {infile}: file does not exist')
                 continue
 
-            if contents != changes[0][1][1] + '\n':
+            if contents != '\n'.join(dat) + '\n':
                 warnings.warn(f'Patch failed for {infile}: contents not matching removed lines')
             else:
                 inpath.unlink()

@@ -144,11 +144,7 @@ class TermDisplay:
         """ Show addon info from a local folder that was not matched with the API endpoint """
         click.echo()
         # Based on verbosity level, only click.echo a number of those:
-        parent_text = ''
-        while (parent := folder.parent) is not None:
-            if parent.id:
-                parent_text = f' as sub-addon of {parent.infos.title}'
-                break
+        parent_text = f' as sub-addon of {parent.infos.title}' if (parent := folder.parent) and parent.id else ''
         click.echo(f'{item:{self.gutter}}{self._render_eso_text(folder.title)}  [installed{parent_text}]')
         infos = [
             f'Author: {self._styled_width(folder.author, 20)}',
@@ -453,7 +449,6 @@ def remove(ctx: click.Context, addon: str | None, clean_deps: bool = False, opt:
     # - top-level / non-subaddon ?
     # TODO: handle removal of several linked local addons (same online addon)
     installed_addon = _find_installed(local, api, addon, 'Confirm removal?')
-    print(installed_addon)
     if installed_addon is None:
         show_warnings(ctx)
         return
@@ -529,7 +524,7 @@ def check_api_release(ctx: click.Context, hidden: bool = True):
         if alpha.globalconf['API']['Version'] == 'ALPHA':
             alpha_ok = True
         else:
-            click.echo(f'Version {API.version + 1} seems to have come out of alpha')
+            click.echo(f'Version {alpha.version} seems to have come out of alpha')
     except Exception as err:
         click.echo(f"Can't check alpha API status: {err}")
 
@@ -598,7 +593,7 @@ def export(ctx: click.Context, recurse: bool = False):
 def miss(ctx: click.Context, opt: bool):
     api = ctx.obj['api']
     local = ctx.obj['local']
-    missing = local.all_missing_deps(local.installed, opt=opt)
+    missing = local.missing_deps(local.installed, opt=opt)
 
     if not missing:
         click.echo('No missing dependences!')
@@ -616,21 +611,6 @@ def miss(ctx: click.Context, opt: bool):
     if found:
         click.echo(f'Run update to fetch resolved missing dependences')
     show_warnings(ctx)
-
-
-@contextlib.contextmanager
-def unmodified_addon(api: gru.api.API, local: gru.install.Folder, addon: gru.addon.AddonInfo, url: str = None) -> Iterator[gru.addon.InstalledAddon]:
-    # Code to acquire resource, e.g.:
-    with tempfile.TemporaryDirectory() as tempdir:
-        ref_local = local.alt_location(pathlib.Path(tempdir))
-        ref_addon = addon.alt_location(ref_local.root)
-        # Be sure to compare to installed version not up-to-date upstream
-        ref_local.unpack(ref_addon, api, url_override=url)
-
-        if ref_addon.version != addon.version:
-            raise ValueError('Downloaded addon does not have same version as installed addon!')
-
-        yield ref_addon
 
 
 @main.command(help='Save the diff between current addon and upstream as a patch')

@@ -25,7 +25,7 @@ from urllib.parse import quote as urllib_quote
 from .config import encoding_open, user_cache
 from .addon import InstalledAddon, Dependency, GARBAGE, MANIFEST_EXTS
 from .api import _fuzz, _lookup, _filter
-from .patch import addon_patch
+from .patch import addon_patch_file
 
 from typing import Protocol
 from collections.abc import Iterator, Iterable
@@ -92,7 +92,7 @@ class Folder:
 
         # Additional housekeeping for partial parsing
         if root != self.root:
-            if not root.relative_to(self.root):
+            if not root.is_relative_to(self.root):
                 raise PermissionError('Can only scan within install folder')
             for parent_dir in root.parents:
                 if parent_dir == self.root:
@@ -145,11 +145,11 @@ class Folder:
 
     def name(self, name: str):
         """ Lookup addons by name (exact match) """
-        return _filter(self.installed, 'title', str(name))
+        return _filter(self.installed, 'title', str(name).lower())
 
     def dir(self, dir_: str):
         """ Lookup addons by name (exact match) """
-        return _filter(self.installed, 'dir', str(dir_))
+        return _filter(self.installed, 'dir', str(dir_).lower())
 
     def id(self, id_: int):
         """ Lookup addons by id (exact match) """
@@ -158,14 +158,14 @@ class Folder:
     def find(self, val: str, api: gru.api.API):
         """ Search for an installed addon generically """
         # Various methods of exact matches
-        if by_name := self.name(val):
+        if by_name := list(self.name(val)):
             return by_name
 
-        if by_dir := self.dir(val):
+        if by_dir := list(self.dir(val)):
             return by_dir
 
         # Otherwise revert to search and return a list of candidates
-        if search := self.search(val):
+        if search := list(self.search(val)):
             return search
 
         return sum((self.id(addon.id) for addon in api.search(val)), [])
@@ -445,7 +445,7 @@ class Folder:
 
         for addon in updates:
             if patch and (patch_file := self.root / '.gru' / f'{addon.dir}.patch').exists():
-                addon_patch(addon, patch_file)
+                addon_patch_file(addon, patch_file)
 
         if deps:
             return (len(updates), self.install_deps(updates, api, progress=progress, opt=opt, patch=patch))
@@ -471,7 +471,7 @@ class Folder:
                     continue
                 for addon in addons:
                     if patch and (patch_file := self.root / '.gru' / f'{addon.dir}.patch').exists():
-                        addon_patch(addons, patch_file)
+                        addon_patch_file(addon, patch_file)
                 added += 1
                 deps.extend(addons)
 
