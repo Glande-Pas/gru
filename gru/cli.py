@@ -88,8 +88,9 @@ class TermDisplay:
             click.echo(pfx + batch)
 
 
-    def _render_eso_text(self, text: str) -> str:
-        return self._eso_colored_text.sub(lambda match: click.style(
+    @staticmethod
+    def _render_eso_text(text: str) -> str:
+        return TermDisplay._eso_colored_text.sub(lambda match: click.style(
             match.group('text'),
             fg=struct.unpack('BBB', bytes.fromhex(match.group('color')))
         ), text)
@@ -424,9 +425,9 @@ def get(ctx: click.Context, addon: list[str], auto_deps: bool = True, opt: bool 
                 break
 
         if result is None:
-            click.echo(f'Done installing {addon.title}')
+            click.echo(f'Done installing {TermDisplay._render_eso_text(addon.title)}')
         else:
-            click.echo(f'Done installing {addon.title} and {result} dependence(s)')
+            click.echo(f'Done installing {TermDisplay._render_eso_text(addon.title)} and {result} dependence(s)')
     show_warnings(ctx)
 
 
@@ -457,9 +458,9 @@ def remove(ctx: click.Context, addon: str | None, clean_deps: bool = False, opt:
     nremoved = local.remove(installed_addon, deps=clean_deps, opt=opt)
 
     if not clean_deps:
-        click.echo(f'Removed addon {installed_addon.title}.')
+        click.echo(f'Removed addon {TermDisplay._render_eso_text(installed_addon.title)}.')
     else:
-        click.echo(f'Removed addon {installed_addon.title} and {nremoved} unused dependence(s).')
+        click.echo(f'Removed addon {TermDisplay._render_eso_text(installed_addon.title)} and {nremoved} unused dependence(s).')
     show_warnings(ctx)
 
 
