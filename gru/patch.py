@@ -133,14 +133,14 @@ def addon_diff(addon: gru.addon.InstalledAddon, orig_addon: gru.addon.InstalledA
         print(f'--- /dev/null', format_file_mtime(None), sep='\t', file=out)
         print(f'+++ {addon.folder.name}/{file}', format_file_mtime(addon.folder / file), sep='\t', file=out)
         with encoding_open(addon.folder / file) as f:
-            print(line_diff('\n', f.read()), end='', file=out)
+            print(line_diff('', f.read()), end='', file=out)
 
     for file in orig_files - files:
         n_diff_files += 1
         print(f'--- {addon.folder.name}/{file}', format_file_mtime(orig_addon.folder / file), sep='\t', file=out)
         print(f'+++ /dev/null', format_file_mtime(None), sep='\t', file=out)
         with encoding_open(orig_addon.folder / file) as f:
-            print(line_diff(f.read(), '\n'), end='', file=out)
+            print(line_diff(f.read(), ''), end='', file=out)
 
     return n_diff_files
 
