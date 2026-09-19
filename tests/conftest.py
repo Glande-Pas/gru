@@ -1,11 +1,13 @@
 import io
 import configparser
+import datetime
 import pathlib
 import zipfile
 
 import pytest
 
 from gru.install import Folder
+from gru.addon import AddonInfo, InstalledAddon
 
 
 # ---------------------------------------------------------------------------
@@ -39,9 +41,12 @@ class StubAddon:
 
 
 class StubAPI:
-    """Minimal stand-in for API — only implements dir()."""
+    """Minimal stand-in for API — only implements dir() and search()."""
     def __init__(self, addons: dict[str, StubAddon] | None = None):
         self._addons = addons or {}
+
+    def search(self, term: str) -> list:
+        return []
 
     def dir(self, name: str) -> StubAddon:
         try:
@@ -78,3 +83,70 @@ def folder(addon_root):
 @pytest.fixture
 def stub_api():
     return StubAPI()
+
+
+# ---------------------------------------------------------------------------
+# Real addon object builders (AddonInfo / InstalledAddon)
+# ---------------------------------------------------------------------------
+
+def make_addon_info(id_: int = 1, title: str = 'MyAddon', directories: list[str] | None = None, **overrides) -> AddonInfo:
+    """Build a real AddonInfo with sane defaults."""
+    metadata = {
+        'author': 'Test Author',
+        'version': '1.0',
+        'api': '100035',
+        'title': title,
+        'directories': directories if directories is not None else [title],
+        'category': 1,
+        'date': datetime.datetime(2024, 1, 1),
+        'link': f'https://www.esoui.com/downloads/info{id_}.html',
+        'downloads': 0,
+        'monthly': 0,
+        'favorites': 0,
+        'thumbnails': [],
+        'images': [],
+        'donate': '',
+    }
+    metadata.update(overrides)
+    return AddonInfo(id_, metadata)
+
+
+def write_manifest(root: pathlib.Path, dir_name: str, ext: str = '.txt', **fields) -> pathlib.Path:
+    """Write a minimal manifest for `dir_name` under `root`. Pass a field as None to omit it."""
+    addon_dir = root / dir_name
+    addon_dir.mkdir(parents=True, exist_ok=True)
+
+    values = {'Title': dir_name, 'APIVersion': '100035', 'Version': '1.0', 'Author': 'Test'}
+    values.update(fields)
+
+    lines = [f'## {key}: {value}' for key, value in values.items() if value is not None]
+    (addon_dir / f'{dir_name}{ext}').write_text('\n'.join(lines) + '\n')
+    return addon_dir
+
+
+def make_installed(root: pathlib.Path, dir_name: str, **fields) -> InstalledAddon:
+    """Write a manifest and return the resulting InstalledAddon."""
+    addon_dir = write_manifest(root, dir_name, **fields)
+    return InstalledAddon(addon_dir)
+
+
+def make_api(addons: dict | None = None, categories: dict | None = None):
+    """Bare API instance, .addons/.categories set directly -- bypasses __init__/network."""
+    from gru.api import API
+    api = API.__new__(API)
+    api.game, api.version, api.pages = 'ESO', 3, {}
+    api.addons = addons or {}
+    api.categories = categories or {}
+    return api
+
+
+@pytest.fixture
+def isolated_user_dirs(tmp_path, monkeypatch):
+    """Redirect user_cache()/user_config() into tmp_path."""
+    import gru.config as config_mod
+
+    cache_dir = tmp_path / 'cache'
+    config_file = tmp_path / 'config' / 'gru.ini'
+    monkeypatch.setattr(config_mod, 'user_cache', lambda *args: cache_dir.joinpath(*args))
+    monkeypatch.setattr(config_mod, 'user_config', lambda: config_file)
+    return {'cache_dir': cache_dir, 'config_file': config_file}
