@@ -176,9 +176,9 @@ class Folder:
         """ Search `term` in addon names """
         # We want at least 75% of search string in result
         return [
-            *_fuzz(self.installed.values(), 'title', term, cutoff=.75 if len(term) > 3 else 1, maxlen=maxlen,
+            *_fuzz(self.installed, 'title', term, cutoff=.75 if len(term) > 3 else 1, maxlen=maxlen,
                    tiebreakattr=[tiebreakattr]),
-            *_fuzz(self.installed.values(), 'dir', term, cutoff=.75 if len(term) > 3 else 1, maxlen=maxlen,
+            *_fuzz(self.installed, 'dir', term, cutoff=.75 if len(term) > 3 else 1, maxlen=maxlen,
                    tiebreakattr=[tiebreakattr]),
         ]
 
