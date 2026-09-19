@@ -133,14 +133,14 @@ def addon_diff(addon: gru.addon.InstalledAddon, orig_addon: gru.addon.InstalledA
         print(f'--- /dev/null', format_file_mtime(None), sep='\t', file=out)
         print(f'+++ {addon.folder.name}/{file}', format_file_mtime(addon.folder / file), sep='\t', file=out)
         with encoding_open(addon.folder / file) as f:
-            print(line_diff('\n', f.read()), end='')
+            print(line_diff('\n', f.read()), end='', file=out)
 
     for file in orig_files - files:
         n_diff_files += 1
         print(f'--- {addon.folder.name}/{file}', format_file_mtime(orig_addon.folder / file), sep='\t', file=out)
         print(f'+++ /dev/null', format_file_mtime(None), sep='\t', file=out)
         with encoding_open(orig_addon.folder / file) as f:
-            print(line_diff(f.read(), '\n'), end='')
+            print(line_diff(f.read(), '\n'), end='', file=out)
 
     return n_diff_files
 
@@ -148,7 +148,9 @@ def addon_diff(addon: gru.addon.InstalledAddon, orig_addon: gru.addon.InstalledA
 def apply_patch(orig: str, patch: FilePatch) -> tuple[str, list[bool]]:
     dmp = diff_match_patch.diff_match_patch()
 
-    diff_lines = '\n'.join(sum((lines for header, changes in patch for op, lines in changes), []))
+    # Trailing '\n' needed: parse_diff() stripped it off each stored line, and without it
+    # back the last line loses its newline when reconstructed below.
+    diff_lines = '\n'.join(sum((lines for header, changes in patch for op, lines in changes), [])) + '\n'
     orig_chars, diff_chars, line_array = dmp.diff_linesToChars(orig, diff_lines)
 
     # Reconstitute a char-diff from the patch and remapped diff text
@@ -175,14 +177,6 @@ def addon_patch(addon: gru.addon.InstalledAddon, patch: Patch) -> tuple[int, int
     for (infile, outfile), changes in patch.items():
         inpath = addon.folder.joinpath(*infile.parts[1:]).resolve()
         outpath = addon.folder.joinpath(*outfile.parts[1:]).resolve()
-
-        # Op = str
-        # Lines = list[str]
-        # BlockPatch = list[tuple[Op, Lines]]
-        # BlockHeader = str
-        # FilePatch = list[tuple[BlockHeader, BlockPatch]]
-        # File = str
-        # Patch = dict[tuple[File, File], FilePatch]
 
         if str(infile) == '/dev/null':
             header, block = changes[0] if changes else ('', [])
