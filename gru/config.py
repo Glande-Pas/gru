@@ -20,17 +20,19 @@ IS_WINDOWS = os.name == 'nt'
 
 defaults = '''
 [api]
-endpoint = https://api.mmoui.com/v{version}/{path}
+endpoint = https://api.mmoui.com/v{version}/game/{game}/{path}
 version = 3
 
 [ESOUIv4.paths]
-globalconf = globalconfig.json
+globalconf = ../../globalconfig.json
 
 [ESOUIv3.paths]
-globalconf = globalconfig.json
-gameconf = game/ESO/gameconfig.json
-catlist = game/ESO/categorylist.json
-filelist = game/ESO/filelist.json
+globalconf = ../../globalconfig.json
+gameconf = gameconfig.json
+catlist = categorylist.json
+filelist = filelist.json
+listfiles = listfiles/{id}.json
+filedetails = filedetails/{id}.json
 
 [ESO.links]
 info = https://www.esoui.com/downloads/info{id}.html

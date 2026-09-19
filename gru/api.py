@@ -108,9 +108,11 @@ def _lookup(source: Iterable[DisplayAddonProtocol], attr: str, match: str | int 
 class API:
     session = requests_cache.CachedSession(user_cache('api'), expire_after=datetime.timedelta(hours=1))
 
-    def  __init__(self, game: str, version: int) -> None:
-        self.game = game
-        self.version = version
+    def  __init__(self, config: configparser.ConfigParser) -> None:
+        self.pages = {}
+        endpoint = config.get('api', 'endpoint')
+        gamepaths = config.items(f'{self.game}UIv{self.version}.paths')
+        self.pages = {key: endpoint.format(version=self.version, game=self.game, path=path) for key, path in gamepaths}
 
     def _load(self, url: str, fallback: typing.Any = None) -> typing.Any:
         """ Load a page and return the JSON, ensure we use cached page if <1h old """
@@ -212,10 +214,11 @@ class API:
 
 
 class ESOUIv4(API):
+    game = 'ESO'
+    version = 4
+
     def __init__(self, config: configparser.ConfigParser) -> None:
-        super().__init__('ESO', 4)
-        endpoint = config.get('api', 'endpoint')
-        self.pages = {key: endpoint.format(version=4, path=val) for key, val in config.items('ESOUIv4.paths')}
+        super().__init__(config)
 
     @functools.cached_property
     def globalconf(self) -> requests.structures.CaseInsensitiveDict:
@@ -223,6 +226,9 @@ class ESOUIv4(API):
 
 
 class ESOUIv3(API):
+
+    game = 'ESO'
+    version = 3
 
     fileinfo_rename = {
         'UID':               ('id', int),
@@ -251,9 +257,7 @@ class ESOUIv3(API):
     }
 
     def __init__(self, config: configparser.ConfigParser) -> None:
-        super().__init__('ESO', 3)
-        endpoint = config.get('api', 'endpoint')
-        self.pages = {key: endpoint.format(version=3, path=val) for key, val in config.items('ESOUIv3.paths')}
+        super().__init__(config)
 
     @functools.cached_property
     def globalconf(self) -> dict:
@@ -262,6 +266,14 @@ class ESOUIv3(API):
     @functools.cached_property
     def gameconf(self) -> dict:
         return self._load(self.pages['gameconf'], {})
+
+    @functools.cached_property
+    def filelist(self, id_: int) -> list[str]:
+        return self._load(self.pages['filelist'].format(id=id_), {}).get('FileList', [])
+
+    @functools.cached_property
+    def filedetails(self, id_: int) -> dict:
+        return self._load(self.pages['filedetails'].format(id=id_), {})
 
     @functools.cached_property
     def addons(self) -> dict[int, AddonInfo]:
