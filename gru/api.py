@@ -75,7 +75,7 @@ def _fuzz(source: Iterable[DisplayAddonProtocol], attr: str, term: str, cutoff: 
         if sum(matches) < cutoff:
             continue
         # NB. cast for numerical attributes represented as strings in json
-        prio = (sum(matches), max(matches), *(addon.metadata[tie] for tie in tiebreakattr))
+        prio = (sum(matches), max(matches), *(addon.metadata.get(tie) for tie in tiebreakattr))
         candidates.append((prio, addon))
 
     candidates = sorted(candidates, key=operator.itemgetter(0), reverse=True)
