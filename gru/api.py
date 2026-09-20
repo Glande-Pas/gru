@@ -242,7 +242,7 @@ class ESOUIv4(API):
         super().__init__(config)
 
     @functools.cached_property
-    def globalconf(self) -> requests.structures.CaseInsensitiveDict:  # pyright: ignore[reportIncompatibleVariableOverride] -- cached_property stores into instance.__dict__ exactly like the plain attribute it overrides
+    def globalconf(self) -> requests.structures.CaseInsensitiveDict:  # pyright: ignore[reportIncompatibleVariableOverride] -- cached_property stores as a plain attribute after first access
         return case_insensitive(self._load(self.pages['globalconf'], {}))
 
 
@@ -295,7 +295,7 @@ class ESOUIv3(API):
         return self._load(self.pages['filedetails'].format(id=id_), {})
 
     @functools.cached_property
-    def addons(self) -> dict[int, AddonInfo]:  # pyright: ignore[reportIncompatibleVariableOverride] -- cached_property stores into instance.__dict__ exactly like the plain attribute it overrides
+    def addons(self) -> dict[int, AddonInfo]:  # pyright: ignore[reportIncompatibleVariableOverride] -- cached_property stores as a plain attribute after first access
         data = {}
         for addon in self._load(self.pages['filelist'], []):
             infos = {new: typ(addon[old]) for old, (new, typ) in self.fileinfo_rename.items()}
