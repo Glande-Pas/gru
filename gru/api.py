@@ -240,7 +240,7 @@ class ESOUIv3(API):
         'UIDownloadTotal':   ('downloads', int),
         'UIDownloadMonthly': ('monthly', int),
         'UIFavoriteTotal':   ('favorites', int),
-        'UICompatibility':   ('api', str),
+        'UICompatibility':   ('api', to_list),
         'UIDir':             ('directories', to_list),
         'UIIMG_Thumbs':      ('thumbnails', to_list),
         'UIIMGs':            ('images', to_list),

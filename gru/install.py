@@ -336,7 +336,7 @@ class Folder:
         stat = zippath.stat()
         # NB. this is correct on *nix and NTFS, but not FAT which uses local timezone
         # Hopefully FAT is not used too much anymore? Otherwise we need a config() function to handle this
-        freshness = datetime.datetime.fromtimestamp(stat.st_mtime, datetime.timezone.utc)
+        freshness = datetime.datetime.fromtimestamp(stat.st_mtime, datetime.timezone.utc).replace(tzinfo=None)
         return size == stat.st_size and changed < freshness
 
     def _unzip(self, zf: zipfile.ZipFile, files: list[tuple[pathlib.Path, bool, int]], dest: pathlib.Path, progress: ProgressProtocol) -> None:

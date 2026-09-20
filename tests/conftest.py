@@ -97,7 +97,7 @@ def make_addon_info(id_: int = 1, title: str = 'MyAddon', directories: list[str]
     metadata = {
         'author': 'Test Author',
         'version': '1.0',
-        'api': '100035',
+        'api': [{'version': '5.3.5', 'name': 'Harrowstorm'}],
         'title': title,
         'directories': directories if directories is not None else [title],
         'category': 1,

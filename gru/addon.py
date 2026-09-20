@@ -75,7 +75,7 @@ class AddonInfo(DisplayAddonProtocol):
         self.title = self.metadata.pop('title')
         self.author = self.metadata.pop('author')
         self.version = self.metadata.pop('version')
-        self.api = self.metadata.pop('api').split()
+        self.api = self.metadata.pop('api')
         self.folders: dict[pathlib.Path, InstalledAddon] = {}
 
         dirs = set(self.metadata['directories']) - GARBAGE
