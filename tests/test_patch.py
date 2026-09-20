@@ -1,10 +1,12 @@
 """Tests for gru.patch: diff parsing/generation and patch application."""
 
 import io
+import pathlib
 import warnings
 
 import pytest
 
+import gru.patch as patch_mod
 from gru.patch import format_file_mtime, line_diff, parse_diff, addon_diff, apply_patch, addon_patch, addon_patch_file
 
 from .conftest import make_installed
@@ -250,6 +252,40 @@ class TestAddonPatchDelete:
         assert (done, total) == (0, 1)
 
 
+class TestAddonPatchModifyPartialFailure:
+    def test_hunk_failure_warns_and_leaves_file_untouched(self, tmp_path, monkeypatch):
+        """A hunk that apply_patch() reports as unapplied must not be committed to disk."""
+        addon = make_installed(tmp_path, 'MyAddon')
+        (addon.folder / 'Data.lua').write_text('actual content\n')
+        changes = [('-1 +1', [('-', ['old']), ('+', ['new'])])]
+        patch = {_p('MyAddon/Data.lua'): changes}
+
+        monkeypatch.setattr(patch_mod, 'apply_patch', lambda orig, changes: ('new content\n', [False]))
+
+        with pytest.warns(UserWarning, match='Patch failed for 1 hunks in MyAddon/Data.lua'):
+            done, total = addon_patch(addon, patch)
+
+        assert (done, total) == (0, 1)
+        assert (addon.folder / 'Data.lua').read_text() == 'actual content\n'
+
+    def test_one_of_several_hunks_failing_skips_whole_file(self, tmp_path, monkeypatch):
+        addon = make_installed(tmp_path, 'MyAddon')
+        (addon.folder / 'Data.lua').write_text('actual content\n')
+        changes = [
+            ('-1 +1', [('-', ['old1']), ('+', ['new1'])]),
+            ('-5 +5', [('-', ['old2']), ('+', ['new2'])]),
+        ]
+        patch = {_p('MyAddon/Data.lua'): changes}
+
+        monkeypatch.setattr(patch_mod, 'apply_patch', lambda orig, changes: ('new content\n', [True, False]))
+
+        with pytest.warns(UserWarning, match='hunk #2'):
+            done, total = addon_patch(addon, patch)
+
+        assert (done, total) == (0, 1)
+        assert (addon.folder / 'Data.lua').read_text() == 'actual content\n'
+
+
 class TestAddonPatchSafety:
     def test_patch_outside_addon_folder_raises(self, tmp_path):
         addon = make_installed(tmp_path, 'MyAddon')
@@ -267,6 +303,23 @@ class TestAddonPatchFile:
         with pytest.warns(UserWarning, match='failed'):
             done, total = addon_patch_file(addon, missing)
         assert (done, total) == (0, 0)
+
+    def test_valid_patch_file_parses_and_applies(self, tmp_path):
+        """Regression: addon_patch_file()'s success path (parse_diff -> addon_patch) was never exercised."""
+        orig = make_installed(tmp_path / 'orig', 'MyAddon')
+        new = make_installed(tmp_path / 'new', 'MyAddon')
+        (orig.folder / 'Data.lua').write_text('old = 1\n')
+        (new.folder / 'Data.lua').write_text('old = 2\n')
+
+        diff_file = tmp_path / 'MyAddon.patch'
+        with diff_file.open('w') as out:
+            n = addon_diff(new, orig, out=out)
+        assert n == 1
+
+        done, total = addon_patch_file(orig, diff_file)
+
+        assert (done, total) == (1, 1)
+        assert (orig.folder / 'Data.lua').read_text() == 'old = 2\n'
 
 
 def _p(spec: str, dev_null_in: bool = False, dev_null_out: bool = False):

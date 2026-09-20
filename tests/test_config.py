@@ -96,7 +96,7 @@ class TestInstallTranslation:
         install_translation('gru', tmp_path)
         # Falling back to Null must not leave a foreign gettext installed as `_`
         import builtins
-        assert builtins._('hello') == 'hello'
+        assert builtins._('hello') == 'hello'  # pyright: ignore[reportAttributeAccessIssue] -- installed dynamically by gettext
 
     def test_matching_mo_file_is_loaded(self, monkeypatch, tmp_path):
         """Regression: a found .mo file used to be discarded in favour of NullTranslations."""
@@ -113,7 +113,7 @@ class TestInstallTranslation:
         install_translation('gru', tmp_path)
 
         import builtins
-        assert builtins._('hello') == 'bonjour'
+        assert builtins._('hello') == 'bonjour'  # pyright: ignore[reportAttributeAccessIssue] -- installed dynamically by gettext
 
 
 def _write_minimal_mo(path: pathlib.Path, catalog: dict[str, str]) -> None:

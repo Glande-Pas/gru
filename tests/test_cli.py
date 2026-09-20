@@ -101,7 +101,7 @@ class TestWithRealAddons:
             config = load_config(cfg_file)
             api = StubAPI()
             local = make_folder(addons_root)
-            local.scan(api)
+            local.scan(api)  # pyright: ignore[reportArgumentType] -- stub API, not a real gru.api.API
             return config, api, local
 
         monkeypatch.setattr(cli_mod, 'build_app', fake_build_app)
@@ -160,7 +160,7 @@ class TestParentSuffixWording:
         upstream = make_addon_info(id_=1, title=upstream_title, directories=['MyAddon'])
 
         class LinkableApi(StubAPI):
-            def dir(self, name):
+            def dir(self, name):  # pyright: ignore[reportIncompatibleMethodOverride] -- returns a real AddonInfo, not the base StubAddon
                 return upstream
 
         return addons_root, config_file, LinkableApi()
@@ -191,7 +191,7 @@ class TestParentSuffixWording:
         upstream = make_addon_info(id_=1, title='BundleName', directories=['MainPart', 'ExtraPart'])
 
         class LinkableApi(StubAPI):
-            def dir(self, name):
+            def dir(self, name):  # pyright: ignore[reportIncompatibleMethodOverride] -- returns a real AddonInfo, not the base StubAddon
                 return upstream
 
         output = self._list_output(monkeypatch, addons_root, config_file, LinkableApi())
@@ -208,7 +208,7 @@ class TestParentSuffixWording:
         upstream = make_addon_info(id_=1, title='ParentAddon', directories=['ParentAddon'])
 
         class LinkableApi(StubAPI):
-            def dir(self, name):
+            def dir(self, name):  # pyright: ignore[reportIncompatibleMethodOverride] -- returns a real AddonInfo, not the base StubAddon
                 if name == 'ParentAddon':
                     return upstream
                 raise FileNotFoundError(name)
@@ -232,7 +232,7 @@ class TestNoColor:
             config = load_config(cfg_file)
             api = StubAPI()
             local = make_folder(addons_root)
-            local.scan(api)
+            local.scan(api)  # pyright: ignore[reportArgumentType] -- stub API, not a real gru.api.API
             return config, api, local
 
         monkeypatch.setattr(cli_mod, 'build_app', fake_build_app)
@@ -299,7 +299,7 @@ class TestDiffCommand:
             def __exit__(self, *a):
                 return False
             def iter_content(self, chunk_size=1024):
-                yield self.content
+                yield self.content  # pyright: ignore[reportAttributeAccessIssue] -- set dynamically via __dict__.update above
 
         import gru.install as install_mod
         monkeypatch.setattr(install_mod.requests, 'head',
@@ -312,7 +312,7 @@ class TestDiffCommand:
             config = load_config(cfg_file)
             api = StubAPI()
             local = make_folder(addons_root)
-            local.scan(api)
+            local.scan(api)  # pyright: ignore[reportArgumentType] -- stub API, not a real gru.api.API
             for addon in local.installed:
                 addon.link(upstream)
             return config, api, local
@@ -336,6 +336,124 @@ def _touch_cache_path(base: pathlib.Path, *parts: str) -> pathlib.Path:
     return path
 
 
+class TestUpdateCommand:
+    """gru update: only the network layer (requests.head/get) is faked -- Folder.update()
+    (unpack -> _inspect_bundle -> InstalledAddon, install_deps) runs for real."""
+
+    @staticmethod
+    def _zip_bytes(entries: dict[str, str]) -> bytes:
+        import io, zipfile
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w') as zf:
+            for fname, content in entries.items():
+                zf.writestr(fname, content)
+        return buf.getvalue()
+
+    @pytest.fixture
+    def cli_app(self, monkeypatch, tmp_path):
+        addons_root = tmp_path / 'AddOns'
+        addons_root.mkdir()
+        config_file = tmp_path / 'gru.ini'
+        config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
+
+        installed = make_installed(addons_root, 'MyAddon', Title='MyAddon', Version='1.0')
+        upstream = make_addon_info(id_=1, title='MyAddon', version='2.0', directories=['MyAddon'])
+        installed.link(upstream)
+
+        zip_bytes = self._zip_bytes({
+            'MyAddon/MyAddon.txt': '## Title: MyAddon\n## APIVersion: 100035\n## Version: 2.0\n## Author: Test\n',
+            'MyAddon/Data.lua': 'new = 2\n',
+        })
+
+        class FakeResponse:
+            def __init__(self, **attrs):
+                self.__dict__.update(attrs)
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def iter_content(self, chunk_size=1024):
+                yield self.content  # pyright: ignore[reportAttributeAccessIssue] -- set dynamically via __dict__.update above
+
+        import gru.install as install_mod
+        monkeypatch.setattr(install_mod.requests, 'head',
+                             lambda url, allow_redirects=True: FakeResponse(headers={'content-length': str(len(zip_bytes))}))
+        monkeypatch.setattr(install_mod.requests, 'get',
+                             lambda url, stream=True, allow_redirects=True: FakeResponse(content=zip_bytes))
+        monkeypatch.setattr(install_mod, 'user_cache', lambda *parts: _touch_cache_path(tmp_path, *parts))
+
+        def fake_build_app(game, cfg_file):
+            config = load_config(cfg_file)
+            api = StubAPI()
+            local = make_folder(addons_root)
+            local.scan(api)  # pyright: ignore[reportArgumentType] -- stub API, not a real gru.api.API
+            for addon in local.installed:
+                addon.link(upstream)
+            return config, api, local
+
+        monkeypatch.setattr(cli_mod, 'build_app', fake_build_app)
+        return {'config_file': config_file, 'addons_root': addons_root}
+
+    def test_update_installs_new_version(self, cli_app):
+        result = invoke(cli_app['config_file'], ['update'])
+        assert result.exit_code == 0
+        assert 'Updated 1 addon(s) and installed 0 dependence(s)' in result.output
+        assert (cli_app['addons_root'] / 'MyAddon' / 'Data.lua').read_text() == 'new = 2\n'
+
+    def test_update_with_nothing_to_do(self, cli_config):
+        result = invoke(cli_config, ['update'])
+        assert result.exit_code == 0
+        assert 'Nothing to do' in result.output
+
+
+class TestPatchCommand:
+    """gru patch: addon_patch_file() applying a real, on-disk .patch file end-to-end."""
+
+    @pytest.fixture
+    def cli_app(self, monkeypatch, tmp_path):
+        addons_root = tmp_path / 'AddOns'
+        addons_root.mkdir()
+        config_file = tmp_path / 'gru.ini'
+        config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
+
+        installed = make_installed(addons_root, 'MyAddon', Title='MyAddon')
+        (installed.folder / 'Data.lua').write_text('old = 2\n')
+
+        def fake_build_app(game, cfg_file):
+            config = load_config(cfg_file)
+            api = StubAPI()
+            local = make_folder(addons_root)
+            local.scan(api)  # pyright: ignore[reportArgumentType] -- stub API, not a real gru.api.API
+            return config, api, local
+
+        monkeypatch.setattr(cli_mod, 'build_app', fake_build_app)
+        return {'config_file': config_file, 'addons_root': addons_root}
+
+    def test_patch_applies_saved_patch_from_default_location(self, cli_app):
+        from gru.patch import addon_diff
+
+        patched = make_installed(cli_app['addons_root'].parent / 'patched_src', 'MyAddon')
+        (patched.folder / 'Data.lua').write_text('patched = 3\n')
+        unpatched = make_installed(cli_app['addons_root'].parent / 'unpatched_src', 'MyAddon')
+        (unpatched.folder / 'Data.lua').write_text('old = 2\n')
+
+        patch_dir = cli_app['addons_root'] / '.gru'
+        patch_dir.mkdir()
+        with (patch_dir / 'MyAddon.patch').open('w') as f:
+            addon_diff(patched, unpatched, out=f)
+
+        result = invoke(cli_app['config_file'], ['patch', 'MyAddon'], input='y\n')
+
+        assert result.exit_code == 0
+        assert 'Applied patch successfully.' in result.output
+        assert (cli_app['addons_root'] / 'MyAddon' / 'Data.lua').read_text() == 'patched = 3\n'
+
+    def test_patch_with_no_saved_changes_reports_nothing_to_apply(self, cli_app):
+        result = invoke(cli_app['config_file'], ['patch', 'MyAddon'], input='y\n')
+        assert result.exit_code == 0
+        assert 'No saved changes to be re-applied.' in result.output
+
+
 class TestSearchAndMissCommands:
     """Regression guards for bugs found while fixing pyright errors: search/miss called the
     undefined name _display() (NameError), and miss() caught the wrong exception type around
@@ -355,7 +473,7 @@ class TestSearchAndMissCommands:
             def search(self, term, tiebreakattr=None, maxlen=30):
                 return [make_addon_info(id_=1, title='SearchResult', directories=['SearchResult'])]
 
-            def dir(self, name):
+            def dir(self, name):  # pyright: ignore[reportIncompatibleMethodOverride] -- returns a real AddonInfo, not the base StubAddon
                 if name == 'LibFoo':
                     return found_dep
                 raise FileNotFoundError(name)
@@ -364,7 +482,7 @@ class TestSearchAndMissCommands:
             config = load_config(cfg_file)
             api = RichStubAPI()
             local = make_folder(addons_root)
-            local.scan(api)
+            local.scan(api)  # pyright: ignore[reportArgumentType] -- stub API, not a real gru.api.API
             return config, api, local
 
         monkeypatch.setattr(cli_mod, 'build_app', fake_build_app)
@@ -401,7 +519,7 @@ class TestFolderDisplayDescriptionField:
             config = load_config(cfg_file)
             api = StubAPI()  # empty -- addon stays unmatched, goes through _folder()
             local = make_folder(addons_root)
-            local.scan(api)
+            local.scan(api)  # pyright: ignore[reportArgumentType] -- stub API, not a real gru.api.API
             return config, api, local
 
         monkeypatch.setattr(cli_mod, 'build_app', fake_build_app)

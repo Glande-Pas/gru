@@ -1,14 +1,55 @@
-"""Tests for gru.install.Folder: lookup, dependency tracking, scanning, removal.
-Network-touching methods (unpack/install/update) aren't covered here."""
+"""Tests for gru.install.Folder: lookup, dependency tracking, scanning, removal,
+and (via faked requests.head/get + user_cache) update()/install_deps()."""
 
 import inspect
+import io
+import zipfile
 
 import pytest
 
+import gru.install as install_mod
 from gru.addon import Dependency
 from gru.install import Folder
+from gru.patch import addon_diff
 
-from .conftest import make_folder, make_installed, make_addon_info, StubAPI, StubAddon
+from .conftest import make_folder, make_installed, make_addon_info, write_manifest, StubAPI, StubAddon
+
+
+def _zip_bytes(entries: dict[str, str]) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w') as zf:
+        for fname, content in entries.items():
+            zf.writestr(fname, content)
+    return buf.getvalue()
+
+
+class _FakeResponse:
+    def __init__(self, **attrs):
+        self.__dict__.update(attrs)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def iter_content(self, chunk_size=1024):
+        yield self.content  # pyright: ignore[reportAttributeAccessIssue] -- set dynamically via __dict__.update above
+
+
+def _touch_cache_path(base, *parts):
+    path = base / 'cache'
+    path = path.joinpath(*parts)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _mock_download(monkeypatch, tmp_path, zip_bytes: bytes) -> None:
+    monkeypatch.setattr(install_mod.requests, 'head',
+                         lambda url, allow_redirects=True: _FakeResponse(headers={'content-length': str(len(zip_bytes))}))
+    monkeypatch.setattr(install_mod.requests, 'get',
+                         lambda url, stream=True, allow_redirects=True: _FakeResponse(content=zip_bytes))
+    monkeypatch.setattr(install_mod, 'user_cache', lambda *parts: _touch_cache_path(tmp_path, *parts))
 
 
 @pytest.fixture
@@ -269,6 +310,14 @@ class TestScan:
         folder.scan()
         assert list(folder.installed) == []
 
+    def test_scan_skips_addon_with_malformed_manifest_and_warns(self, addon_root, folder):
+        """A manifest that fails an assert in _parse_manifest (not FileNotFoundError) must not abort the scan."""
+        write_manifest(addon_root, 'BadAddon', IsLibrary='maybe')
+        make_installed(addon_root, 'GoodAddon')
+        with pytest.warns(UserWarning, match='Skipping addon.*BadAddon.*AssertionError'):
+            folder.scan()
+        assert {a.dir for a in folder.installed} == {'GoodAddon'}
+
     def test_rescan_replaces_previous_results(self, addon_root, folder):
         make_installed(addon_root, 'First')
         folder.scan()
@@ -325,3 +374,84 @@ class TestCacheIsFresh:
         os.utime(zippath, (1000000000, 1000000000))  # 2001 -- before the header date
         headers = {'last-modified': 'Wed, 21 Oct 2015 07:28:00 GMT', 'content-length': '5'}
         assert folder._cache_is_fresh(headers, zippath) is False
+
+
+# ---------------------------------------------------------------------------
+# update() / install_deps() -- network faked via requests.head/get + user_cache
+# ---------------------------------------------------------------------------
+
+class TestFolderUpdate:
+    def test_update_downloads_new_version_and_reapplies_saved_patch(self, addon_root, folder, monkeypatch, tmp_path):
+        installed = make_installed(addon_root, 'MyAddon', Version='1.0')
+        (installed.folder / 'Data.lua').write_text('old = 1\n')
+        upstream = make_addon_info(id_=1, title='MyAddon', version='2.0', directories=['MyAddon'])
+        installed.link(upstream)
+        folder._installed = {installed.folder: installed}
+
+        # The re-applied patch turns the freshly-downloaded 'old = 2' into 'patched = 3'.
+        patch_dir = addon_root / '.gru'
+        patch_dir.mkdir()
+        patched = make_installed(tmp_path / 'patched_src', 'MyAddon', Version='2.0')
+        (patched.folder / 'Data.lua').write_text('patched = 3\n')
+        unpatched = make_installed(tmp_path / 'unpatched_src', 'MyAddon', Version='2.0')
+        (unpatched.folder / 'Data.lua').write_text('old = 2\n')
+        with (patch_dir / 'MyAddon.patch').open('w') as f:
+            addon_diff(patched, unpatched, out=f)
+
+        zip_bytes = _zip_bytes({
+            'MyAddon/MyAddon.txt': '## Title: MyAddon\n## APIVersion: 100035\n## Version: 2.0\n## Author: Test\n',
+            'MyAddon/Data.lua': 'old = 2\n',
+        })
+        _mock_download(monkeypatch, tmp_path, zip_bytes)
+
+        updates, added = folder.update(StubAPI(), patch=True)  # pyright: ignore[reportArgumentType] -- stub API, not a real gru.api.API
+
+        assert (updates, added) == (1, 0)
+        assert (installed.folder / 'Data.lua').read_text() == 'patched = 3\n'
+
+    def test_update_skips_addons_that_cannot_update(self, addon_root, folder, monkeypatch, tmp_path):
+        installed = make_installed(addon_root, 'MyAddon', Version='1.0')
+        upstream = make_addon_info(id_=1, title='MyAddon', version='1.0')  # same version -> can_update is False
+        installed.link(upstream)
+        folder._installed = {installed.folder: installed}
+
+        def boom(*a, **kw):
+            raise AssertionError('should not be called: no addon can update')
+        monkeypatch.setattr(install_mod.requests, 'head', boom)
+
+        updates, added = folder.update(StubAPI())  # pyright: ignore[reportArgumentType] -- stub API, not a real gru.api.API
+        assert (updates, added) == (0, 0)
+
+
+class TestFolderInstallDeps:
+    def test_install_deps_downloads_missing_dependency(self, addon_root, folder, monkeypatch, tmp_path):
+        installed = make_installed(addon_root, 'MyAddon', DependsOn='LibFoo>=1')
+        folder._installed = {installed.folder: installed}
+
+        lib_info = make_addon_info(id_=2, title='LibFoo', directories=['LibFoo'])
+
+        class DepApi(StubAPI):
+            def dir(self, name):  # pyright: ignore[reportIncompatibleMethodOverride] -- returns a real AddonInfo, not the base StubAddon
+                if name == 'LibFoo':
+                    return lib_info
+                raise FileNotFoundError(name)
+
+        zip_bytes = _zip_bytes({
+            'LibFoo/LibFoo.txt': '## Title: LibFoo\n## APIVersion: 100035\n## Version: 1.0\n## Author: Test\n## IsLibrary: true\n',
+        })
+        _mock_download(monkeypatch, tmp_path, zip_bytes)
+
+        added = folder.install_deps([installed], DepApi())  # pyright: ignore[reportArgumentType] -- stub API, not a real gru.api.API
+
+        assert added == 1
+        assert (addon_root / 'LibFoo' / 'LibFoo.txt').exists()
+        assert {a.dir for a in folder.installed} == {'MyAddon', 'LibFoo'}
+
+    def test_install_deps_warns_and_continues_when_dependency_lookup_fails(self, addon_root, folder, monkeypatch):
+        installed = make_installed(addon_root, 'MyAddon', DependsOn='LibGone>=1')
+        folder._installed = {installed.folder: installed}
+
+        with pytest.warns(UserWarning, match='Failed to look up'):
+            added = folder.install_deps([installed], StubAPI())  # pyright: ignore[reportArgumentType] -- stub API, not a real gru.api.API
+
+        assert added == 0

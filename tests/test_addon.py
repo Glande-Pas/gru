@@ -35,7 +35,7 @@ class TestParseVersion:
         assert _parse_version('unknown') is None
 
     def test_non_string_returns_none(self):
-        assert _parse_version(None) is None
+        assert _parse_version(None) is None  # pyright: ignore[reportArgumentType] -- deliberately wrong type
 
     def test_mixed_digits_and_text_parses_leading_number(self):
         assert _parse_version('1.2beta') == (1, 2)
