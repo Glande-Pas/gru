@@ -7,7 +7,8 @@ import inspect
 import pytest
 import requests
 
-from gru.api import to_list, case_insensitive, epoch_ms, _exception_root_cause, _fuzz, _filter, _lookup, API
+from gru.api import to_list, case_insensitive, epoch_ms, _exception_root_cause, _fuzz, _filter, _lookup, API, ESOUIv3
+from gru.addon import AddonInfo
 
 from .conftest import make_addon_info, make_api
 
@@ -146,8 +147,54 @@ class TestLookup:
 
 
 # ---------------------------------------------------------------------------
-# API pure lookup methods (no network -- addons/categories set directly)
+# fileinfo_rename -> AddonInfo, against real esoui.com filelist.json data
 # ---------------------------------------------------------------------------
+
+class TestFileinfoRenamePipeline:
+    # Real entry from `jq -c '.[] | select(.UIDir[0] == "BRHelper")' filelist.json`, trimmed
+    # of the thumbnail/preview image arrays (irrelevant noise for this test).
+    RAW_BRHELPER = {
+        'UID': '2181', 'UICATID': '25', 'UIVersion': '1.0.6', 'UIDate': 1582625544000,
+        'UIName': 'Blackrose Prison Helper', 'UIAuthorName': 'andy.s',
+        'UIFileInfoURL': 'https://www.esoui.com/downloads/info2181-BlackrosePrisonHelper.html',
+        'UIDownloadTotal': '163801', 'UIDownloadMonthly': '380', 'UIFavoriteTotal': '99',
+        'UICompatibility': [{'version': '5.3.5', 'name': 'Harrowstorm'}],
+        'UIDir': ['BRHelper'], 'UIIMG_Thumbs': [], 'UIIMGs': [], 'UIDonationLink': None,
+    }
+
+    def test_real_entry_builds_a_valid_addoninfo(self):
+        """Regression guard: UICompatibility is a list of {version, name} dicts in the real
+        API, not a space-separated version string -- this used to crash AddonInfo.__init__
+        (list has no .split()) after crashing differently (garbled repr) before that."""
+        infos = {new: typ(self.RAW_BRHELPER[old]) for old, (new, typ) in ESOUIv3.fileinfo_rename.items()}
+        addon = AddonInfo(infos['id'], infos)
+
+        assert addon.id == 2181
+        assert addon.title == 'Blackrose Prison Helper'
+        assert addon.dir == 'BRHelper'
+        assert addon.api == [{'version': '5.3.5', 'name': 'Harrowstorm'}]
+
+    # Real entry with UICompatibility: null -- true for 113 of the entries in a full
+    # filelist.json snapshot, so any full `addons` scan (e.g. via `gru update`) hits this.
+    RAW_NULL_COMPATIBILITY = {
+        'UID': '21', 'UICATID': '33', 'UIVersion': '1.0.7', 'UIDate': 1415337794000,
+        'UIName': 'ZAM Stats Exp', 'UIAuthorName': 'Seerah',
+        'UIFileInfoURL': 'https://www.esoui.com/downloads/info21-ZAMStatsExp.html',
+        'UIDownloadTotal': '14491', 'UIDownloadMonthly': '6', 'UIFavoriteTotal': '13',
+        'UICompatibility': None,
+        'UIDir': ['ZAM_StatsExp'], 'UIIMG_Thumbs': [], 'UIIMGs': [], 'UIDonationLink': None,
+    }
+
+    def test_null_compatibility_does_not_crash(self):
+        """Regression guard: UICompatibility is null for ~113 real catalog entries.
+        list[dict[str, str]](None) raises TypeError ('NoneType' object is not iterable);
+        to_list(None) correctly degrades to []."""
+        infos = {new: typ(self.RAW_NULL_COMPATIBILITY[old]) for old, (new, typ) in ESOUIv3.fileinfo_rename.items()}
+        addon = AddonInfo(infos['id'], infos)
+
+        assert addon.id == 21
+        assert addon.api == []
+
 
 class TestApiLookups:
     def test_addon_by_id(self):
@@ -188,6 +235,27 @@ class TestApiLookups:
         addon = make_addon_info(title='LibAddonMenu-2.0')
         api = make_api(addons={1: addon})
         assert api.name('libaddonmenu-2.0') is addon
+
+    def test_dir_picks_first_when_several_listings_claim_the_same_dir(self):
+        """Real esoui.com data: three separate listings (base addon, a JP translation, and
+        a third-party patch) all declare UIDir == ["BRHelper"], from
+        `jq -c '.[] | select(.UIDir[0] == "BRHelper")' filelist.json`. Since each has a
+        single directory, AddonInfo.dir is 'BRHelper' for all three, and API.dir() has no
+        tie-break beyond dict/JSON order -- it just returns whichever it reaches first."""
+        base = make_addon_info(id_=2181, title='Blackrose Prison Helper', author='andy.s',
+                                directories=['BRHelper'], downloads=163801, favorites=99)
+        jp_version = make_addon_info(id_=2996, title='Blackrose Prison Helper JP Version', author='tdenc',
+                                      directories=['BRHelper'], downloads=17045, favorites=3)
+        patch = make_addon_info(id_=4252, title='Blackrose Prison Helper (Patch)', author='sshogrin',
+                                 directories=['BRHelper'], downloads=941, favorites=4)
+
+        # Same order filelist.json lists them in (ascending UID / release order)
+        api = make_api(addons={2181: base, 2996: jp_version, 4252: patch})
+        assert api.dir('BRHelper') is base
+
+        # Confirm it's genuinely iteration-order-dependent, not id- or popularity-based
+        api_reordered = make_api(addons={4252: patch, 2181: base, 2996: jp_version})
+        assert api_reordered.dir('BRHelper') is patch
 
 
 class TestApiFind:
