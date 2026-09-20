@@ -109,7 +109,7 @@ class TermDisplay:
         click.echo()
         update = '' if not addon.can_update else f'{click.style("update available", bold=True)} - '
         infos = addon.infos
-        parent = f' as part of {infos.title}' if len(infos.folders) > 1 else f' as {infos.title}' if addon.title.strip() != infos.title.strip() else ''
+        parent = f', part of {infos.title}' if len(infos.folders) > 1 else f', listed online as {infos.title}' if addon.title.strip() != infos.title.strip() else ''
         click.echo(f'{item:{self.gutter}}{self._render_eso_text(addon.title)} [{update}installed{parent}]')
         # TODO: Based on verbosity level, only click.echo a number of those:
         self._wrapped([
@@ -151,7 +151,7 @@ class TermDisplay:
         """ Show addon info from a local folder that was not matched with the API endpoint """
         click.echo()
         # Based on verbosity level, only click.echo a number of those:
-        parent_text = f' as sub-addon of {parent.infos.title}' if (parent := folder.parent) and parent.id else ''
+        parent_text = f', bundled inside {parent.infos.title}' if (parent := folder.parent) and parent.id else ''
         click.echo(f'{item:{self.gutter}}{self._render_eso_text(folder.title)}  [installed{parent_text}]')
         infos = [
             f'Author: {self._styled_width(folder.author, 20)}',

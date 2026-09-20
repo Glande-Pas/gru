@@ -133,11 +133,22 @@ class TestWithRealAddons:
         assert 'MyAddon = 3' in exported
 
 
-class TestInstalledAsSuffix:
-    """'installed as X' should only show when the titles actually differ once ESO color
-    markup is stripped -- not just when the raw manifest strings differ character-for-character."""
+class TestParentSuffixWording:
+    """The ', <relation> X' suffix after 'installed' uses a distinct connector per relationship:
+    'listed online as' (title differs), 'part of' (multi-folder bundle), 'bundled inside'
+    (unmatched folder nested in a matched one) -- not a single overloaded 'as X'."""
 
-    def _list_output(self, monkeypatch, tmp_path, manifest_title, upstream_title):
+    def _list_output(self, monkeypatch, addons_root, config_file, api):
+        def fake_build_app(game, cfg_file):
+            config = load_config(cfg_file)
+            local = make_folder(addons_root)
+            local.scan(api)
+            return config, api, local
+
+        monkeypatch.setattr(cli_mod, 'build_app', fake_build_app)
+        return invoke(config_file, ['list']).output
+
+    def _single_addon_setup(self, tmp_path, manifest_title, upstream_title):
         addons_root = tmp_path / 'AddOns'
         addons_root.mkdir()
         config_file = tmp_path / 'gru.ini'
@@ -150,29 +161,58 @@ class TestInstalledAsSuffix:
             def dir(self, name):
                 return upstream
 
-        def fake_build_app(game, cfg_file):
-            config = load_config(cfg_file)
-            api = LinkableApi()
-            local = make_folder(addons_root)
-            local.scan(api)
-            return config, api, local
+        return addons_root, config_file, LinkableApi()
 
-        monkeypatch.setattr(cli_mod, 'build_app', fake_build_app)
-        return invoke(config_file, ['list']).output
-
-    def test_suffix_shown_for_markup_only_difference_but_color_reveals_why(self, monkeypatch, tmp_path):
+    def test_listed_online_as_for_markup_only_difference(self, monkeypatch, tmp_path):
         """Real case: HideGroupNecro's manifest Title is 'HideGroup|c5050ffNecro|r'. Byte-for-byte
-        comparison correctly detects this differs from the plain upstream title and shows the
-        'installed as' suffix -- and since color now defaults on (see TestNoColor), the main
-        title actually renders 'Necro' in color, giving a real visual cue for the difference
-        instead of two seemingly-identical strings."""
-        output = self._list_output(monkeypatch, tmp_path, 'HideGroup|c5050ffNecro|r', 'HideGroupNecro')
-        assert 'installed as HideGroupNecro' in output
+        comparison correctly detects this differs from the plain upstream title -- and since color
+        now defaults on (see TestNoColor), the main title actually renders 'Necro' in color, giving
+        a real visual cue for the difference instead of two seemingly-identical strings."""
+        addons_root, config_file, api = self._single_addon_setup(tmp_path, 'HideGroup|c5050ffNecro|r', 'HideGroupNecro')
+        output = self._list_output(monkeypatch, addons_root, config_file, api)
+        assert ', listed online as HideGroupNecro' in output
         assert '\x1b[' in output
 
-    def test_suffix_shown_when_titles_genuinely_differ(self, monkeypatch, tmp_path):
-        output = self._list_output(monkeypatch, tmp_path, 'MyAddon', 'Completely Different Name')
-        assert 'installed as Completely Different Name' in output
+    def test_listed_online_as_when_titles_genuinely_differ(self, monkeypatch, tmp_path):
+        addons_root, config_file, api = self._single_addon_setup(tmp_path, 'MyAddon', 'Completely Different Name')
+        output = self._list_output(monkeypatch, addons_root, config_file, api)
+        assert ', listed online as Completely Different Name' in output
+
+    def test_part_of_for_multi_folder_bundle(self, monkeypatch, tmp_path):
+        addons_root = tmp_path / 'AddOns'
+        addons_root.mkdir()
+        config_file = tmp_path / 'gru.ini'
+        config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
+
+        make_installed(addons_root, 'MainPart', Title='MainPart')
+        make_installed(addons_root, 'ExtraPart', Title='ExtraPart')
+        upstream = make_addon_info(id_=1, title='BundleName', directories=['MainPart', 'ExtraPart'])
+
+        class LinkableApi(StubAPI):
+            def dir(self, name):
+                return upstream
+
+        output = self._list_output(monkeypatch, addons_root, config_file, LinkableApi())
+        assert ', part of BundleName' in output
+
+    def test_bundled_inside_for_unmatched_nested_folder(self, monkeypatch, tmp_path):
+        addons_root = tmp_path / 'AddOns'
+        addons_root.mkdir()
+        config_file = tmp_path / 'gru.ini'
+        config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
+
+        make_installed(addons_root, 'ParentAddon', Title='ParentAddon')
+        make_installed(addons_root / 'ParentAddon', 'ChildLib', Title='ChildLib')
+        upstream = make_addon_info(id_=1, title='ParentAddon', directories=['ParentAddon'])
+
+        class LinkableApi(StubAPI):
+            def dir(self, name):
+                if name == 'ParentAddon':
+                    return upstream
+                raise FileNotFoundError(name)
+
+        output = self._list_output(monkeypatch, addons_root, config_file, LinkableApi())
+        assert ', bundled inside ParentAddon' in output
 
 
 class TestNoColor:
