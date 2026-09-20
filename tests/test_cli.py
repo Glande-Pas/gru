@@ -7,10 +7,30 @@ import pytest
 from click.testing import CliRunner
 
 import gru.cli as cli_mod
-from gru.cli import main
+from gru.cli import main, TermDisplay
 from gru.config import load_config
 
 from .conftest import StubAPI, make_folder, make_installed
+
+
+class TestRenderEsoText:
+    def test_closed_tag(self):
+        result = TermDisplay._render_eso_text('|cFF0000Red|r Text')
+        assert 'Red' in result and 'Text' in result
+        assert '\x1b[' in result  # got styled, not left as raw markup
+
+    def test_missing_closing_tag_auto_closes_at_end_of_string(self):
+        result = TermDisplay._render_eso_text('|cFF0000Unterminated Red Text')
+        assert 'Unterminated Red Text' in result
+        assert '|c' not in result and '|r' not in result
+
+    def test_missing_closing_tag_auto_closes_before_next_color_code(self):
+        result = TermDisplay._render_eso_text('|cFF0000Red|c00FF00Green')
+        assert 'Red' in result and 'Green' in result
+        assert '|c' not in result and '|r' not in result
+
+    def test_plain_text_unaffected(self):
+        assert TermDisplay._render_eso_text('Plain title, no markup') == 'Plain title, no markup'
 
 
 @pytest.fixture

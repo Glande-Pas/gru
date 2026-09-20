@@ -68,7 +68,7 @@ class SectionedHelpGroup(click.Group):
 
 
 class TermDisplay:
-    _eso_colored_text = re.compile(r'\|c(?P<color>[0-9a-fA-F]{6})(?P<text>[^|]+)\|r')
+    _eso_colored_text = re.compile(r'\|c(?P<color>[0-9a-fA-F]{6})(?P<text>[^|]+)(?:\|r)?')
 
     def _wrapped(self, *infos: list[str]) -> None:
         pfx = ' ' * self.gutter
