@@ -334,3 +334,82 @@ def _touch_cache_path(base: pathlib.Path, *parts: str) -> pathlib.Path:
     path = path.joinpath(*parts)
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
+
+
+class TestSearchAndMissCommands:
+    """Regression guards for bugs found while fixing pyright errors: search/miss called the
+    undefined name _display() (NameError), and miss() caught the wrong exception type around
+    api.dir() (it raises FileNotFoundError, not ValueError), so an unresolved dependency used
+    to crash the whole command instead of being reported."""
+
+    @pytest.fixture
+    def cli_app(self, monkeypatch, tmp_path):
+        addons_root = tmp_path / 'AddOns'
+        addons_root.mkdir()
+        config_file = tmp_path / 'gru.ini'
+        config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
+
+        found_dep = make_addon_info(id_=2, title='LibFoo', directories=['LibFoo'])
+
+        class RichStubAPI(StubAPI):
+            def search(self, term, tiebreakattr=None, maxlen=30):
+                return [make_addon_info(id_=1, title='SearchResult', directories=['SearchResult'])]
+
+            def dir(self, name):
+                if name == 'LibFoo':
+                    return found_dep
+                raise FileNotFoundError(name)
+
+        def fake_build_app(game, cfg_file):
+            config = load_config(cfg_file)
+            api = RichStubAPI()
+            local = make_folder(addons_root)
+            local.scan(api)
+            return config, api, local
+
+        monkeypatch.setattr(cli_mod, 'build_app', fake_build_app)
+        return {'config_file': config_file, 'addons_root': addons_root}
+
+    def test_search_with_results_does_not_crash(self, cli_app):
+        result = invoke(cli_app['config_file'], ['search', 'anything'])
+        assert result.exit_code == 0
+        assert 'NameError' not in result.output
+        assert 'SearchResult' in result.output
+
+    def test_miss_reports_unresolvable_dependency_instead_of_crashing(self, cli_app):
+        make_installed(cli_app['addons_root'], 'MyAddon', DependsOn='LibFoo>=1 LibGone>=1')
+        result = invoke(cli_app['config_file'], ['miss'])
+        assert result.exit_code == 0
+        assert 'NameError' not in result.output
+        assert 'LibFoo' in result.output  # resolved -> shown via TermDisplay
+        assert 'Not found online: LibGone' in result.output  # unresolved -> reported, not crashed
+
+
+class TestFolderDisplayDescriptionField:
+    """Regression: _folder()'s local `infos` was accidentally a tuple ([a], [b]) rather than a
+    list, so infos.append(...) for a manifest's Description field raised AttributeError --
+    hit for any unmatched local addon whose manifest declares one (a common manifest field)."""
+
+    @pytest.fixture
+    def cli_app(self, monkeypatch, tmp_path):
+        addons_root = tmp_path / 'AddOns'
+        addons_root.mkdir()
+        config_file = tmp_path / 'gru.ini'
+        config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
+
+        def fake_build_app(game, cfg_file):
+            config = load_config(cfg_file)
+            api = StubAPI()  # empty -- addon stays unmatched, goes through _folder()
+            local = make_folder(addons_root)
+            local.scan(api)
+            return config, api, local
+
+        monkeypatch.setattr(cli_mod, 'build_app', fake_build_app)
+        return {'config_file': config_file, 'addons_root': addons_root}
+
+    def test_list_with_description_field_does_not_crash(self, cli_app):
+        make_installed(cli_app['addons_root'], 'MyAddon', Description='A cool addon')
+        result = invoke(cli_app['config_file'], ['list'])
+        assert result.exit_code == 0
+        assert 'AttributeError' not in result.output
+        assert 'Description: A cool addon' in result.output

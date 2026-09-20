@@ -12,12 +12,15 @@ import diff_match_patch
 
 from .config import encoding_open
 
+if typing.TYPE_CHECKING:
+    import gru.addon
+
 Op = str
 Lines = list[str]
 BlockPatch = list[tuple[Op, Lines]]
 BlockHeader = str
 FilePatch = list[tuple[BlockHeader, BlockPatch]]
-File = str
+File = pathlib.Path
 Patch = dict[tuple[File, File], FilePatch]
 
 
@@ -59,12 +62,11 @@ def parse_diff(handle: typing.IO) -> Patch:
             _, nextl = next(lines)
             if not nextl.startswith('+++ '):
                 raise ValueError(f'Missing +++ line after --- line at line {n}')
-            inout_files = tuple([
-                pathlib.Path(string[4:].lstrip().split('\t', 1)[0]) for string in (line, nextl)
-            ])
+            infile, outfile = (pathlib.Path(string[4:].lstrip().split('\t', 1)[0]) for string in (line, nextl))
+            inout_files = (infile, outfile)
             # Drop mnemonics as first directory part
             if set(file.parts[0] for file in inout_files) in mnemonic_top_dirs:
-                inout_files = tuple(pathlib.Path(*file.parts[1:]) for file in inout_files)
+                inout_files = (pathlib.Path(*infile.parts[1:]), pathlib.Path(*outfile.parts[1:]))
 
             # We want either twice the same file or 1 file, 1 /dev/null -- no other combinations
             if len(set(map(str, inout_files)) - {'/dev/null'}) != 1:

@@ -24,9 +24,16 @@ from collections.abc import Iterable, Iterator
 
 from .config import load_config, save_config, user_cache, display_config, update_config
 from .api import API
-from .addon import DisplayAddonProtocol
+from .addon import DisplayAddonProtocol, AddonInfo, InstalledAddon
 from .install import Folder
 from .patch import addon_diff, addon_patch_file
+
+if typing.TYPE_CHECKING:
+    import gru.addon
+    import gru.api
+    import gru.install
+
+AddonT = typing.TypeVar('AddonT', bound='gru.addon.AddonInfo | gru.addon.InstalledAddon')
 
 
 def get_config_bool(ctx: click.Context, string: str) -> bool:
@@ -107,6 +114,7 @@ class TermDisplay:
     def _installed(self, item: str, addon: gru.addon.InstalledAddon) -> None:
         """ Show addon info from the API endpoint """
         click.echo()
+        assert addon.infos is not None  # guaranteed by the is_local/id dispatch in __init__
         update = '' if not addon.can_update else f'{click.style("update available", bold=True)} - '
         infos = addon.infos
         parent = f', part of {infos.title}' if len(infos.folders) > 1 else f', listed online as {infos.title}' if addon.title.strip() != infos.title.strip() else ''
@@ -126,7 +134,7 @@ class TermDisplay:
         click.echo(' ' * self.gutter + addon.infos.metadata['link'])
 
 
-    def _addon_info(self, item: int, addon: gru.addon.AddonInfo) -> None:
+    def _addon_info(self, item: str, addon: gru.addon.AddonInfo) -> None:
         """ Show addon info from the API endpoint """
         # TODO: Based on verbosity level, only click.echo a number of those:
         title = f'{item:{self.gutter}}{addon.title}'
@@ -147,20 +155,20 @@ class TermDisplay:
         click.echo(' ' * self.gutter + addon.metadata['link'])
 
 
-    def _folder(self, item: int, folder: gru.addon.InstalledAddon) -> None:
+    def _folder(self, item: str, folder: gru.addon.InstalledAddon) -> None:
         """ Show addon info from a local folder that was not matched with the API endpoint """
         click.echo()
         # Based on verbosity level, only click.echo a number of those:
-        parent_text = f', bundled inside {parent.infos.title}' if (parent := folder.parent) and parent.id else ''
+        parent_text = f', bundled inside {parent.infos.title}' if (parent := folder.parent) and parent.id and parent.infos is not None else ''
         click.echo(f'{item:{self.gutter}}{self._render_eso_text(folder.title)}  [installed{parent_text}]')
-        infos = [
+        infos = [[
             f'Author: {self._styled_width(folder.author, 20)}',
             f'Version: {folder.version:10}',
         ], [
             f'Directory: {self.rel_path(folder.folder)}',
-        ]
-        if 'Description' in folder.metadata:
-            infos.append(f'Description: {folder.metadata["Description"]}')
+        ]]
+        if 'description' in folder.metadata:
+            infos.append([f'Description: {folder.metadata["description"]}'])
         self._wrapped(*infos)
         if folder.parent is not None:
             click.echo(' ' * self.gutter + 'NB: this add-on could not be matched online and may be deprecated')
@@ -175,9 +183,9 @@ class TermDisplay:
 
         for n, addon in enumerate(results, num_from + 1):
             item = f'{n:{self.gutter - 2}}: ' if len(results) > 1 else ''
-            if addon.is_local and addon.id is not None:
+            if isinstance(addon, InstalledAddon) and addon.id is not None:
                 self._installed(item, addon)
-            elif addon.is_local:
+            elif isinstance(addon, InstalledAddon):
                 self._folder(item, addon)
             else:
                 self._addon_info(item, addon)
@@ -185,13 +193,13 @@ class TermDisplay:
         click.echo()
 
 
-def _confirm(query: str) -> bool:
-    answer = click.confirm(query, prompt_suffix=':\n>> ')
+def _confirm(query: str | None) -> bool:
+    answer = click.confirm(query or 'Confirm?', prompt_suffix=':\n>> ')
     click.echo()
     return answer
 
 
-def _prompt_addon(results: Iterable[gru.addon.DisplayAddonProtocol], confirm_prompt: str | None = None, show_batch: int | None = None) -> gru.addon.DisplayAddonProtocol | None:
+def _prompt_addon(results: Iterable[AddonT], confirm_prompt: str | None = None, show_batch: int | None = None) -> AddonT | None:
     """ Pick an addon from a list of addons """
     results = list(results)
     if not results:
@@ -232,7 +240,7 @@ def _prompt_addon(results: Iterable[gru.addon.DisplayAddonProtocol], confirm_pro
         return results[answer - 1]
 
 
-def _find_installed(local: gru.install.Folder, api: gru.api.API, term: str, confirm_prompt: str | None = None) -> gru.addon.InstalledAddon | None:
+def _find_installed(local: gru.install.Folder, api: gru.api.API, term: str | None, confirm_prompt: str | None = None) -> gru.addon.InstalledAddon | None:
     if term:
         addon = local.find(term.lower(), api)
     else:
@@ -411,30 +419,38 @@ def get(ctx: click.Context, addon: list[str], auto_deps: bool = True, opt: bool 
 
     for addon_spec in addon_list:
 
-        addon = api.find(addon_spec, local)
-        if not addon:
+        matches = api.find(addon_spec, local)
+        if not matches:
             click.echo('No corresponding addon found')
             click.echo()
             if batch:
                 warnings.warn(f'Skipped install of unmatched addon {addon_spec}')
             continue
 
+        picked: gru.addon.AddonInfo | gru.addon.InstalledAddon | None
         if not batch:
-            addon = _prompt_addon(addon, 'Confirm installation?')
-        elif len(addon) == 1:
-            addon = addon[0]
+            picked = _prompt_addon(matches, 'Confirm installation?')
+        elif len(matches) == 1:
+            picked = matches[0]
         else:
             click.echo(f'Ambiguous addon specificiation {addon_spec}, skipping')
             warnings.warn(f'Skipped install of ambiguous addon {addon_spec}')
-            addon = None
+            picked = None
 
-        if not addon:
+        if picked is None:
             continue
+
+        if not isinstance(picked, AddonInfo):
+            # Matched only by local directory name, not present in the online catalog --
+            # nothing to download.
+            click.echo(f'{addon_spec} is already installed locally and not found online, skipping')
+            continue
+        found = picked
 
         # Try to reuse an existing install dir
         install_path = None
         try:
-            installed_addon = next(ad for ad in local.id(addon.id) if ad.parent is None)
+            installed_addon = next(ad for ad in local.id(found.id) if ad.parent is None)
             if batch or _confirm(f'Addon found at {installed_addon.folder}, update?'):
                 install_path = installed_addon.folder
             else:
@@ -444,16 +460,17 @@ def get(ctx: click.Context, addon: list[str], auto_deps: bool = True, opt: bool 
             pass
 
         try:
-            result = local.install(addon, api, _progress, path=install_path, deps=auto_deps, opt=opt)
+            result = local.install(found, api, _progress, path=install_path, deps=auto_deps, opt=opt)
         except KeyError as exc:
             click.echo(f'Failed installing {addon_spec}: {type(exc).__name__} {exc}')
             if not batch:
                 break
+            continue
 
         if result is None:
-            click.echo(f'Done installing {TermDisplay._render_eso_text(addon.title)}')
+            click.echo(f'Done installing {TermDisplay._render_eso_text(found.title)}')
         else:
-            click.echo(f'Done installing {TermDisplay._render_eso_text(addon.title)} and {result} dependence(s)')
+            click.echo(f'Done installing {TermDisplay._render_eso_text(found.title)} and {result} dependence(s)')
     show_warnings(ctx)
 
 
@@ -573,7 +590,7 @@ def search(ctx: click.Context, term: str | None, max_: int = 10) -> None:
     search = api.search(term, maxlen=max_)
     if search:
         click.echo(f'{len(search)} results:')
-        _display(ctx, search)
+        TermDisplay(search)
     else:
         click.echo('No matches.')
 
@@ -628,32 +645,22 @@ def miss(ctx: click.Context, opt: bool) -> None:
         return
 
     click.echo(f'{len(missing)} missing dependences:')
-    found, not_found = [], []
+    found: list[gru.addon.AddonInfo] = []
+    not_found: list[gru.addon.Dependency] = []
     for dep in missing:
         try:
             found.append(api.dir(dep.dir))
-        except ValueError:
+        except FileNotFoundError:
             not_found.append(dep)
-    _display(ctx, found + not_found)
+
+    if found:
+        TermDisplay(list(found))
+    if not_found:
+        click.echo('Not found online: ' + ', '.join(dep.dir for dep in not_found))
 
     if found:
         click.echo(f'Run update to fetch resolved missing dependences')
     show_warnings(ctx)
-
-
-@contextlib.contextmanager
-def unmodified_addon(api: gru.api.API, local: gru.install.Folder, addon: gru.addon.AddonInfo, url: str = None) -> Iterator[gru.addon.InstalledAddon]:
-    # Code to acquire resource, e.g.:
-    with tempfile.TemporaryDirectory() as tempdir:
-        ref_local = local.alt_location(pathlib.Path(tempdir))
-        ref_addon = addon.alt_location(ref_local.root)
-        # Be sure to compare to installed version not up-to-date upstream
-        ref_local.unpack(ref_addon, api, url_override=url)
-
-        if ref_addon.version != addon.version:
-            raise ValueError('Downloaded addon does not have same version as installed addon!')
-
-        yield ref_addon
 
 
 @main.command(help='Save the diff between current addon and upstream as a patch')
@@ -664,22 +671,26 @@ def diff(ctx: click.Context, addon: str | None, url: str | None = None) -> None:
     api = ctx.obj['api']
     local = ctx.obj['local']
 
-    addon = _find_installed(local, api, addon, 'Confirm diff saving?')
-    if addon is None:
+    found = _find_installed(local, api, addon, 'Confirm diff saving?')
+    if found is None:
+        show_warnings(ctx)
+        return
+    if found.infos is None:
+        click.echo(f'{found.title} is not matched with an online addon, nothing to diff against.')
         show_warnings(ctx)
         return
 
-    if not url and addon.infos.version != addon.version:
+    if not url and found.infos.version != found.version:
         click.echo(f'Addon is out of date!  Can not fetch unmodified source automatically.')
         click.echo()
-        url = click.prompt(f'Please manually specify {addon.version} download url',
+        url = click.prompt(f'Please manually specify {found.version} download url',
                               prompt_suffix=':\n>> ', type=str)
 
-    result_path = local.root / '.gru' / f'{addon.dir}.patch'
+    result_path = local.root / '.gru' / f'{found.dir}.patch'
     result_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with local.unmodified_addon(addon.infos, api, url=url) as ref_addon, result_path.open('w') as out:
-        nfiles = addon_diff(ref_addon, addon, out=out)
+    with local.unmodified_addon(found.infos, api, url=url) as ref_addon, result_path.open('w') as out:
+        nfiles = addon_diff(ref_addon, found, out=out)
 
     if nfiles > 0:
         click.echo(f'Changes saved under:\n{result_path.resolve()}')

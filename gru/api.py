@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import requests
+import requests.structures
 import requests_cache
 import datetime
 import operator
@@ -10,12 +11,18 @@ import difflib
 import warnings
 import functools
 import collections
+import collections.abc
 import configparser
 import typing
+from typing import TypeVar
 from collections.abc import Iterable, Iterator, Mapping
 
 from . import config as gruconfig
 from .addon import AddonInfo, DisplayAddonProtocol
+
+if typing.TYPE_CHECKING:
+    import gru.addon
+    import gru.install
 
 
 def to_list(arg: Iterable | None) -> list:
@@ -35,14 +42,14 @@ def epoch_ms(val: float) -> datetime.datetime:
     return datetime.datetime.fromtimestamp(int(val) / 1000)
 
 
-def _exception_root_cause(err: Exception) -> str:
+def _exception_root_cause(err: BaseException) -> str:
     while True:
-        if getattr(err, '__cause__', None) is not None:
+        if err.__cause__ is not None:
             err = err.__cause__  # standard python exception chaining
         elif isinstance(err.args[0], Exception):
             err = err.args[0]   # requests exception chaining
-        elif getattr(err, 'reason', None) is not None:
-            err = err.reason  # urllib3 (requests' backend) exception chaining
+        elif (reason := getattr(err, 'reason', None)) is not None:
+            err = reason  # urllib3 (requests' backend) exception chaining
         else:
             break
 
@@ -54,8 +61,11 @@ def _exception_root_cause(err: Exception) -> str:
     return str(err)
 
 
-def _fuzz(source: Iterable[DisplayAddonProtocol], attr: str, term: str, cutoff: float, maxlen: int,
-          tiebreakattr: list[str] = []) -> list[DisplayAddonProtocol]:
+T = TypeVar('T', bound=DisplayAddonProtocol)
+
+
+def _fuzz(source: Iterable[T], attr: str, term: str, cutoff: float, maxlen: int,
+          tiebreakattr: list[str] = []) -> list[T]:
     """ Fuzzy search that prioritises maximal subset matches, then longest match, then by tie breakers.
 
     Matches `term` in the `attr` attribute within the `source` iterable, returning at most `maxlen` items.
@@ -65,7 +75,7 @@ def _fuzz(source: Iterable[DisplayAddonProtocol], attr: str, term: str, cutoff: 
     """
     cutoff *= len(term)
     candidates = []
-    matcher = difflib.SequenceMatcher(str.isspace, term.lower(), None)
+    matcher = difflib.SequenceMatcher(str.isspace, term.lower(), '')
 
     for addon in source:
         matcher.set_seq2(getattr(addon, attr).lower())
@@ -81,7 +91,7 @@ def _fuzz(source: Iterable[DisplayAddonProtocol], attr: str, term: str, cutoff: 
     candidates = sorted(candidates, key=operator.itemgetter(0), reverse=True)
     return [addon for prio, addon in candidates[:maxlen]]
 
-def _filter(source: Iterable[DisplayAddonProtocol], attr: str, match: str | int | None) -> Iterator[DisplayAddonProtocol]:
+def _filter(source: Iterable[T], attr: str, match: str | int | None) -> Iterator[T]:
     """ Search with exact match (lowercased) """
     for addon in source:
         value = getattr(addon, attr)
@@ -97,7 +107,7 @@ def _filter(source: Iterable[DisplayAddonProtocol], attr: str, match: str | int 
         elif match == value:
             yield addon
 
-def _lookup(source: Iterable[DisplayAddonProtocol], attr: str, match: str | int | None) -> DisplayAddonProtocol:
+def _lookup(source: Iterable[T], attr: str, match: str | int | None) -> T:
     """ Search with exact match (lowercased) """
     try:
         return next(_filter(source, attr, match))
@@ -106,6 +116,17 @@ def _lookup(source: Iterable[DisplayAddonProtocol], attr: str, match: str | int 
         raise ValueError(f'{attr} {match!r} not found in list')
 
 class API:
+    # Provided by subclasses (ESOUIv3/ESOUIv4): game/version as class attributes,
+    # addons/categories as cached_property. TYPE_CHECKING-only so it documents the type for
+    # static analysis without creating a real descriptor that would block plain instance
+    # assignment (both cached_property's own storage and tests that set .addons directly).
+    if typing.TYPE_CHECKING:
+        game: str
+        version: int
+        addons: dict[int, AddonInfo]
+        categories: dict[int, dict]
+        globalconf: Mapping
+
     def  __init__(self, config: configparser.ConfigParser) -> None:
         self.pages = {}
         endpoint = config.get('api', 'endpoint')
@@ -122,7 +143,8 @@ class API:
         except requests.JSONDecodeError as err:
             warnings.warn(f'JSON decode error while loading data from {url!r}')
         except requests.HTTPError as err:
-            warnings.warn(f'HTTP error while loading {url!r} status code {err.response.status_code}: {err}')
+            status = err.response.status_code if err.response is not None else 'unknown'
+            warnings.warn(f'HTTP error while loading {url!r} status code {status}: {err}')
         except (requests.ConnectionError, requests.Timeout) as err:
             # Get back up to root cause for readability
             msg = _exception_root_cause(err)
@@ -192,7 +214,7 @@ class API:
                 return [addon]
 
         # Otherwise revert to search and return a list of candidates
-        return self.search(val)
+        return list(self.search(val))
 
     @classmethod
     def _factory(cls, config: configparser.ConfigParser, game: str, stable: bool = True) -> API:
@@ -220,7 +242,7 @@ class ESOUIv4(API):
         super().__init__(config)
 
     @functools.cached_property
-    def globalconf(self) -> requests.structures.CaseInsensitiveDict:
+    def globalconf(self) -> requests.structures.CaseInsensitiveDict:  # pyright: ignore[reportIncompatibleVariableOverride] -- cached_property stores into instance.__dict__ exactly like the plain attribute it overrides
         return case_insensitive(self._load(self.pages['globalconf'], {}))
 
 
@@ -259,23 +281,21 @@ class ESOUIv3(API):
         super().__init__(config)
 
     @functools.cached_property
-    def globalconf(self) -> dict:
+    def globalconf(self) -> dict:  # pyright: ignore[reportIncompatibleVariableOverride] -- same as ESOUIv4.globalconf above
         return self._load(self.pages['globalconf'], {})
 
     @functools.cached_property
     def gameconf(self) -> dict:
         return self._load(self.pages['gameconf'], {})
 
-    @functools.cached_property
     def filelist(self, id_: int) -> list[str]:
         return self._load(self.pages['filelist'].format(id=id_), {}).get('FileList', [])
 
-    @functools.cached_property
     def filedetails(self, id_: int) -> dict:
         return self._load(self.pages['filedetails'].format(id=id_), {})
 
     @functools.cached_property
-    def addons(self) -> dict[int, AddonInfo]:
+    def addons(self) -> dict[int, AddonInfo]:  # pyright: ignore[reportIncompatibleVariableOverride] -- cached_property stores into instance.__dict__ exactly like the plain attribute it overrides
         data = {}
         for addon in self._load(self.pages['filelist'], []):
             infos = {new: typ(addon[old]) for old, (new, typ) in self.fileinfo_rename.items()}
@@ -283,7 +303,7 @@ class ESOUIv3(API):
         return data
 
     @functools.cached_property
-    def categories(self) -> dict[int, dict]:
+    def categories(self) -> dict[int, dict]:  # pyright: ignore[reportIncompatibleVariableOverride] -- same as addons above
         categories = {}
         for cat in self._load(self.pages['catlist'], []):
             categories[int(cat['UICATID'])] = {new: typ(cat[old]) for old, (new, typ) in self.catlist_rename.items()}

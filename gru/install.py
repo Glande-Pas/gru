@@ -25,19 +25,29 @@ import re
 from urllib.parse import quote as urllib_quote
 
 from .config import encoding_open, user_cache
-from .addon import InstalledAddon, Dependency, GARBAGE, MANIFEST_EXTS
+from .addon import InstalledAddon, AddonInfo, Dependency, GARBAGE, MANIFEST_EXTS
 from .api import _fuzz, _lookup, _filter
 from .patch import addon_patch_file
 
 from typing import Protocol
-from collections.abc import Iterator, Iterable
+from collections.abc import Iterator, Iterable, Callable
+
+if typing.TYPE_CHECKING:
+    import gru.addon
+    import gru.api
 
 
 class ProgressProtocol(Protocol):
-    def __init__(self, size: int, message: str) -> None: ...
-    def __enter__(self) -> SilentProgress: ...
+    """ Instance shape only -- construction is described separately by ProgressFactory below,
+    since implementers include plain factory functions as well as classes. """
+    def __enter__(self) -> ProgressProtocol: ...
     def __exit__(self, *args, **kwargs) -> None: ...
-    def update(self, size: int) -> None: ...
+    def update(self, size: int, /) -> None: ...
+
+
+#: Anything callable as (size, message) -> ProgressProtocol -- a ProgressProtocol subclass
+#: (called as its own constructor) or a plain factory function like cli.py's _progress().
+ProgressFactory = Callable[[int, str], ProgressProtocol]
 
 
 class SilentProgress:
@@ -75,7 +85,12 @@ class Folder:
     def temp_root(self) -> Iterator[Folder]:
         """ Yields a similarly-configured install folder at a temporary location. """
         with tempfile.TemporaryDirectory() as tempdir:
-            yield Folder('game', {'game.addons': tempdir, 'game.links': self.url_template})
+            config = configparser.ConfigParser()
+            config.add_section('game.addons')
+            config.set('game.addons', 'root', tempdir)
+            config.add_section('game.links')
+            config.set('game.links', 'download', self.url_template)
+            yield Folder('game', config)
 
     @contextlib.contextmanager
     def unmodified_addon(self, addon: gru.addon.AddonInfo, api: gru.api.API, url: str | None = None) -> Iterator[gru.addon.InstalledAddon]:
@@ -172,16 +187,17 @@ class Folder:
         if search := list(self.search(val)):
             return search
 
-        return sum((self.id(addon.id) for addon in api.search(val)), [])
+        return sum((list(self.id(addon.id)) for addon in api.search(val) if addon.id is not None), [])
 
     def search(self, term: str, tiebreakattr: str | None = None, maxlen: int = 30) -> list[gru.addon.InstalledAddon]:
         """ Search `term` in addon names """
         # We want at least 75% of search string in result
+        tiebreak = [tiebreakattr] if tiebreakattr is not None else []
         return [
             *_fuzz(self.installed, 'title', term, cutoff=.75 if len(term) > 3 else 1, maxlen=maxlen,
-                   tiebreakattr=[tiebreakattr]),
+                   tiebreakattr=tiebreak),
             *_fuzz(self.installed, 'dir', term, cutoff=.75 if len(term) > 3 else 1, maxlen=maxlen,
-                   tiebreakattr=[tiebreakattr]),
+                   tiebreakattr=tiebreak),
         ]
 
     def find_installed(self, spec: gru.addon.Dependency) -> gru.addon.InstalledAddon | None:
@@ -207,10 +223,10 @@ class Folder:
         - a list of file infos from the zip, such that their extracted path ends up in addon.root
         """
         # NB: always ignore macos garbage
-        files = [(pathlib.Path(info.filename), info.is_dir(), getattr(info, 'file_size', 0)) for info in zf.infolist() if not info.filename.startswith(tuple(GARBAGE))]
+        files = [(pathlib.Path(info.filename), info.is_dir(), info.file_size) for info in zf.infolist() if not info.filename.startswith(tuple(GARBAGE))]
         # Ignore files that would end up outside target directory
         path = path.resolve()
-        files = [(fn, *_) for fn, *_ in files if (path / fn).resolve(strict=False).is_relative_to(path)]
+        files = [(fn, is_dir, sz) for fn, is_dir, sz in files if (path / fn).resolve(strict=False).is_relative_to(path)]
         # Extract specific files we’re interested in
         manifests = {fn.with_suffix('') for fn, *_ in files if (fn.stem == fn.parent.name or len(fn.parts) == 1) and fn.suffix in MANIFEST_EXTS}
         toplevels = collections.Counter(fn.parts[0] for fn, *_ in files)
@@ -236,7 +252,7 @@ class Folder:
         manifest_depth0 = [fn for fn in manifests if len(fn.parts) == 1]
         # If needed, try to reduce top-level manifest candidates to files whose stem appears in zip’s name
         # i.e. {addon}.txt in {addon.zip}, {addon}-{version}.zip, {addon}r{release}.zip, etc.
-        if len(manifest_depth0) > 1:
+        if len(manifest_depth0) > 1 and zf.filename is not None:
             manifest_depth0 = [fn for fn in manifest_depth0 if zf.filename.startswith(fn.name)]
 
         if len(manifest_depth0) == 1:
@@ -274,7 +290,7 @@ class Folder:
         # Try to match zip contents to where addon is already installed
         # E.g. we are updating Foo at {root}/dir/Foo/Foo.txt, zip contains (Foo/Foo.txt, Bar/): install at {root}/dir
         parent, siblings = find_siblings(toplevels)
-        if parent is not None:
+        if parent is not None and siblings is not None:
             warnings.warn(f'Found local install matching non-standard zip at {parent}, installing under {parent}')
             return parent, siblings, files
 
@@ -303,13 +319,13 @@ class Folder:
 
         # After pruning, check again whether the remaining dirs match an existing install
         parent, siblings = find_siblings(toplevels)
-        if parent is not None:
+        if parent is not None and siblings is not None:
             warnings.warn(f'Found local install matching pruned non-standard zip at {parent}, installing under {parent}')
-            return parent, siblings, [(fn, *_) for fn, *_ in files if fn.parts[0] in toplevels]
+            return parent, siblings, [(fn, is_dir, sz) for fn, is_dir, sz in files if fn.parts[0] in toplevels]
 
         if len(toplevels) > 1:
             warnings.warn(f'Installing {len(toplevels)} addons as part of {path.name}: {", ".join(toplevels)}')
-        return path.parent, [path.parent / top for top in toplevels], [(fn, *_) for fn, *_ in files if fn.parts[0] in toplevels]
+        return path.parent, [path.parent / top for top in toplevels], [(fn, is_dir, sz) for fn, is_dir, sz in files if fn.parts[0] in toplevels]
 
     def _download(self, dl: requests.Response, fd: typing.BinaryIO, progress: ProgressProtocol) -> None:
         with progress as prog:
@@ -359,7 +375,7 @@ class Folder:
                     shutil.copyfileobj(zfreader, out)
                 prog.update(size)
 
-    def unpack(self, addon: gru.addon.AddonInfo, api: gru.api.API, progress: type[ProgressProtocol] | None = None, path : pathlib.Path | None = None, url_override: str | None = None) -> Iterable[gru.addon.InstalledAddon]:
+    def unpack(self, addon: gru.addon.AddonInfo, api: gru.api.API, progress: ProgressFactory | None = None, path : pathlib.Path | None = None, url_override: str | None = None) -> Iterable[gru.addon.InstalledAddon]:
         """ Download and install, calls back to `progress` (100% until return means unzipping) """
         # NB. any file name returns correct file eventually, and “correct” file names are underterministic.
         # However, server-side caching means we can get stale versions if we use a version-independent url.
@@ -414,7 +430,7 @@ class Folder:
         self._installed.update(installed_addons)
         return installed_addons.values()
 
-    def install(self, addon: gru.addon.AddonInfo, api: gru.api.API, progress: ProgressProtocol | None = None, path: pathlib.Path | None = None, deps: bool = True, opt: bool = False) -> int | None:
+    def install(self, addon: gru.addon.AddonInfo, api: gru.api.API, progress: ProgressFactory | None = None, path: pathlib.Path | None = None, deps: bool = True, opt: bool = False) -> int | None:
         installed = self.unpack(addon, api, path=path, progress=progress)
 
         if deps:
@@ -449,10 +465,10 @@ class Folder:
                 unused.append(addon)
         return unused
 
-    def update(self, api: gru.api.API, progress: ProgressProtocol | None = None, opt: bool = False, deps: bool = False, patch: bool = False) -> tuple[int, int]:
+    def update(self, api: gru.api.API, progress: ProgressFactory | None = None, opt: bool = False, deps: bool = False, patch: bool = False) -> tuple[int, int]:
         updates = []
         for addon in self.installed:
-            if not addon.can_update:
+            if not addon.can_update or addon.infos is None:
                 continue
             try:
                 updates.extend(self.unpack(addon.infos, api, progress=progress, path=addon.folder))
@@ -468,7 +484,7 @@ class Folder:
         else:
             return (len(updates), 0)
 
-    def install_deps(self, pool: Iterable[gru.addon.InstalledAddon], api: gru.api.API, progress: ProgressProtocol | None = None, opt: bool = False, patch: bool = False) -> int:
+    def install_deps(self, pool: Iterable[gru.addon.InstalledAddon], api: gru.api.API, progress: ProgressFactory | None = None, opt: bool = False, patch: bool = False) -> int:
         added = 0
         deps = [*(pool or self.installed)]
         while newdeps := self.missing_deps(deps, opt=opt):
@@ -495,7 +511,7 @@ class Folder:
 
     def remove(self, addon: gru.addon.InstalledAddon | gru.addon.AddonInfo, deps: bool = False, opt: bool = True) -> int:
         """ Uninstall addon """
-        if not addon.is_local:
+        if isinstance(addon, AddonInfo):
             if not addon.folders:
                 raise ValueError(f'Addon {addon.title} is not installed')
             addon = list(addon.folders.values())[0]
@@ -503,7 +519,7 @@ class Folder:
         if addon.folder.exists():
             shutil.rmtree(addon.folder)
         del self._installed[addon.folder]
-        if addon.id:
+        if addon.id and addon.infos is not None:
             addon.infos.deregister(addon)
 
         if not deps:

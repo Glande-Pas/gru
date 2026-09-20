@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import re
 import datetime
+import pathlib
 import warnings
 import unicodedata
 from typing import Protocol
+from collections.abc import Sequence
 
 from .config import encoding_open
 
@@ -46,8 +48,9 @@ class DisplayAddonProtocol(Protocol):
     title: str
     author: str
     version: str
-    api: list[int | dict[str, str]]
+    api: Sequence[int | dict[str, str]]
     is_local: bool
+    metadata: dict
     @property
     def can_update(self) -> bool: raise NotImplementedError
     # Basic metadata
@@ -166,9 +169,10 @@ class InstalledAddon(Dependency, DisplayAddonProtocol):
 
         # Now handle all interesting metadata
         self.dep_version = atol(metadata.pop('AddOnVersion', '1'))
-        self.api = [atol(api) for api in metadata.pop('APIVersion', '').split()]
-        assert 1 <= len(self.api) <= 2 and 100003 <= min(self.api) and max(self.api) <= 999999, \
-            f'Unexpected API Version format {self.api!r}'
+        api_versions = [atol(api) for api in metadata.pop('APIVersion', '').split()]
+        assert 1 <= len(api_versions) <= 2 and 100003 <= min(api_versions) and max(api_versions) <= 999999, \
+            f'Unexpected API Version format {api_versions!r}'
+        self.api = api_versions
 
         is_lib_str = metadata.pop('IsLibrary', 'false').lower()
         assert is_lib_str in {'true', 'false'}, f'Unexpected value for IsLibrary {is_lib_str!r}'
@@ -205,7 +209,7 @@ class InstalledAddon(Dependency, DisplayAddonProtocol):
 
     @property
     def can_update(self) -> bool:
-        if self.id is None:
+        if self.id is None or self.infos is None:
             return False
 
         is_local = _parse_version(self.version)

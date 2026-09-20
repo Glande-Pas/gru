@@ -75,6 +75,21 @@ class TestFolderFind:
         result = populated_folder.find('completely-unrelated-xyz', api)
         assert result == []
 
+    def test_find_falls_back_to_api_search_by_id_without_crashing(self, populated_folder):
+        """Regression: sum() over self.id(...) generators used to crash (TypeError: can only
+        concatenate list to list, not generator) since self.id() returns a generator, not a
+        list. Needs api.search() to actually return something to exercise the sum() call at
+        all -- an empty result (as in the test above) never reaches the buggy line."""
+        class RemoteMatch:
+            id = 999
+
+        class ApiWithRemoteMatch(StubAPI):
+            def search(self, term):
+                return [RemoteMatch()]
+
+        result = populated_folder.find('nothing-matches-locally', ApiWithRemoteMatch())
+        assert result == []  # no local addon has id=999, but it must not crash getting there
+
 
 class TestFolderSearch:
     def test_search_does_not_raise(self, populated_folder):

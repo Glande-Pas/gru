@@ -62,7 +62,8 @@ def encoding_open(fname: pathlib.Path | str) -> Iterator[typing.IO]:
             encoding = 'utf_8_sig'
         else:
             f.seek(0)
-            encoding = charset_normalizer.from_fp(f).best().encoding
+            match = charset_normalizer.from_fp(f).best()
+            encoding = match.encoding if match is not None else 'utf-8'
 
     with open(fname, 'r', encoding=encoding) as f:
         yield f
@@ -89,7 +90,10 @@ def user_cache(*args: str) -> pathlib.Path:
         :class:`~pathlib.Path`: path to the cache file or directory.
     """
     if IS_WINDOWS:
-        base_dir = pathlib.Path(os.getenv('LOCALAPPDATA', os.getenv('APPDATA')))
+        appdata = os.getenv('LOCALAPPDATA') or os.getenv('APPDATA')
+        if appdata is None:
+            raise EnvironmentError('Neither LOCALAPPDATA nor APPDATA environment variables are set')
+        base_dir = pathlib.Path(appdata)
     elif IS_MAC_OS:
         # NB. for local ~/Library/Logs
         base_dir = pathlib.Path('~/Library/Caches').expanduser()
@@ -111,7 +115,10 @@ def user_config() -> pathlib.Path:
         :class:`~pathlib.Path`: path to the user configuration file.
     """
     if IS_WINDOWS:
-        return pathlib.Path(os.getenv('APPDATA')) / 'gru.ini'
+        appdata = os.getenv('APPDATA')
+        if appdata is None:
+            raise EnvironmentError('APPDATA environment variable is not set')
+        return pathlib.Path(appdata) / 'gru.ini'
     elif IS_MAC_OS:
         return pathlib.Path('~/Library/Preferences').expanduser() / 'gru'
     else:
@@ -176,11 +183,16 @@ def save_config(config: configparser.ConfigParser, config_file: pathlib.Path | s
 
 
 class FormatMixin():
+    if typing.TYPE_CHECKING:
+        # Only ever mixed in alongside a gettext.NullTranslations/GNUTranslations base,
+        # which is what actually provides gettext() at runtime.
+        def gettext(self, message: str) -> str: ...
+
     def gettext_format(self, string: str, *args: typing.Any, **kwargs: typing.Any) -> str:
         """ A function that condenses translation.gettext(string).format(...) in single function """
-        return super().gettext(string).format(*args, **kwargs)
+        return self.gettext(string).format(*args, **kwargs)
 
-    def install(self) -> None:
+    def install(self, names: typing.Any = None) -> None:
         builtins.__dict__['_'] = self.gettext_format
 
 
@@ -207,7 +219,7 @@ def install_translation(domain: str, localedir: pathlib.Path) -> None:
 
     # now normalize and expand the languages
     for lang in enval.split(':'):
-        for nelang in gettext._expand_lang(lang):
+        for nelang in gettext._expand_lang(lang):  # pyright: ignore[reportAttributeAccessIssue] -- private gettext API
             file = localedir.joinpath(nelang, 'LC_MESSAGES', domain + '.mo')
             if file.is_file():
                 with file.open('rb') as fp:
