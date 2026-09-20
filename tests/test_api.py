@@ -358,6 +358,18 @@ class TestApiLoad:
         with pytest.warns(UserWarning, match='HTTP error'):
             assert api._load('http://x', fallback={}) == {}
 
+    def test_http_error_with_no_response_object_does_not_crash(self):
+        """Regression guard: requests.HTTPError.response can genuinely be None (e.g. when
+        raised manually rather than via response.raise_for_status()); accessing
+        err.response.status_code unconditionally would raise AttributeError."""
+        class NoResponseSession:
+            def get(self, url):
+                raise requests.HTTPError('boom')  # no response= given -> err.response is None
+        api = make_api()
+        api.session = NoResponseSession()
+        with pytest.warns(UserWarning, match='HTTP error'):
+            assert api._load('http://x', fallback={}) == {}
+
     def test_connection_error_returns_fallback_and_warns(self):
         api = make_api()
         api.session = FakeSession(exc=requests.ConnectionError('refused'))

@@ -413,3 +413,75 @@ class TestFolderDisplayDescriptionField:
         assert result.exit_code == 0
         assert 'AttributeError' not in result.output
         assert 'Description: A cool addon' in result.output
+
+
+class TestGetCommand:
+    """Regression guards for two bugs found while fixing pyright errors in get()'s loop."""
+
+    @pytest.fixture
+    def cli_app(self, monkeypatch, tmp_path):
+        addons_root = tmp_path / 'AddOns'
+        addons_root.mkdir()
+        config_file = tmp_path / 'gru.ini'
+        config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
+        return {'addons_root': addons_root, 'config_file': config_file}
+
+    def _wire_build_app(self, monkeypatch, addons_root, api):
+        def fake_build_app(game, cfg_file):
+            config = load_config(cfg_file)
+            local = make_folder(addons_root)
+            local.scan(api)
+            return config, api, local
+        monkeypatch.setattr(cli_mod, 'build_app', fake_build_app)
+
+    def test_locally_matched_but_uncataloged_addon_is_skipped_not_installed(self, monkeypatch, cli_app):
+        """Regression: api.find() can return a bare InstalledAddon (matched by local
+        directory name only, not present online). Passing that into local.install() ->
+        unpack() -> InstalledAddon.link() crashes: AttributeError, InstalledAddon has no
+        register() (only AddonInfo does) -- same shape as the earlier `gru diff` bug."""
+        installed = make_installed(cli_app['addons_root'], 'LocalOnly')
+
+        class LocalOnlyApi(StubAPI):
+            def find(self, val, local):
+                return [installed]
+
+        self._wire_build_app(monkeypatch, cli_app['addons_root'], LocalOnlyApi())
+        result = invoke(cli_app['config_file'], ['get', 'LocalOnly', '--yes'])
+        assert result.exit_code == 0
+        assert 'AttributeError' not in result.output
+        assert 'register' not in result.output
+        assert 'already installed locally and not found online' in result.output
+
+    def test_batch_mode_continues_cleanly_after_install_failure(self, monkeypatch, cli_app):
+        """Regression: on KeyError from local.install() in batch (--yes) mode, the loop
+        didn't `continue`, so `result` was referenced further down while still unbound
+        from any successful assignment -- UnboundLocalError instead of the intended
+        'Failed installing ...' message."""
+        upstream = make_addon_info(id_=1, title='MyAddon', directories=['MyAddon'])
+
+        class FindableApi(StubAPI):
+            def find(self, val, local):
+                return [upstream]
+
+        self._wire_build_app(monkeypatch, cli_app['addons_root'], FindableApi())
+
+        def broken_install(self, *args, **kwargs):
+            raise KeyError('simulated failure')
+        monkeypatch.setattr(cli_mod.Folder, 'install', broken_install)
+
+        result = invoke(cli_app['config_file'], ['get', 'MyAddon', '--yes'])
+        assert result.exit_code == 0
+        assert 'UnboundLocalError' not in result.output
+        assert 'Failed installing' in result.output
+
+
+class TestFolderSearchTiebreak:
+    def test_exactly_tied_candidates_do_not_crash_sorting(self, addon_root, folder):
+        """Regression: Folder.search()'s default tiebreakattr=None used to become the
+        list [None]; two candidates tied on (sum(matches), max(matches)) then forced
+        sorted() to compare None < None to break the tie, raising TypeError."""
+        make_installed(addon_root, 'AddonOne', Title='Tied Title')
+        make_installed(addon_root, 'AddonTwo', Title='Tied Title')
+        folder.scan()
+        result = folder.search('Tied Title')
+        assert len(result) >= 2
