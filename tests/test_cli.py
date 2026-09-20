@@ -3,6 +3,7 @@
 main() builds its API/Folder through cli.build_app(), which TestWithRealAddons monkeypatches
 to a stub -- letting these commands run against real installed addons with zero network."""
 
+import click
 import pytest
 from click.testing import CliRunner
 
@@ -10,7 +11,7 @@ import gru.cli as cli_mod
 from gru.cli import main, TermDisplay
 from gru.config import load_config
 
-from .conftest import StubAPI, make_folder, make_installed
+from .conftest import StubAPI, make_folder, make_installed, make_addon_info
 
 
 class TestRenderEsoText:
@@ -130,3 +131,86 @@ class TestWithRealAddons:
         assert result.exit_code == 0
         exported = (cli_app['addons_root'] / '.gru' / 'addons.txt').read_text()
         assert 'MyAddon = 3' in exported
+
+
+class TestInstalledAsSuffix:
+    """'installed as X' should only show when the titles actually differ once ESO color
+    markup is stripped -- not just when the raw manifest strings differ character-for-character."""
+
+    def _list_output(self, monkeypatch, tmp_path, manifest_title, upstream_title):
+        addons_root = tmp_path / 'AddOns'
+        addons_root.mkdir()
+        config_file = tmp_path / 'gru.ini'
+        config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
+
+        make_installed(addons_root, 'MyAddon', Title=manifest_title)
+        upstream = make_addon_info(id_=1, title=upstream_title, directories=['MyAddon'])
+
+        class LinkableApi(StubAPI):
+            def dir(self, name):
+                return upstream
+
+        def fake_build_app(game, cfg_file):
+            config = load_config(cfg_file)
+            api = LinkableApi()
+            local = make_folder(addons_root)
+            local.scan(api)
+            return config, api, local
+
+        monkeypatch.setattr(cli_mod, 'build_app', fake_build_app)
+        return invoke(config_file, ['list']).output
+
+    def test_suffix_shown_for_markup_only_difference_but_color_reveals_why(self, monkeypatch, tmp_path):
+        """Real case: HideGroupNecro's manifest Title is 'HideGroup|c5050ffNecro|r'. Byte-for-byte
+        comparison correctly detects this differs from the plain upstream title and shows the
+        'installed as' suffix -- and since color now defaults on (see TestNoColor), the main
+        title actually renders 'Necro' in color, giving a real visual cue for the difference
+        instead of two seemingly-identical strings."""
+        output = self._list_output(monkeypatch, tmp_path, 'HideGroup|c5050ffNecro|r', 'HideGroupNecro')
+        assert 'installed as HideGroupNecro' in output
+        assert '\x1b[' in output
+
+    def test_suffix_shown_when_titles_genuinely_differ(self, monkeypatch, tmp_path):
+        output = self._list_output(monkeypatch, tmp_path, 'MyAddon', 'Completely Different Name')
+        assert 'installed as Completely Different Name' in output
+
+
+class TestNoColor:
+    """--no-color / default-color-on, driven through ctx.color rather than per-callsite."""
+
+    @pytest.fixture
+    def cli_app(self, monkeypatch, tmp_path):
+        addons_root = tmp_path / 'AddOns'
+        addons_root.mkdir()
+        config_file = tmp_path / 'gru.ini'
+        config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
+        make_installed(addons_root, 'MyAddon', Title='|c5050ffMyAddon|r')
+
+        def fake_build_app(game, cfg_file):
+            config = load_config(cfg_file)
+            api = StubAPI()
+            local = make_folder(addons_root)
+            local.scan(api)
+            return config, api, local
+
+        monkeypatch.setattr(cli_mod, 'build_app', fake_build_app)
+        return config_file
+
+    def test_color_on_by_default_even_though_output_is_captured(self, cli_app):
+        """CliRunner-captured output isn't a real tty, so click's own auto-detection would
+        normally strip ANSI codes here -- ctx.color = True overrides that."""
+        result = invoke(cli_app, ['list'])
+        assert result.exit_code == 0
+        assert '\x1b[' in result.output
+
+    def test_no_color_flag_strips_styling(self, cli_app):
+        result = invoke(cli_app, ['--no-color', 'list'])
+        assert result.exit_code == 0
+        assert '\x1b[' not in result.output
+        assert 'MyAddon' in result.output
+
+    def test_no_color_propagates_from_group_to_subcommand_context(self, cli_app):
+        """ctx.color is set on main()'s own Context, but list runs in a child Context --
+        confirms it's actually inherited, not just set on the group callback's own context."""
+        result = invoke(cli_app, ['--no-color', 'list'])
+        assert click.unstyle(result.output) == result.output

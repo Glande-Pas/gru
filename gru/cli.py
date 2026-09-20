@@ -95,6 +95,11 @@ class TermDisplay:
             fg=struct.unpack('BBB', bytes.fromhex(match.group('color')))
         ), text)
 
+    @staticmethod
+    def _strip_eso_text(text: str) -> str:
+        """ Plain visible text with ESO color markup removed, for comparisons (not display) """
+        return TermDisplay._eso_colored_text.sub(lambda match: match.group('text'), text)
+
     def _styled_width(self, text: str, width: int) -> str:
         text = self._render_eso_text(text)
         return text + ' ' * max(0, width - len(click.unstyle(text)))
@@ -289,9 +294,16 @@ def build_app(game: str, config_file: pathlib.Path | None) -> tuple[configparser
               type=click.Path(dir_okay=False, writable=True, path_type=pathlib.Path), default=None)
 @click.option('--game', 'game', help='Choice of game', hidden=True,
               type=click.Choice(['ESO']), default='ESO')
+@click.option('--no-color', 'no_color', is_flag=True, default=False, help='Disable colored output')
 @click.pass_context
-def main(ctx: click.Context, game: str = 'ESO', config_file: pathlib.Path | None = None) -> None:
+def main(ctx: click.Context, game: str = 'ESO', config_file: pathlib.Path | None = None, no_color: bool = False) -> None:
     locale.setlocale(locale.LC_ALL, '')
+
+    # click.echo() defaults to auto-detecting whether to strip ANSI styling based on
+    # whether the stream looks like a tty. Setting ctx.color makes every echo() call
+    # (none of which pass color= explicitly) respect this instead, so piping/redirecting
+    # gru's output still keeps addon title styling unless --no-color is passed.
+    ctx.color = not no_color
 
     ctx.ensure_object(dict)
     ctx.obj['warnings'] = ctx.with_resource(warnings.catch_warnings(record=True, category=UserWarning))
@@ -376,7 +388,7 @@ def show_warnings(ctx: click.Context) -> None:
 
 @main.result_callback()
 @click.pass_context
-def process_result(ctx: click.Context, result: typing.Any, game: str, config_file: str | None) -> None:
+def process_result(ctx: click.Context, result: typing.Any, game: str, config_file: str | None, no_color: bool) -> None:
     show_warnings(ctx)
 
 
@@ -657,7 +669,7 @@ def diff(ctx: click.Context, addon: str | None, url: str | None = None) -> None:
         show_warnings(ctx)
         return
 
-    if not url and addon.info.version != addon.version:
+    if not url and addon.infos.version != addon.version:
         click.echo(f'Addon is out of date!  Can not fetch unmodified source automatically.')
         click.echo()
         url = click.prompt(f'Please manually specify {addon.version} download url',
