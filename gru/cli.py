@@ -678,7 +678,7 @@ def diff(ctx: click.Context, addon: str | None, url: str | None = None) -> None:
     result_path = local.root / '.gru' / f'{addon.dir}.patch'
     result_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with local.unmodified_addon(addon, api, url=url) as ref_addon, result_path.open('w') as out:
+    with local.unmodified_addon(addon.infos, api, url=url) as ref_addon, result_path.open('w') as out:
         nfiles = addon_diff(ref_addon, addon, out=out)
 
     if nfiles > 0:

@@ -3,6 +3,8 @@
 main() builds its API/Folder through cli.build_app(), which TestWithRealAddons monkeypatches
 to a stub -- letting these commands run against real installed addons with zero network."""
 
+import pathlib
+
 import click
 import pytest
 from click.testing import CliRunner
@@ -254,3 +256,81 @@ class TestNoColor:
         confirms it's actually inherited, not just set on the group callback's own context."""
         result = invoke(cli_app, ['--no-color', 'list'])
         assert click.unstyle(result.output) == result.output
+
+
+class TestDiffCommand:
+    """gru diff: only the network layer (requests.head/get) is faked -- everything else
+    (Folder.unmodified_addon -> unpack -> _inspect_bundle -> InstalledAddon, addon_diff) runs for
+    real. Regression guard for passing the wrong type (InstalledAddon instead of its .infos
+    AddonInfo) into unmodified_addon(), which crashed with AttributeError deep inside
+    InstalledAddon.link() -> infos.register(self)."""
+
+    @staticmethod
+    def _zip_bytes(entries: dict[str, str]) -> bytes:
+        import io, zipfile
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w') as zf:
+            for fname, content in entries.items():
+                zf.writestr(fname, content)
+        return buf.getvalue()
+
+    @pytest.fixture
+    def cli_app(self, monkeypatch, tmp_path):
+        addons_root = tmp_path / 'AddOns'
+        addons_root.mkdir()
+        config_file = tmp_path / 'gru.ini'
+        config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
+
+        installed = make_installed(addons_root, 'MyAddon', Title='MyAddon')
+        (installed.folder / 'Data.lua').write_text('old = 1\n')
+        upstream = make_addon_info(id_=1, title='MyAddon', version='1.0', directories=['MyAddon'])
+        installed.link(upstream)
+
+        zip_bytes = self._zip_bytes({
+            'MyAddon/MyAddon.txt': '## Title: MyAddon\n## APIVersion: 100035\n## Version: 1.0\n## Author: Test\n',
+            'MyAddon/Data.lua': 'old = 2\n',  # the "unmodified" upstream differs -> real diff to save
+        })
+
+        class FakeResponse:
+            def __init__(self, **attrs):
+                self.__dict__.update(attrs)
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def iter_content(self, chunk_size=1024):
+                yield self.content
+
+        import gru.install as install_mod
+        monkeypatch.setattr(install_mod.requests, 'head',
+                             lambda url, allow_redirects=True: FakeResponse(headers={'content-length': str(len(zip_bytes))}))
+        monkeypatch.setattr(install_mod.requests, 'get',
+                             lambda url, stream=True, allow_redirects=True: FakeResponse(content=zip_bytes))
+        monkeypatch.setattr(install_mod, 'user_cache', lambda *parts: _touch_cache_path(tmp_path, *parts))
+
+        def fake_build_app(game, cfg_file):
+            config = load_config(cfg_file)
+            api = StubAPI()
+            local = make_folder(addons_root)
+            local.scan(api)
+            for addon in local.installed:
+                addon.link(upstream)
+            return config, api, local
+
+        monkeypatch.setattr(cli_mod, 'build_app', fake_build_app)
+        return {'config_file': config_file, 'addons_root': addons_root}
+
+    def test_diff_does_not_crash_and_saves_a_patch(self, cli_app):
+        result = invoke(cli_app['config_file'], ['diff', 'MyAddon'], input='y\n')
+        assert result.exit_code == 0
+        assert 'AttributeError' not in result.output
+        assert 'register' not in result.output
+        assert 'Changes saved under' in result.output
+        assert (cli_app['addons_root'] / '.gru' / 'MyAddon.patch').exists()
+
+
+def _touch_cache_path(base: pathlib.Path, *parts: str) -> pathlib.Path:
+    path = base / 'cache'
+    path = path.joinpath(*parts)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path

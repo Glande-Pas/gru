@@ -81,7 +81,9 @@ class Folder:
     def unmodified_addon(self, addon: gru.addon.AddonInfo, api: gru.api.API, url: str | None = None) -> Iterator[gru.addon.InstalledAddon]:
         with self.temp_root() as temp_root:
             temp_location = temp_root.root / addon.dir
-            temp_addon = temp_root.unpack(addon, api, url_override=url)
+            # unpack() returns a collection (possibly several addons for a multi-dir bundle);
+            # this context manager's contract is a single InstalledAddon to diff against.
+            temp_addon = next(iter(temp_root.unpack(addon, api, url_override=url)))
             yield temp_addon
             shutil.rmtree(temp_location)
 
