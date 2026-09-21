@@ -25,7 +25,7 @@ Patch = dict[tuple[File, File], FilePatch]
 
 def format_file_mtime(fname: pathlib.Path | None) -> str:
     timestamp = 0 if fname is None else fname.stat().st_mtime
-    return datetime.datetime.fromtimestamp(timestamp, datetime.UTC).strftime(r'%Y-%m-%d %H:%M:%S.%f %z')
+    return datetime.datetime.fromtimestamp(timestamp, datetime.timezone.utc).strftime(r'%Y-%m-%d %H:%M:%S.%f %z')
 
 
 def line_diff(orig_text: str, changed_text: str) -> str:
@@ -109,7 +109,7 @@ def parse_diff(handle: typing.IO) -> Patch:
 def addon_diff(addon: gru.addon.InstalledAddon, orig_addon: gru.addon.InstalledAddon,
                out: typing.IO = sys.stdout) -> int:
     # Output some metadata
-    utcnow = datetime.datetime.now(datetime.UTC)
+    utcnow = datetime.datetime.now(datetime.timezone.utc)
     print(
         f'Addon: {addon.title}', f'Version: {addon.version}',
         f'Date: {utcnow.ctime()} +0000', '', sep='\n', file=out
