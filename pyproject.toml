@@ -13,6 +13,9 @@ test = [
   "pytest",
   "pytest-mock",
   "pyright",
+  "flake8",
+  "Flake8-pyproject",
+  "flake8-quotes",
 ]
 
 [project.scripts]
@@ -20,6 +23,10 @@ gru = "gru.cli:main"
 
 [options]
 packages = ["gru"]
+
+[tool.flake8]
+max-line-length = 120
+extend-exclude = ["build", "dist", "*.egg-info", "*.dist-info"]
 
 [build-system]
 requires = [
