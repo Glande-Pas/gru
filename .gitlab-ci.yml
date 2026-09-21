@@ -1,0 +1,49 @@
+workflow:
+  rules:
+    # Run for merge requests, and for branch pushes that have no open merge request
+    # (otherwise a push to an MR branch would start two identical pipelines).
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+default:
+  image: python:3.13
+  interruptible: true
+  cache:
+    key: pip
+    paths:
+      - .cache/pip
+  before_script:
+    # Fresh virtual environment for every job; only the downloaded packages are cached.
+    - python -m venv .venv
+    - . .venv/bin/activate
+    - pip install --upgrade pip
+    - pip install -e '.[test]'
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+stages:
+  - test
+
+pytest:
+  stage: test
+  script:
+    - pytest --junitxml=report.xml
+  artifacts:
+    when: always
+    reports:
+      junit: report.xml
+
+flake8:
+  stage: test
+  script:
+    - flake8 gru tests
+
+pyright:
+  stage: test
+  script:
+    - pyright gru tests
