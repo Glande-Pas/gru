@@ -8,11 +8,10 @@ import zipfile
 import pytest
 
 import gru.install as install_mod
-from gru.addon import Dependency
 from gru.install import Folder
 from gru.patch import addon_diff
 
-from .conftest import make_folder, make_installed, make_addon_info, write_manifest, StubAPI, StubAddon
+from .conftest import as_api, make_installed, make_addon_info, write_manifest, StubAPI
 
 
 def _zip_bytes(entries: dict[str, str]) -> bytes:
@@ -24,6 +23,8 @@ def _zip_bytes(entries: dict[str, str]) -> bytes:
 
 
 class _FakeResponse:
+    content: bytes  # only set on responses that carry a body
+
     def __init__(self, **attrs):
         self.__dict__.update(attrs)
 
@@ -34,7 +35,7 @@ class _FakeResponse:
         return False
 
     def iter_content(self, chunk_size=1024):
-        yield self.content  # pyright: ignore[reportAttributeAccessIssue] -- set dynamically via __dict__.update above
+        yield self.content
 
 
 def _touch_cache_path(base, *parts):
@@ -45,10 +46,11 @@ def _touch_cache_path(base, *parts):
 
 
 def _mock_download(monkeypatch, tmp_path, zip_bytes: bytes) -> None:
+    headers = {'content-length': str(len(zip_bytes))}
     monkeypatch.setattr(install_mod.requests, 'head',
-                         lambda url, allow_redirects=True: _FakeResponse(headers={'content-length': str(len(zip_bytes))}))
+                        lambda url, allow_redirects=True: _FakeResponse(headers=headers))
     monkeypatch.setattr(install_mod.requests, 'get',
-                         lambda url, stream=True, allow_redirects=True: _FakeResponse(content=zip_bytes))
+                        lambda url, stream=True, allow_redirects=True: _FakeResponse(content=zip_bytes))
     monkeypatch.setattr(install_mod, 'user_cache', lambda *parts: _touch_cache_path(tmp_path, *parts))
 
 
@@ -404,7 +406,7 @@ class TestFolderUpdate:
         })
         _mock_download(monkeypatch, tmp_path, zip_bytes)
 
-        updates, added = folder.update(StubAPI(), patch=True)  # pyright: ignore[reportArgumentType] -- stub API, not a real gru.api.API
+        updates, added = folder.update(as_api(StubAPI()), patch=True)
 
         assert (updates, added) == (1, 0)
         assert (installed.folder / 'Data.lua').read_text() == 'patched = 3\n'
@@ -419,7 +421,7 @@ class TestFolderUpdate:
             raise AssertionError('should not be called: no addon can update')
         monkeypatch.setattr(install_mod.requests, 'head', boom)
 
-        updates, added = folder.update(StubAPI())  # pyright: ignore[reportArgumentType] -- stub API, not a real gru.api.API
+        updates, added = folder.update(as_api(StubAPI()))
         assert (updates, added) == (0, 0)
 
 
@@ -431,17 +433,18 @@ class TestFolderInstallDeps:
         lib_info = make_addon_info(id_=2, title='LibFoo', directories=['LibFoo'])
 
         class DepApi(StubAPI):
-            def dir(self, name):  # pyright: ignore[reportIncompatibleMethodOverride] -- returns a real AddonInfo, not the base StubAddon
+            def dir(self, name):
                 if name == 'LibFoo':
                     return lib_info
                 raise FileNotFoundError(name)
 
         zip_bytes = _zip_bytes({
-            'LibFoo/LibFoo.txt': '## Title: LibFoo\n## APIVersion: 100035\n## Version: 1.0\n## Author: Test\n## IsLibrary: true\n',
+            'LibFoo/LibFoo.txt': ('## Title: LibFoo\n## APIVersion: 100035\n## Version: 1.0\n'
+                                  '## Author: Test\n## IsLibrary: true\n'),
         })
         _mock_download(monkeypatch, tmp_path, zip_bytes)
 
-        added = folder.install_deps([installed], DepApi())  # pyright: ignore[reportArgumentType] -- stub API, not a real gru.api.API
+        added = folder.install_deps([installed], as_api(DepApi()))
 
         assert added == 1
         assert (addon_root / 'LibFoo' / 'LibFoo.txt').exists()
@@ -452,6 +455,6 @@ class TestFolderInstallDeps:
         folder._installed = {installed.folder: installed}
 
         with pytest.warns(UserWarning, match='Failed to look up'):
-            added = folder.install_deps([installed], StubAPI())  # pyright: ignore[reportArgumentType] -- stub API, not a real gru.api.API
+            added = folder.install_deps([installed], as_api(StubAPI()))
 
         assert added == 0

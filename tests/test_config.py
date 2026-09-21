@@ -1,6 +1,6 @@
 """Tests for gru.config: encoding detection, config load/save/update, translation loading."""
 
-import gettext
+import builtins
 import pathlib
 
 import pytest
@@ -95,8 +95,7 @@ class TestInstallTranslation:
         monkeypatch.delenv('LANG', raising=False)
         install_translation('gru', tmp_path)
         # Falling back to Null must not leave a foreign gettext installed as `_`
-        import builtins
-        assert builtins._('hello') == 'hello'  # pyright: ignore[reportAttributeAccessIssue] -- installed dynamically by gettext
+        assert _gettext('hello') == 'hello'
 
     def test_matching_mo_file_is_loaded(self, monkeypatch, tmp_path):
         """Regression: a found .mo file used to be discarded in favour of NullTranslations."""
@@ -112,8 +111,12 @@ class TestInstallTranslation:
 
         install_translation('gru', tmp_path)
 
-        import builtins
-        assert builtins._('hello') == 'bonjour'  # pyright: ignore[reportAttributeAccessIssue] -- installed dynamically by gettext
+        assert _gettext('hello') == 'bonjour'
+
+
+def _gettext(message: str) -> str:
+    # gettext's install() puts `_` into builtins, which type checkers don't know about
+    return getattr(builtins, '_')(message)
 
 
 def _write_minimal_mo(path: pathlib.Path, catalog: dict[str, str]) -> None:

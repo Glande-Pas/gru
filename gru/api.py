@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import requests
-import requests.structures
+from requests.structures import CaseInsensitiveDict
 import requests_cache
 import datetime
 import operator
@@ -32,8 +32,8 @@ def to_list(arg: Iterable | None) -> list:
         return list(arg)
 
 
-def case_insensitive(mapping: Mapping) -> requests.structures.CaseInsensitiveDict:
-    return requests.structures.CaseInsensitiveDict({
+def case_insensitive(mapping: Mapping) -> CaseInsensitiveDict:
+    return CaseInsensitiveDict({
         key: case_insensitive(val) if isinstance(val, collections.abc.Mapping) else val for key, val in mapping.items()
     })
 
@@ -81,7 +81,7 @@ def _fuzz(source: Iterable[T], attr: str, term: str, cutoff: float, maxlen: int,
         matcher.set_seq2(getattr(addon, attr).lower())
         matches = [match.size for match in matcher.get_matching_blocks()]
         # For debug log:
-        #print(addon[attr], [repr(term[b.a:b.a + b.size]) for b in matcher.get_matching_blocks() if b.size])
+        # print(addon[attr], [repr(term[b.a:b.a + b.size]) for b in matcher.get_matching_blocks() if b.size])
         if sum(matches) < cutoff:
             continue
         # NB. cast for numerical attributes represented as strings in json
@@ -90,6 +90,7 @@ def _fuzz(source: Iterable[T], attr: str, term: str, cutoff: float, maxlen: int,
 
     candidates = sorted(candidates, key=operator.itemgetter(0), reverse=True)
     return [addon for prio, addon in candidates[:maxlen]]
+
 
 def _filter(source: Iterable[T], attr: str, match: str | int | None) -> Iterator[T]:
     """ Search with exact match (lowercased) """
@@ -107,6 +108,7 @@ def _filter(source: Iterable[T], attr: str, match: str | int | None) -> Iterator
         elif match == value:
             yield addon
 
+
 def _lookup(source: Iterable[T], attr: str, match: str | int | None) -> T:
     """ Search with exact match (lowercased) """
     try:
@@ -114,6 +116,7 @@ def _lookup(source: Iterable[T], attr: str, match: str | int | None) -> T:
     except StopIteration:
         # TODO: type of error?
         raise ValueError(f'{attr} {match!r} not found in list')
+
 
 class API:
     # Provided by subclasses (ESOUIv3/ESOUIv4): game/version as class attributes,
@@ -127,12 +130,13 @@ class API:
         categories: dict[int, dict]
         globalconf: Mapping
 
-    def  __init__(self, config: configparser.ConfigParser) -> None:
+    def __init__(self, config: configparser.ConfigParser) -> None:
         self.pages = {}
         endpoint = config.get('api', 'endpoint')
         gamepaths = config.items(f'{self.game}UIv{self.version}.paths')
         self.pages = {key: endpoint.format(version=self.version, game=self.game, path=path) for key, path in gamepaths}
-        self.session = requests_cache.CachedSession(gruconfig.user_cache('api'), expire_after=datetime.timedelta(hours=1))
+        self.session = requests_cache.CachedSession(gruconfig.user_cache('api'),
+                                                    expire_after=datetime.timedelta(hours=1))
 
     def _load(self, url: str, fallback: typing.Any = None) -> typing.Any:
         """ Load a page and return the JSON, ensure we use cached page if <1h old """
@@ -140,7 +144,7 @@ class API:
             response = self.session.get(url)
             response.raise_for_status()
             return response.json()
-        except requests.JSONDecodeError as err:
+        except requests.JSONDecodeError:
             warnings.warn(f'JSON decode error while loading data from {url!r}')
         except requests.HTTPError as err:
             status = err.response.status_code if err.response is not None else 'unknown'
@@ -241,8 +245,9 @@ class ESOUIv4(API):
     def __init__(self, config: configparser.ConfigParser) -> None:
         super().__init__(config)
 
+    # cached_property stores as a plain attribute after first access, hence the ignore below
     @functools.cached_property
-    def globalconf(self) -> requests.structures.CaseInsensitiveDict:  # pyright: ignore[reportIncompatibleVariableOverride] -- cached_property stores as a plain attribute after first access
+    def globalconf(self) -> CaseInsensitiveDict:  # pyright: ignore[reportIncompatibleVariableOverride]
         return case_insensitive(self._load(self.pages['globalconf'], {}))
 
 
@@ -281,7 +286,7 @@ class ESOUIv3(API):
         super().__init__(config)
 
     @functools.cached_property
-    def globalconf(self) -> dict:  # pyright: ignore[reportIncompatibleVariableOverride] -- same as ESOUIv4.globalconf above
+    def globalconf(self) -> dict:  # pyright: ignore[reportIncompatibleVariableOverride]
         return self._load(self.pages['globalconf'], {})
 
     @functools.cached_property
@@ -295,7 +300,7 @@ class ESOUIv3(API):
         return self._load(self.pages['filedetails'].format(id=id_), {})
 
     @functools.cached_property
-    def addons(self) -> dict[int, AddonInfo]:  # pyright: ignore[reportIncompatibleVariableOverride] -- cached_property stores as a plain attribute after first access
+    def addons(self) -> dict[int, AddonInfo]:  # pyright: ignore[reportIncompatibleVariableOverride]
         data = {}
         for addon in self._load(self.pages['filelist'], []):
             infos = {new: typ(addon[old]) for old, (new, typ) in self.fileinfo_rename.items()}
@@ -303,7 +308,7 @@ class ESOUIv3(API):
         return data
 
     @functools.cached_property
-    def categories(self) -> dict[int, dict]:  # pyright: ignore[reportIncompatibleVariableOverride] -- same as addons above
+    def categories(self) -> dict[int, dict]:  # pyright: ignore[reportIncompatibleVariableOverride]
         categories = {}
         for cat in self._load(self.pages['catlist'], []):
             categories[int(cat['UICATID'])] = {new: typ(cat[old]) for old, (new, typ) in self.catlist_rename.items()}

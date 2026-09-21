@@ -5,7 +5,7 @@ import warnings
 
 import pytest
 
-from gru.addon import atol, _parse_version, AddonInfo, InstalledAddon, Dependency
+from gru.addon import atol, _parse_version, AddonInfo, InstalledAddon
 
 from .conftest import make_addon_info, make_installed, write_manifest
 

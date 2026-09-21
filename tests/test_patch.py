@@ -2,12 +2,11 @@
 
 import io
 import pathlib
-import warnings
 
 import pytest
 
 import gru.patch as patch_mod
-from gru.patch import format_file_mtime, line_diff, parse_diff, addon_diff, apply_patch, addon_patch, addon_patch_file
+from gru.patch import format_file_mtime, line_diff, parse_diff, addon_diff, addon_patch, addon_patch_file
 
 from .conftest import make_installed
 
@@ -324,7 +323,6 @@ class TestAddonPatchFile:
 
 def _p(spec: str, dev_null_in: bool = False, dev_null_out: bool = False):
     """Build a (infile, outfile) key for a hand-built Patch dict."""
-    import pathlib
     infile = pathlib.Path('/dev/null') if dev_null_in else pathlib.Path(spec)
     outfile = pathlib.Path('/dev/null') if dev_null_out else pathlib.Path(spec)
     return (infile, outfile)

@@ -160,7 +160,7 @@ class TestParentSuffixWording:
         upstream = make_addon_info(id_=1, title=upstream_title, directories=['MyAddon'])
 
         class LinkableApi(StubAPI):
-            def dir(self, name):  # pyright: ignore[reportIncompatibleMethodOverride] -- returns a real AddonInfo, not the base StubAddon
+            def dir(self, name):
                 return upstream
 
         return addons_root, config_file, LinkableApi()
@@ -191,7 +191,7 @@ class TestParentSuffixWording:
         upstream = make_addon_info(id_=1, title='BundleName', directories=['MainPart', 'ExtraPart'])
 
         class LinkableApi(StubAPI):
-            def dir(self, name):  # pyright: ignore[reportIncompatibleMethodOverride] -- returns a real AddonInfo, not the base StubAddon
+            def dir(self, name):
                 return upstream
 
         output = self._list_output(monkeypatch, addons_root, config_file, LinkableApi())
@@ -208,7 +208,7 @@ class TestParentSuffixWording:
         upstream = make_addon_info(id_=1, title='ParentAddon', directories=['ParentAddon'])
 
         class LinkableApi(StubAPI):
-            def dir(self, name):  # pyright: ignore[reportIncompatibleMethodOverride] -- returns a real AddonInfo, not the base StubAddon
+            def dir(self, name):
                 if name == 'ParentAddon':
                     return upstream
                 raise FileNotFoundError(name)
@@ -267,7 +267,8 @@ class TestDiffCommand:
 
     @staticmethod
     def _zip_bytes(entries: dict[str, str]) -> bytes:
-        import io, zipfile
+        import io
+        import zipfile
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, 'w') as zf:
             for fname, content in entries.items():
@@ -292,20 +293,26 @@ class TestDiffCommand:
         })
 
         class FakeResponse:
+            content: bytes  # only set on responses that carry a body
+
             def __init__(self, **attrs):
                 self.__dict__.update(attrs)
+
             def __enter__(self):
                 return self
+
             def __exit__(self, *a):
                 return False
+
             def iter_content(self, chunk_size=1024):
-                yield self.content  # pyright: ignore[reportAttributeAccessIssue] -- set dynamically via __dict__.update above
+                yield self.content
 
         import gru.install as install_mod
+        headers = {'content-length': str(len(zip_bytes))}
         monkeypatch.setattr(install_mod.requests, 'head',
-                             lambda url, allow_redirects=True: FakeResponse(headers={'content-length': str(len(zip_bytes))}))
+                            lambda url, allow_redirects=True: FakeResponse(headers=headers))
         monkeypatch.setattr(install_mod.requests, 'get',
-                             lambda url, stream=True, allow_redirects=True: FakeResponse(content=zip_bytes))
+                            lambda url, stream=True, allow_redirects=True: FakeResponse(content=zip_bytes))
         monkeypatch.setattr(install_mod, 'user_cache', lambda *parts: _touch_cache_path(tmp_path, *parts))
 
         def fake_build_app(game, cfg_file):
@@ -342,7 +349,8 @@ class TestUpdateCommand:
 
     @staticmethod
     def _zip_bytes(entries: dict[str, str]) -> bytes:
-        import io, zipfile
+        import io
+        import zipfile
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, 'w') as zf:
             for fname, content in entries.items():
@@ -366,20 +374,26 @@ class TestUpdateCommand:
         })
 
         class FakeResponse:
+            content: bytes  # only set on responses that carry a body
+
             def __init__(self, **attrs):
                 self.__dict__.update(attrs)
+
             def __enter__(self):
                 return self
+
             def __exit__(self, *a):
                 return False
+
             def iter_content(self, chunk_size=1024):
-                yield self.content  # pyright: ignore[reportAttributeAccessIssue] -- set dynamically via __dict__.update above
+                yield self.content
 
         import gru.install as install_mod
+        headers = {'content-length': str(len(zip_bytes))}
         monkeypatch.setattr(install_mod.requests, 'head',
-                             lambda url, allow_redirects=True: FakeResponse(headers={'content-length': str(len(zip_bytes))}))
+                            lambda url, allow_redirects=True: FakeResponse(headers=headers))
         monkeypatch.setattr(install_mod.requests, 'get',
-                             lambda url, stream=True, allow_redirects=True: FakeResponse(content=zip_bytes))
+                            lambda url, stream=True, allow_redirects=True: FakeResponse(content=zip_bytes))
         monkeypatch.setattr(install_mod, 'user_cache', lambda *parts: _touch_cache_path(tmp_path, *parts))
 
         def fake_build_app(game, cfg_file):
@@ -473,7 +487,7 @@ class TestSearchAndMissCommands:
             def search(self, term, tiebreakattr=None, maxlen=30):
                 return [make_addon_info(id_=1, title='SearchResult', directories=['SearchResult'])]
 
-            def dir(self, name):  # pyright: ignore[reportIncompatibleMethodOverride] -- returns a real AddonInfo, not the base StubAddon
+            def dir(self, name):
                 if name == 'LibFoo':
                     return found_dep
                 raise FileNotFoundError(name)

@@ -2,10 +2,12 @@ import io
 import configparser
 import datetime
 import pathlib
+import typing
 import zipfile
 
 import pytest
 
+from gru.api import API
 from gru.install import Folder
 from gru.addon import AddonInfo, InstalledAddon
 
@@ -51,7 +53,8 @@ class StubAPI:
     def cat_name_hierarchy(self, start: int) -> list:
         return []
 
-    def dir(self, name: str) -> StubAddon:
+    # Any: tests override this to return a real AddonInfo, not just a StubAddon
+    def dir(self, name: str) -> typing.Any:
         try:
             return self._addons[name]
         except KeyError:
@@ -92,7 +95,8 @@ def stub_api():
 # Real addon object builders (AddonInfo / InstalledAddon)
 # ---------------------------------------------------------------------------
 
-def make_addon_info(id_: int = 1, title: str = 'MyAddon', directories: list[str] | None = None, **overrides) -> AddonInfo:
+def make_addon_info(id_: int = 1, title: str = 'MyAddon', directories: list[str] | None = None,
+                    **overrides) -> AddonInfo:
     """Build a real AddonInfo with sane defaults."""
     metadata = {
         'author': 'Test Author',
@@ -133,14 +137,25 @@ def make_installed(root: pathlib.Path, dir_name: str, **fields) -> InstalledAddo
     return InstalledAddon(addon_dir)
 
 
-def make_api(addons: dict | None = None, categories: dict | None = None):
+def make_api(addons: dict | None = None, categories: dict | None = None, session: typing.Any = None):
     """Bare API instance, .addons/.categories set directly -- bypasses __init__/network."""
-    from gru.api import API
     api = API.__new__(API)
     api.game, api.version, api.pages = 'ESO', 3, {}
     api.addons = addons or {}
     api.categories = categories or {}
+    if session is not None:
+        api.session = session  # pyright: ignore[reportAttributeAccessIssue] -- test double, not a real CachedSession
     return api
+
+
+def as_api(stub: object) -> API:
+    """Pass a test double where the type checker expects a real gru.api.API."""
+    return typing.cast('API', stub)
+
+
+def as_folder(stub: object) -> Folder:
+    """Pass a test double where the type checker expects a real gru.install.Folder."""
+    return typing.cast('Folder', stub)
 
 
 @pytest.fixture

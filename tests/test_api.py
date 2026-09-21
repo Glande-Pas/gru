@@ -1,16 +1,15 @@
 """Tests for gru.api. Network access (_load/session) uses a stubbed session, never
 requests_cache.CachedSession."""
 
-import datetime
 import inspect
 
 import pytest
 import requests
 
-from gru.api import to_list, case_insensitive, epoch_ms, _exception_root_cause, _fuzz, _filter, _lookup, API, ESOUIv3
+from gru.api import to_list, case_insensitive, epoch_ms, _exception_root_cause, _fuzz, _filter, _lookup, ESOUIv3
 from gru.addon import AddonInfo
 
-from .conftest import make_addon_info, make_api
+from .conftest import as_folder, make_addon_info, make_api
 
 
 # ---------------------------------------------------------------------------
@@ -244,11 +243,11 @@ class TestApiLookups:
         single directory, AddonInfo.dir is 'BRHelper' for all three, and API.dir() has no
         tie-break beyond dict/JSON order -- it just returns whichever it reaches first."""
         base = make_addon_info(id_=2181, title='Blackrose Prison Helper', author='andy.s',
-                                directories=['BRHelper'], downloads=163801, favorites=99)
+                               directories=['BRHelper'], downloads=163801, favorites=99)
         jp_version = make_addon_info(id_=2996, title='Blackrose Prison Helper JP Version', author='tdenc',
-                                      directories=['BRHelper'], downloads=17045, favorites=3)
+                                     directories=['BRHelper'], downloads=17045, favorites=3)
         patch = make_addon_info(id_=4252, title='Blackrose Prison Helper (Patch)', author='sshogrin',
-                                 directories=['BRHelper'], downloads=941, favorites=4)
+                                directories=['BRHelper'], downloads=941, favorites=4)
 
         # Same order filelist.json lists them in (ascending UID / release order)
         api = make_api(addons={2181: base, 2996: jp_version, 4252: patch})
@@ -268,7 +267,7 @@ class TestApiFind:
 
         class Local:
             installed = []
-        assert api.find('5', Local()) == [addon]  # pyright: ignore[reportArgumentType] -- Local is a minimal Folder stand-in
+        assert api.find('5', as_folder(Local())) == [addon]
 
     def test_find_by_exact_name(self):
         addon = make_addon_info(id_=1, title='MyAddon')
@@ -276,7 +275,7 @@ class TestApiFind:
 
         class Local:
             installed = []
-        assert api.find('myaddon', Local()) == [addon]  # pyright: ignore[reportArgumentType] -- Local is a minimal Folder stand-in
+        assert api.find('myaddon', as_folder(Local())) == [addon]
 
     def test_find_by_local_installed_dir_not_in_api(self):
         api = make_api()
@@ -287,7 +286,7 @@ class TestApiFind:
         class Local:
             installed = [FakeInstalled()]
 
-        result = api.find('LocalOnly', Local())  # pyright: ignore[reportArgumentType] -- Local is a minimal Folder stand-in
+        result = api.find('LocalOnly', as_folder(Local()))
         assert result == Local.installed
 
     def test_find_falls_back_to_fuzzy_search(self):
@@ -297,7 +296,7 @@ class TestApiFind:
         class Local:
             installed = []
 
-        result = api.find('SomewhatLong', Local())  # pyright: ignore[reportArgumentType] -- Local is a minimal Folder stand-in
+        result = api.find('SomewhatLong', as_folder(Local()))
         assert addon in result
 
     def test_find_no_match_anywhere_returns_empty_list(self):
@@ -306,7 +305,7 @@ class TestApiFind:
         class Local:
             installed = []
 
-        assert api.find('nope', Local()) == []  # pyright: ignore[reportArgumentType] -- Local is a minimal Folder stand-in
+        assert api.find('nope', as_folder(Local())) == []
 
 
 # ---------------------------------------------------------------------------
@@ -343,19 +342,16 @@ class FakeSession:
 
 class TestApiLoad:
     def test_successful_load_returns_json(self):
-        api = make_api()
-        api.session = FakeSession(response=FakeResponse(json_data={'ok': True}))  # pyright: ignore[reportAttributeAccessIssue] -- test double, not a real CachedSession
+        api = make_api(session=FakeSession(response=FakeResponse(json_data={'ok': True})))
         assert api._load('http://x') == {'ok': True}
 
     def test_json_decode_error_returns_fallback_and_warns(self):
-        api = make_api()
-        api.session = FakeSession(response=FakeResponse(json_error=True))  # pyright: ignore[reportAttributeAccessIssue] -- test double, not a real CachedSession
+        api = make_api(session=FakeSession(response=FakeResponse(json_error=True)))
         with pytest.warns(UserWarning, match='JSON decode error'):
             assert api._load('http://x', fallback=[]) == []
 
     def test_http_error_returns_fallback_and_warns(self):
-        api = make_api()
-        api.session = FakeSession(response=FakeResponse(status_code=404))  # pyright: ignore[reportAttributeAccessIssue] -- test double, not a real CachedSession
+        api = make_api(session=FakeSession(response=FakeResponse(status_code=404)))
         with pytest.warns(UserWarning, match='HTTP error'):
             assert api._load('http://x', fallback={}) == {}
 
@@ -366,19 +362,16 @@ class TestApiLoad:
         class NoResponseSession:
             def get(self, url):
                 raise requests.HTTPError('boom')  # no response= given -> err.response is None
-        api = make_api()
-        api.session = NoResponseSession()  # pyright: ignore[reportAttributeAccessIssue] -- test double, not a real CachedSession
+        api = make_api(session=NoResponseSession())
         with pytest.warns(UserWarning, match='HTTP error'):
             assert api._load('http://x', fallback={}) == {}
 
     def test_connection_error_returns_fallback_and_warns(self):
-        api = make_api()
-        api.session = FakeSession(exc=requests.ConnectionError('refused'))  # pyright: ignore[reportAttributeAccessIssue] -- test double, not a real CachedSession
+        api = make_api(session=FakeSession(exc=requests.ConnectionError('refused')))
         with pytest.warns(UserWarning, match='Connection error'):
             assert api._load('http://x', fallback=None) is None
 
     def test_fallback_defaults_to_none(self):
-        api = make_api()
-        api.session = FakeSession(exc=requests.ConnectionError('refused'))  # pyright: ignore[reportAttributeAccessIssue] -- test double, not a real CachedSession
+        api = make_api(session=FakeSession(exc=requests.ConnectionError('refused')))
         with pytest.warns(UserWarning):
             assert api._load('http://x') is None

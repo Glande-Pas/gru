@@ -18,7 +18,7 @@ IS_POSIX = os.name == 'posix'
 IS_MAC_OS = sys.platform == 'darwin'
 IS_WINDOWS = os.name == 'nt'
 
-defaults = '''
+defaults = """
 [api]
 endpoint = https://api.mmoui.com/v{version}/game/{game}/{path}
 version = 3
@@ -51,7 +51,7 @@ sortkey = downloads
 
 [app]
 open_in_browser = off
-'''
+"""
 
 
 @contextlib.contextmanager
@@ -76,7 +76,7 @@ def user_home() -> pathlib.Path:
         return pathlib.Path(userhome)
     elif (userhome := os.environ.get('HOMEPATH')) is not None:
         if (userdrive := os.environ.get('HOMEDRIVE')) is not None:
-            return pathlib.Path(os.environ['HOMEDRIVE']) / userhome
+            return pathlib.Path(userdrive) / userhome
         else:
             return pathlib.Path(userhome)
     else:

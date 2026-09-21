@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import io
 import sys
 import typing
 import pathlib
@@ -107,7 +106,8 @@ def parse_diff(handle: typing.IO) -> Patch:
     return patch
 
 
-def addon_diff(addon: gru.addon.InstalledAddon, orig_addon: gru.addon.InstalledAddon, out: typing.IO = sys.stdout) -> int:
+def addon_diff(addon: gru.addon.InstalledAddon, orig_addon: gru.addon.InstalledAddon,
+               out: typing.IO = sys.stdout) -> int:
     # Output some metadata
     utcnow = datetime.datetime.now(datetime.UTC)
     print(
@@ -132,7 +132,7 @@ def addon_diff(addon: gru.addon.InstalledAddon, orig_addon: gru.addon.InstalledA
 
     for file in files - orig_files:
         n_diff_files += 1
-        print(f'--- /dev/null', format_file_mtime(None), sep='\t', file=out)
+        print('--- /dev/null', format_file_mtime(None), sep='\t', file=out)
         print(f'+++ {addon.folder.name}/{file}', format_file_mtime(addon.folder / file), sep='\t', file=out)
         with encoding_open(addon.folder / file) as f:
             print(line_diff('', f.read()), end='', file=out)
@@ -140,7 +140,7 @@ def addon_diff(addon: gru.addon.InstalledAddon, orig_addon: gru.addon.InstalledA
     for file in orig_files - files:
         n_diff_files += 1
         print(f'--- {addon.folder.name}/{file}', format_file_mtime(orig_addon.folder / file), sep='\t', file=out)
-        print(f'+++ /dev/null', format_file_mtime(None), sep='\t', file=out)
+        print('+++ /dev/null', format_file_mtime(None), sep='\t', file=out)
         with encoding_open(orig_addon.folder / file) as f:
             print(line_diff(f.read(), ''), end='', file=out)
 
@@ -160,7 +160,6 @@ def apply_patch(orig: str, patch: FilePatch) -> tuple[str, list[bool]]:
     char_patch = []
     for header, changes in patch:
         char_patch.append(f'@@ {header} @@')
-        last_op = None
         for op, lines in changes:
             char_patch.append(f'\n{op}')
             for line, char in zip(lines, iter_diff_chars):
@@ -172,7 +171,8 @@ def apply_patch(orig: str, patch: FilePatch) -> tuple[str, list[bool]]:
 
 
 def addon_patch(addon: gru.addon.InstalledAddon, patch: Patch) -> tuple[int, int]:
-    if not all(str(file) == '/dev/null' or file.parts[0] == addon.folder.name for inout_files in patch for file in inout_files):
+    if not all(str(file) == '/dev/null' or file.parts[0] == addon.folder.name
+               for inout_files in patch for file in inout_files):
         raise ValueError('Patch specifies changes outside of addon folder')
 
     n_changed_files = 0

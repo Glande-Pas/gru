@@ -89,7 +89,7 @@ class AddonInfo(DisplayAddonProtocol):
         if {'lang', 'libs', 'EsoUI', 'gamedata', ''} & dirs:
             self.dir = self.slugify(self.title)
         elif len(dirs) != 1:
-            #warnings.warn(f'Addon {self.title} declares several directories: {", ".join(map(repr, dirs))}')
+            # warnings.warn(f'Addon {self.title} declares several directories: {", ".join(map(repr, dirs))}')
             self.dir = self.slugify(self.title)
         else:
             self.dir = self.metadata['directories'][0]
@@ -108,7 +108,7 @@ class AddonInfo(DisplayAddonProtocol):
     @property
     def can_update(self) -> bool:
         if not self.folders:
-            return False # Not installed: can install, but not update
+            return False  # Not installed: can install, but not update
 
         # How stale is this info?
         return any(inst.can_update for inst in self.folders.values() if inst.folder.exists())
@@ -195,12 +195,17 @@ class InstalledAddon(Dependency, DisplayAddonProtocol):
         # NB. emit warning last
         if missing_mandatory_keys:
             warnings.warn(f'Missing mandatory key(s) {", ".join(map(repr, missing_mandatory_keys))}'
-                 f' in {self.manifest.relative_to(self.folder.parent)}')
+                          f' in {self.manifest.relative_to(self.folder.parent)}')
 
         return infos
 
     def __repr__(self) -> str:
-        return f'Addon[dir={getattr(self, "dir", None)}, id={getattr(self, "id", None)}]({", ".join([f"folder={self.folder}", f"nesting={self.parent is not None}", *(f"{key}={val}" for key, val in self.metadata.items())])})'
+        return (f'Addon[dir={getattr(self, "dir", None)}, id={getattr(self, "id", None)}]'
+                f'({", ".join([
+                    f"folder={self.folder}",
+                    f"nesting={self.parent is not None}",
+                    *(f"{key}={val}" for key, val in self.metadata.items())
+                ])})')
 
     def link(self, infos: AddonInfo) -> None:
         self.id = infos.id
@@ -227,4 +232,3 @@ class InstalledAddon(Dependency, DisplayAddonProtocol):
             path for path in (path.relative_to(self.folder) for path in self.folder.rglob('*') if path.is_file())
             if not any(part.startswith('.') or part in GARBAGE for part in path.parts)
         ]
-
