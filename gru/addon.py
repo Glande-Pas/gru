@@ -200,12 +200,12 @@ class InstalledAddon(Dependency, DisplayAddonProtocol):
         return infos
 
     def __repr__(self) -> str:
-        return (f'Addon[dir={getattr(self, "dir", None)}, id={getattr(self, "id", None)}]'
-                f'({", ".join([
-                    f"folder={self.folder}",
-                    f"nesting={self.parent is not None}",
-                    *(f"{key}={val}" for key, val in self.metadata.items())
-                ])})')
+        parts = [
+            f'folder={self.folder}',
+            f'nesting={self.parent is not None}',
+            *(f'{key}={val}' for key, val in self.metadata.items()),
+        ]
+        return f'Addon[dir={getattr(self, "dir", None)}, id={getattr(self, "id", None)}]({", ".join(parts)})'
 
     def link(self, infos: AddonInfo) -> None:
         self.id = infos.id

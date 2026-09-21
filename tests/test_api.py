@@ -2,6 +2,7 @@
 requests_cache.CachedSession."""
 
 import inspect
+import typing
 
 import pytest
 import requests
@@ -320,7 +321,7 @@ class FakeResponse:
 
     def raise_for_status(self):
         if self.status_code >= 400:
-            err = requests.HTTPError(response=self)
+            err = requests.HTTPError(response=typing.cast(requests.Response, self))
             raise err
 
     def json(self):

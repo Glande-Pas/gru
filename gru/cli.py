@@ -318,7 +318,7 @@ def main(ctx: click.Context, game: str = 'ESO', config_file: pathlib.Path | None
     ctx.color = not no_color
 
     ctx.ensure_object(dict)
-    ctx.obj['warnings'] = ctx.with_resource(warnings.catch_warnings(record=True, category=UserWarning))
+    ctx.obj['warnings'] = ctx.with_resource(warnings.catch_warnings(record=True))
 
     config, api, local = build_app(game, config_file)
     ctx.obj['config'] = config
