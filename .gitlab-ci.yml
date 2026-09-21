@@ -9,10 +9,9 @@ workflow:
     - if: $CI_COMMIT_TAG
 
 default:
-  image: python:3.13
   interruptible: true
   cache:
-    key: pip
+    key: pip-$PYTHON_VERSION
     paths:
       - .cache/pip
   before_script:
@@ -29,7 +28,15 @@ variables:
 stages:
   - test
 
+# Every job runs on the oldest and the newest supported Python.
+.python-matrix:
+  image: python:$PYTHON_VERSION
+  parallel:
+    matrix:
+      - PYTHON_VERSION: ["3.9", "3.14"]
+
 pytest:
+  extends: .python-matrix
   stage: test
   script:
     - pytest --junitxml=report.xml
@@ -39,11 +46,13 @@ pytest:
       junit: report.xml
 
 flake8:
+  extends: .python-matrix
   stage: test
   script:
     - flake8 gru tests
 
 pyright:
+  extends: .python-matrix
   stage: test
   script:
     - pyright gru tests
