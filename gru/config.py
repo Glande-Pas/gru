@@ -53,6 +53,8 @@ sortkey = downloads
 open_in_browser = off
 """
 
+CONFIG_FILENAME = 'config.ini'
+
 
 @contextlib.contextmanager
 def encoding_open(fname: pathlib.Path | str) -> Iterator[typing.IO]:
@@ -108,31 +110,37 @@ def user_cache(*args: str) -> pathlib.Path:
     return file
 
 
-def user_config() -> pathlib.Path:
-    """ Returns the path to the configuration file in the user config directory
+def user_config(*args: str) -> pathlib.Path:
+    """ Returns the path to gru's own directory in the user config dir, or a path within it.
+    This holds the config file itself, plus gru's per-game metadata (saved patches, exports)
+    that used to live inside the addons folder.
 
     Returns:
-        :class:`~pathlib.Path`: path to the user configuration file.
+        :class:`~pathlib.Path`: path to the user config directory (no args), or a path within it.
     """
     if IS_WINDOWS:
         appdata = os.getenv('APPDATA')
         if appdata is None:
             raise EnvironmentError('APPDATA environment variable is not set')
-        return pathlib.Path(appdata) / 'gru.ini'
+        base_dir = pathlib.Path(appdata)
     elif IS_MAC_OS:
-        return pathlib.Path('~/Library/Preferences').expanduser() / 'gru'
+        base_dir = pathlib.Path('~/Library/Preferences').expanduser()
     else:
         base_dir = pathlib.Path(os.getenv('XDG_CONFIG_HOME', '~/.config')).expanduser()
-        if not base_dir.exists():
-            base_dir.mkdir(parents=True)
-        return base_dir / 'gru'
+
+    base_dir /= 'gru'
+    base_dir.mkdir(parents=True, exist_ok=True)
+
+    file = base_dir.joinpath(*args)
+    file.parent.mkdir(parents=True, exist_ok=True)
+    return file
 
 
 def load_config(config_file: pathlib.Path | str | None = None) -> configparser.ConfigParser:
     config = configparser.ConfigParser(delimiters=['='])
     config.read_file(io.StringIO(defaults))
 
-    config_file = user_config() if config_file is None else pathlib.Path(config_file)
+    config_file = user_config(CONFIG_FILENAME) if config_file is None else pathlib.Path(config_file)
     if config_file.exists():
         config.read(config_file)
 
@@ -177,7 +185,7 @@ def update_config(config: configparser.ConfigParser, game: str, values: dict[str
 
 
 def save_config(config: configparser.ConfigParser, config_file: pathlib.Path | str | None = None) -> None:
-    config_file = user_config() if config_file is None else pathlib.Path(config_file)
+    config_file = user_config(CONFIG_FILENAME) if config_file is None else pathlib.Path(config_file)
     with open(config_file, 'w') as f:
         config.write(f)
 

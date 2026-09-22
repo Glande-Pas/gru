@@ -96,6 +96,7 @@ class TestWithRealAddons:
         addons_root.mkdir()
         config_file = tmp_path / 'gru.ini'
         config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
+        monkeypatch.setattr(cli_mod, 'user_config', lambda *parts: _touch_config_path(tmp_path, *parts))
 
         def fake_build_app(game, cfg_file):
             config = load_config(cfg_file)
@@ -105,7 +106,7 @@ class TestWithRealAddons:
             return config, api, local
 
         monkeypatch.setattr(cli_mod, 'build_app', fake_build_app)
-        return {'config_file': config_file, 'addons_root': addons_root}
+        return {'config_file': config_file, 'addons_root': addons_root, 'config_dir': tmp_path / 'config'}
 
     def test_list_shows_installed_addon(self, cli_app):
         make_installed(cli_app['addons_root'], 'MyAddon', Title='My Addon')
@@ -131,7 +132,7 @@ class TestWithRealAddons:
         make_installed(cli_app['addons_root'], 'MyAddon', Version='3')
         result = invoke(cli_app['config_file'], ['export'])
         assert result.exit_code == 0
-        exported = (cli_app['addons_root'] / '.gru' / 'addons.txt').read_text()
+        exported = (cli_app['config_dir'] / 'ESO' / 'addons.txt').read_text()
         assert 'MyAddon = 3' in exported
 
 
@@ -314,6 +315,7 @@ class TestDiffCommand:
         monkeypatch.setattr(install_mod.requests, 'get',
                             lambda url, stream=True, allow_redirects=True: FakeResponse(content=zip_bytes))
         monkeypatch.setattr(install_mod, 'user_cache', lambda *parts: _touch_cache_path(tmp_path, *parts))
+        monkeypatch.setattr(cli_mod, 'user_config', lambda *parts: _touch_config_path(tmp_path, *parts))
 
         def fake_build_app(game, cfg_file):
             config = load_config(cfg_file)
@@ -325,7 +327,7 @@ class TestDiffCommand:
             return config, api, local
 
         monkeypatch.setattr(cli_mod, 'build_app', fake_build_app)
-        return {'config_file': config_file, 'addons_root': addons_root}
+        return {'config_file': config_file, 'addons_root': addons_root, 'config_dir': tmp_path / 'config'}
 
     def test_diff_does_not_crash_and_saves_a_patch(self, cli_app):
         result = invoke(cli_app['config_file'], ['diff', 'MyAddon'], input='y\n')
@@ -333,11 +335,18 @@ class TestDiffCommand:
         assert 'AttributeError' not in result.output
         assert 'register' not in result.output
         assert 'Changes saved under' in result.output
-        assert (cli_app['addons_root'] / '.gru' / 'MyAddon.patch').exists()
+        assert (cli_app['config_dir'] / 'ESO' / 'MyAddon.patch').exists()
 
 
 def _touch_cache_path(base: pathlib.Path, *parts: str) -> pathlib.Path:
     path = base / 'cache'
+    path = path.joinpath(*parts)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _touch_config_path(base: pathlib.Path, *parts: str) -> pathlib.Path:
+    path = base / 'config'
     path = path.joinpath(*parts)
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
@@ -395,6 +404,7 @@ class TestUpdateCommand:
         monkeypatch.setattr(install_mod.requests, 'get',
                             lambda url, stream=True, allow_redirects=True: FakeResponse(content=zip_bytes))
         monkeypatch.setattr(install_mod, 'user_cache', lambda *parts: _touch_cache_path(tmp_path, *parts))
+        monkeypatch.setattr(install_mod, 'user_config', lambda *parts: _touch_config_path(tmp_path, *parts))
 
         def fake_build_app(game, cfg_file):
             config = load_config(cfg_file)
@@ -429,6 +439,7 @@ class TestPatchCommand:
         addons_root.mkdir()
         config_file = tmp_path / 'gru.ini'
         config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
+        monkeypatch.setattr(cli_mod, 'user_config', lambda *parts: _touch_config_path(tmp_path, *parts))
 
         installed = make_installed(addons_root, 'MyAddon', Title='MyAddon')
         (installed.folder / 'Data.lua').write_text('old = 2\n')
@@ -441,7 +452,7 @@ class TestPatchCommand:
             return config, api, local
 
         monkeypatch.setattr(cli_mod, 'build_app', fake_build_app)
-        return {'config_file': config_file, 'addons_root': addons_root}
+        return {'config_file': config_file, 'addons_root': addons_root, 'config_dir': tmp_path / 'config'}
 
     def test_patch_applies_saved_patch_from_default_location(self, cli_app):
         from gru.patch import addon_diff
@@ -451,8 +462,8 @@ class TestPatchCommand:
         unpatched = make_installed(cli_app['addons_root'].parent / 'unpatched_src', 'MyAddon')
         (unpatched.folder / 'Data.lua').write_text('old = 2\n')
 
-        patch_dir = cli_app['addons_root'] / '.gru'
-        patch_dir.mkdir()
+        patch_dir = cli_app['config_dir'] / 'ESO'
+        patch_dir.mkdir(parents=True)
         with (patch_dir / 'MyAddon.patch').open('w') as f:
             addon_diff(patched, unpatched, out=f)
 

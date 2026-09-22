@@ -166,7 +166,8 @@ def isolated_user_dirs(tmp_path, monkeypatch):
     import gru.config as config_mod
 
     cache_dir = tmp_path / 'cache'
-    config_file = tmp_path / 'config' / 'gru.ini'
+    config_dir = tmp_path / 'config'
+    config_file = config_dir / config_mod.CONFIG_FILENAME
     monkeypatch.setattr(config_mod, 'user_cache', lambda *args: cache_dir.joinpath(*args))
-    monkeypatch.setattr(config_mod, 'user_config', lambda: config_file)
-    return {'cache_dir': cache_dir, 'config_file': config_file}
+    monkeypatch.setattr(config_mod, 'user_config', lambda *args: config_dir.joinpath(*args))
+    return {'cache_dir': cache_dir, 'config_dir': config_dir, 'config_file': config_file}

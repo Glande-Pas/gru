@@ -45,6 +45,13 @@ def _touch_cache_path(base, *parts):
     return path
 
 
+def _touch_config_path(base, *parts):
+    path = base / 'config'
+    path = path.joinpath(*parts)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def _mock_download(monkeypatch, tmp_path, zip_bytes: bytes) -> None:
     headers = {'content-length': str(len(zip_bytes))}
     monkeypatch.setattr(install_mod.requests, 'head',
@@ -52,6 +59,7 @@ def _mock_download(monkeypatch, tmp_path, zip_bytes: bytes) -> None:
     monkeypatch.setattr(install_mod.requests, 'get',
                         lambda url, stream=True, allow_redirects=True: _FakeResponse(content=zip_bytes))
     monkeypatch.setattr(install_mod, 'user_cache', lambda *parts: _touch_cache_path(tmp_path, *parts))
+    monkeypatch.setattr(install_mod, 'user_config', lambda *parts: _touch_config_path(tmp_path, *parts))
 
 
 @pytest.fixture
@@ -391,8 +399,8 @@ class TestFolderUpdate:
         folder._installed = {installed.folder: installed}
 
         # The re-applied patch turns the freshly-downloaded 'old = 2' into 'patched = 3'.
-        patch_dir = addon_root / '.gru'
-        patch_dir.mkdir()
+        patch_dir = tmp_path / 'config' / folder.game
+        patch_dir.mkdir(parents=True)
         patched = make_installed(tmp_path / 'patched_src', 'MyAddon', Version='2.0')
         (patched.folder / 'Data.lua').write_text('patched = 3\n')
         unpatched = make_installed(tmp_path / 'unpatched_src', 'MyAddon', Version='2.0')

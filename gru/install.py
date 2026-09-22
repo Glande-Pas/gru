@@ -22,7 +22,7 @@ import configparser
 import typing
 from urllib.parse import quote as urllib_quote
 
-from .config import user_cache
+from .config import user_cache, user_config
 from .addon import InstalledAddon, AddonInfo, GARBAGE, MANIFEST_EXTS
 from .api import _fuzz, _filter
 from .patch import addon_patch_file
@@ -70,6 +70,7 @@ class SilentProgress:
 
 class Folder:
     def __init__(self, game: str, config: configparser.ConfigParser) -> None:
+        self.game = game
         self.root: pathlib.Path = pathlib.Path(config.get(f'{game}.addons', 'root'))
         self.url_template: str = config.get(f'{game}.links', 'download')
         #: A list of addons that have local file info and are enriched as appropriate with API info
@@ -486,7 +487,7 @@ class Folder:
                               f'{"".join(traceback.format_exc())}')
 
         for addon in updates:
-            if patch and (patch_file := self.root / '.gru' / f'{addon.dir}.patch').exists():
+            if patch and (patch_file := user_config(self.game, f'{addon.dir}.patch')).exists():
                 addon_patch_file(addon, patch_file)
 
         if deps:
@@ -514,7 +515,7 @@ class Folder:
                                   f'{"".join(traceback.format_exc())}')
                     continue
                 for addon in addons:
-                    if patch and (patch_file := self.root / '.gru' / f'{addon.dir}.patch').exists():
+                    if patch and (patch_file := user_config(self.game, f'{addon.dir}.patch')).exists():
                         addon_patch_file(addon, patch_file)
                 added += 1
                 deps.extend(addons)

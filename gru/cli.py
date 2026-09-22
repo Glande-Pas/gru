@@ -16,7 +16,7 @@ import click_repl
 import prompt_toolkit.history as prompt_history
 from collections.abc import Iterable
 
-from .config import load_config, save_config, user_cache, display_config, update_config
+from .config import load_config, save_config, user_cache, user_config, display_config, update_config
 from .api import API
 from .addon import AddonInfo, InstalledAddon
 from .install import Folder
@@ -620,8 +620,7 @@ def export(ctx: click.Context, recurse: bool = False) -> None:
         click.echo('No addons installed.')
         return
 
-    export_path = local.root / '.gru' / 'addons.txt'
-    export_path.parent.mkdir(parents=True, exist_ok=True)
+    export_path = user_config(local.game, 'addons.txt')
     with export_path.open('w') as out:
         for addon in local.installed:
             if recurse or addon.parent is None:
@@ -685,8 +684,7 @@ def diff(ctx: click.Context, addon: str | None, url: str | None = None) -> None:
         url = click.prompt(f'Please manually specify {found.version} download url',
                            prompt_suffix=':\n>> ', type=str)
 
-    result_path = local.root / '.gru' / f'{found.dir}.patch'
-    result_path.parent.mkdir(parents=True, exist_ok=True)
+    result_path = user_config(local.game, f'{found.dir}.patch')
 
     with local.unmodified_addon(found.infos, api, url=url) as ref_addon, result_path.open('w') as out:
         nfiles = addon_diff(ref_addon, found, out=out)
@@ -713,7 +711,7 @@ def patch(ctx: click.Context, addon: str | None, patch: pathlib.Path) -> None:
         return
 
     if patch is None:
-        patch = local.root / '.gru' / f'{installed_addon.dir}.patch'
+        patch = user_config(local.game, f'{installed_addon.dir}.patch')
         if not patch.exists():
             click.echo('No saved changes to be re-applied.')
             return
