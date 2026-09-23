@@ -39,6 +39,25 @@ class TestUserConfigSafetyNet:
     def test_app_module_reference_is_also_redirected(self, tmp_path):
         assert app_mod.user_config('probe.txt').is_relative_to(tmp_path)
 
+    def test_every_loaded_gru_module_with_user_config_is_redirected(self, tmp_path):
+        """Regression: gru.app got its own `from .config import user_config` and wasn't on the
+        conftest fixture's (then-)fixed module list, so it leaked real rows into the user's actual
+        changes.csv before this was caught. The fixture now discovers every gru.* module dynamically
+        instead of a hardcoded list -- this asserts that generically, so it stays a real regression
+        guard for the *next* new module too, not just the ones enumerated here by name."""
+        import sys
+        checked = 0
+        for name, mod in sys.modules.items():
+            if mod is None or not (name == 'gru' or name.startswith('gru.')):
+                continue
+            if hasattr(mod, 'user_config'):
+                checked += 1
+                assert mod.user_config('probe.txt').is_relative_to(tmp_path), f'{name}.user_config leaks'
+            if hasattr(mod, 'user_cache'):
+                checked += 1
+                assert mod.user_cache('probe.txt').is_relative_to(tmp_path), f'{name}.user_cache leaks'
+        assert checked > 0  # sanity: the scan actually found something to check
+
 
 # ---------------------------------------------------------------------------
 # encoding_open

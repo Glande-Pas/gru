@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import configparser
 import warnings
+import datetime
 import pathlib
 import locale
 import shutil
@@ -42,7 +43,7 @@ class SectionedHelpGroup(click.Group):
     """ Sections commands into help groups """
 
     _cmd_shortcuts = {'rm': 'remove', 'up': 'update', 'ls': 'list', 's': 'search', 'cc': 'clear-caches', 'df': 'diff',
-                      'al': 'add-lock', 'rl': 'remove-lock', 'll': 'list-locks'}
+                      'al': 'add-lock', 'rl': 'remove-lock', 'll': 'list-locks', 'rv': 'review'}
 
     @classmethod
     def _cmd_group(cls, cmd: click.Command) -> str:
@@ -780,6 +781,40 @@ def export(ctx: click.Context, recurse: bool = False, output_path: pathlib.Path 
         with output_path.open('w', newline='') as out:
             count = local.write_csv(out, recurse)
         click.echo(f'All {count} addon(s) exported to:\n{output_path.resolve()}')
+    show_warnings(ctx)
+
+
+def _format_change(entry: gru_app.ChangeEntry, width: int) -> str:
+    try:
+        when = datetime.datetime.fromisoformat(entry.date).strftime('%x %X')
+    except ValueError:
+        when = entry.date
+
+    if entry.version == gru_app.NOT_INSTALLED:
+        change = click.style(f'removed (was {entry.previous_state})', fg='red', bold=True)
+    elif entry.previous_state == gru_app.NOT_INSTALLED:
+        change = click.style(f'installed {entry.version}', fg='green', bold=True)
+    else:
+        change = f'{entry.previous_state} -> {entry.version}'
+
+    return f'{when}  {entry.dir:{width}}  {change}'
+
+
+@main.command(help='Review recent addon changes')
+@click.option('-n', '--limit', help='Show at most N most recent changes (default: all)', type=int, default=None)
+@click.pass_context
+def review(ctx: click.Context, limit: int | None) -> None:
+    local = ctx.obj['local']
+    changes = gru_app.read_changes(local, limit=limit)
+
+    if not changes:
+        click.echo('No changes recorded yet.')
+        return
+
+    click.echo(f'{len(changes)} change(s):')
+    width = max(len(entry.dir) for entry in changes)
+    for entry in changes:
+        click.echo(_format_change(entry, width))
     show_warnings(ctx)
 
 

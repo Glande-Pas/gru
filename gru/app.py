@@ -10,12 +10,23 @@ import configparser
 import csv
 import datetime
 import pathlib
+from typing import NamedTuple
 
 from .api import API
 from .config import user_config
 from .install import Folder
 
 NOT_INSTALLED = 'none'  # sentinel: version/NOT_INSTALLED means installed, NOT_INSTALLED/version means uninstalled
+
+
+class ChangeEntry(NamedTuple):
+    """ One changes.csv row: `dir` went from `previous_state` to `version`. `version`/
+    `previous_state` may be NOT_INSTALLED (a fresh install / a removal, respectively). """
+    dir: str
+    version: str
+    link: str
+    date: str
+    previous_state: str
 
 
 def addons_root_configured(config: configparser.ConfigParser, game: str) -> bool:
@@ -46,6 +57,19 @@ def append_change_log(path: pathlib.Path, row: list[str], max_lines: int) -> Non
         writer = csv.writer(out)
         writer.writerow(['dir', 'version', 'link', 'date', 'previous_state'])
         writer.writerows(rows)
+
+
+def read_changes(local: Folder, limit: int | None = None) -> list[ChangeEntry]:
+    """ Read changes.csv, oldest first (matching on-disk order) -- or just the last `limit` rows.
+    Returns [] if nothing has been logged yet (no command has changed the install state). """
+    path = user_config(local.game, 'changes.csv')
+    if not path.exists():
+        return []
+    with path.open(newline='') as f:
+        reader = csv.reader(f)
+        next(reader, None)
+        rows = [ChangeEntry(*row) for row in reader]
+    return rows[-limit:] if limit is not None else rows
 
 
 def log_changes(local: Folder, config: configparser.ConfigParser,

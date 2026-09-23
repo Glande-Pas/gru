@@ -3,12 +3,16 @@ from __future__ import annotations
 import io
 import configparser
 import datetime
+import importlib
 import pathlib
+import pkgutil
+import sys
 import typing
 import zipfile
 
 import pytest
 
+import gru
 from gru.api import API
 from gru.install import Folder
 from gru.addon import AddonInfo, InstalledAddon
@@ -20,14 +24,16 @@ from gru.addon import AddonInfo, InstalledAddon
 
 @pytest.fixture(autouse=True)
 def _no_real_user_config(tmp_path, monkeypatch):
-    """Every test gets user_config()/user_cache() redirected under tmp_path, so a fixture that
-    forgets to mock one (as happened once already) can never write into the real user's home
-    directory. A test's own fixture can still layer a more specific fake on top -- whichever
-    monkeypatch.setattr() call runs last wins, and fixtures run after autouse ones."""
-    import gru.config as config_mod
-    import gru.cli as cli_mod
-    import gru.install as install_mod
-    import gru.app as app_mod
+    """Every test gets user_config()/user_cache() redirected under tmp_path. This used to patch a
+    fixed list of modules (gru.config/cli/install) -- when gru.app was added with its own `from
+    .config import user_config`, it wasn't on that list, and a test run before anyone noticed wrote
+    real rows into the user's actual changes.csv. So instead: import every gru.* submodule (in case
+    a future one isn't already imported by some test file) and patch whichever of user_config/
+    user_cache each one actually has -- no per-module list to remember to update ever again.
+    A test's own fixture can still layer a more specific fake on top -- whichever monkeypatch.setattr()
+    call runs last wins, and fixtures run after autouse ones."""
+    for info in pkgutil.walk_packages(gru.__path__, prefix='gru.'):
+        importlib.import_module(info.name)
 
     def make_fake(base: pathlib.Path) -> typing.Callable[..., pathlib.Path]:
         def fake(*parts: str) -> pathlib.Path:
@@ -38,10 +44,12 @@ def _no_real_user_config(tmp_path, monkeypatch):
 
     fake_config = make_fake(tmp_path / '_autouse_fake_config')
     fake_cache = make_fake(tmp_path / '_autouse_fake_cache')
-    for mod in (config_mod, cli_mod, install_mod):
-        monkeypatch.setattr(mod, 'user_config', fake_config)
-        monkeypatch.setattr(mod, 'user_cache', fake_cache)
-    monkeypatch.setattr(app_mod, 'user_config', fake_config)  # app.py has no user_cache of its own
+    for name, mod in list(sys.modules.items()):
+        if mod is not None and (name == 'gru' or name.startswith('gru.')):
+            if hasattr(mod, 'user_config'):
+                monkeypatch.setattr(mod, 'user_config', fake_config)
+            if hasattr(mod, 'user_cache'):
+                monkeypatch.setattr(mod, 'user_cache', fake_cache)
 
 
 # ---------------------------------------------------------------------------

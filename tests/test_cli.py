@@ -505,6 +505,60 @@ class TestExportCommand:
         assert out_path.exists()
 
 
+class TestReviewCommand:
+    """gru review: pretty-prints changes.csv (installed/removed/updated), newest last, with an
+    optional -n/--limit to only show the most recent rows."""
+
+    @pytest.fixture
+    def cli_app(self, monkeypatch, tmp_path):
+        addons_root = tmp_path / 'AddOns'
+        addons_root.mkdir()
+        config_file = tmp_path / 'gru.ini'
+        config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
+        _patch_user_config(monkeypatch, tmp_path)
+
+        changes_path = app_mod.user_config('ESO', 'changes.csv')
+        for row in [
+            ['MyAddon', '2.0', 'https://esoui.com/x', '2026-09-23T10:00:00-07:00', '1.0'],
+            ['NewAddon', '1.0', 'https://esoui.com/y', '2026-09-23T10:05:00-07:00', app_mod.NOT_INSTALLED],
+            ['OldAddon', app_mod.NOT_INSTALLED, 'https://esoui.com/z', '2026-09-23T10:10:00-07:00', '3.0'],
+        ]:
+            app_mod.append_change_log(changes_path, row, 100)
+
+        return {'config_file': config_file}
+
+    def test_review_shows_all_changes(self, cli_app):
+        result = invoke(cli_app['config_file'], ['review'])
+        assert result.exit_code == 0
+        assert '3 change(s):' in result.output
+        assert 'MyAddon' in result.output and '1.0 -> 2.0' in result.output
+        assert 'NewAddon' in result.output and 'installed 1.0' in result.output
+        assert 'OldAddon' in result.output and 'removed (was 3.0)' in result.output
+
+    def test_review_limit_shows_only_most_recent(self, cli_app):
+        result = invoke(cli_app['config_file'], ['review', '-n', '1'])
+        assert result.exit_code == 0
+        assert '1 change(s):' in result.output
+        assert 'OldAddon' in result.output
+        assert 'MyAddon' not in result.output
+
+    def test_review_shortcut(self, cli_app):
+        result = invoke(cli_app['config_file'], ['rv'])
+        assert result.exit_code == 0
+        assert '3 change(s):' in result.output
+
+    def test_review_with_no_changes_recorded(self, monkeypatch, tmp_path):
+        addons_root = tmp_path / 'AddOns'
+        addons_root.mkdir()
+        config_file = tmp_path / 'gru.ini'
+        config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
+        _patch_user_config(monkeypatch, tmp_path)
+
+        result = invoke(config_file, ['review'])
+        assert result.exit_code == 0
+        assert 'No changes recorded yet.' in result.output
+
+
 class TestParentSuffixWording:
     """The ', <relation> X' suffix after 'installed' uses a distinct connector per relationship:
     'listed online as' (title differs), 'part of' (multi-folder bundle), 'bundled inside'
