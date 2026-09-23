@@ -3,6 +3,7 @@
 main() builds its API/Folder through cli.build_app(), which TestWithRealAddons monkeypatches
 to a stub -- letting these commands run against real installed addons with zero network."""
 
+import configparser
 import csv
 import io
 import pathlib
@@ -59,6 +60,76 @@ def invoke(config_file, args, input=None):
     return runner.invoke(main, ['--config', str(config_file), *args], input=input)
 
 
+class TestResolveAddonsRoot:
+    """resolve_addons_root() is a plain function (no Click context needed): it mutates `config`
+    in-memory and reports whether it changed anything via its return value -- build_app() only
+    calls save_config() when that's True, so an already-valid root must never be reported as changed."""
+
+    def _config(self, root: str) -> configparser.ConfigParser:
+        config = configparser.ConfigParser()
+        config.add_section('ESO.addons')
+        config.set('ESO.addons', 'root', root)
+        return config
+
+    def test_valid_existing_root_returns_false_and_leaves_config_unchanged(self, tmp_path):
+        addons_root = tmp_path / 'AddOns'
+        addons_root.mkdir()
+        config = self._config(str(addons_root))
+
+        changed = cli_mod.resolve_addons_root(config, 'ESO')
+
+        assert changed is False
+        assert config.get('ESO.addons', 'root') == str(addons_root)
+
+    def test_missing_root_prompts_updates_config_and_returns_true(self, monkeypatch, tmp_path):
+        addons_root = tmp_path / 'AddOns'
+        addons_root.mkdir()
+        config = self._config('')  # not set -- must prompt
+        monkeypatch.setattr(cli_mod.click, 'prompt', lambda *a, **kw: addons_root)
+
+        changed = cli_mod.resolve_addons_root(config, 'ESO')
+
+        assert changed is True
+        assert config.get('ESO.addons', 'root') == str(addons_root.resolve())
+
+
+class TestBuildAppPersistsResolvedRootOnly:
+    """build_app() must call save_config() exactly when resolve_addons_root() actually changed
+    something -- never unconditionally, since that would silently rewrite (and, since
+    configparser doesn't round-trip comments, lose comments in) config.ini on every command."""
+
+    def _config_file(self, tmp_path: pathlib.Path, addons_root: pathlib.Path) -> pathlib.Path:
+        config_file = tmp_path / 'gru.ini'
+        config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
+        return config_file
+
+    def test_saves_when_root_was_resolved(self, monkeypatch, tmp_path):
+        addons_root = tmp_path / 'AddOns'
+        addons_root.mkdir()
+        config_file = self._config_file(tmp_path, addons_root)
+
+        saved = []
+        monkeypatch.setattr(cli_mod, 'resolve_addons_root', lambda cfg, game: True)
+        monkeypatch.setattr(cli_mod, 'save_config', lambda cfg, cfg_file: saved.append(cfg_file))
+
+        cli_mod.build_app('ESO', config_file)
+
+        assert saved == [config_file]
+
+    def test_does_not_save_when_root_was_already_valid(self, monkeypatch, tmp_path):
+        addons_root = tmp_path / 'AddOns'
+        addons_root.mkdir()
+        config_file = self._config_file(tmp_path, addons_root)
+
+        saved = []
+        monkeypatch.setattr(cli_mod, 'resolve_addons_root', lambda cfg, game: False)
+        monkeypatch.setattr(cli_mod, 'save_config', lambda cfg, cfg_file: saved.append(cfg_file))
+
+        cli_mod.build_app('ESO', config_file)
+
+        assert saved == []
+
+
 class TestNoNetworkSmokeTests:
     def test_list_with_no_addons_installed(self, cli_config):
         result = invoke(cli_config, ['list'])
@@ -92,6 +163,20 @@ class TestNoNetworkSmokeTests:
         result = invoke(cli_config, ['cleanup'])
         assert result.exit_code == 0
         assert 'Removed 0 unused dependence(s).' in result.output
+
+    def test_config_subcommands_skip_addons_root_prompt(self, tmp_path):
+        """Regression: config get/set must not go through build_app()'s addons-root prompt --
+        a plain config read/write shouldn't require (or block on) a valid addons folder. No
+        `input=` is given, so if this did hit click.prompt() it would fail rather than hang."""
+        config_file = tmp_path / 'gru.ini'  # deliberately no [ESO.addons] root at all
+
+        result = invoke(config_file, ['config', 'get', 'app.open_in_browser'])
+        assert result.exit_code == 0
+        assert result.output.strip() == 'off'
+
+        result = invoke(config_file, ['config', 'set', 'app.open_in_browser', 'on'])
+        assert result.exit_code == 0
+        assert 'root = \n' in config_file.read_text()  # stayed empty -- never resolved/prompted for
 
 
 class TestWithRealAddons:
@@ -180,8 +265,7 @@ class TestExportCommand:
         result = invoke(cli_app['config_file'], ['export'])
         assert result.exit_code == 0
 
-        # stdout only (not .output, which also mixes in show_warnings()'s stderr text) --
-        # matches what `gru export > file.csv` would actually receive.
+        # stdout only, not .output -- matches what `gru export > file.csv` would receive
         rows = list(csv.reader(io.StringIO(result.stdout)))
         assert rows[0] == ['dir', 'version', 'link']
         by_dir = {row[0]: row for row in rows[1:]}

@@ -298,8 +298,9 @@ def add_repl_commands(group: click.Group) -> None:
         raise click_repl.ExitReplException()
 
 
-def resolve_addons_root(config: configparser.ConfigParser, game: str, config_file: pathlib.Path | None) -> None:
-    """ Ensure `config` has a valid addons root, prompting interactively (and saving) if missing """
+def resolve_addons_root(config: configparser.ConfigParser, game: str) -> bool:
+    """ Ensure `config` has a valid addons root, prompting interactively if missing.
+    Returns whether `config` was changed, so the caller can decide whether to persist it. """
     root = config.get(f'{game}.addons', 'root')
     if not root or not pathlib.Path(root).exists():
         click.echo(f'{game} addons directory not found!')
@@ -307,14 +308,16 @@ def resolve_addons_root(config: configparser.ConfigParser, game: str, config_fil
             'Path to addons directory', prompt_suffix=':\n>> ',
             type=click.Path(exists=True, file_okay=False, path_type=pathlib.Path)))
         config.set(f'{game}.addons', 'root', str(root.resolve()))
-        save_config(config, config_file)
+        return True
+    return False
 
 
 def build_app(game: str, config_file: pathlib.Path | None) -> tuple[configparser.ConfigParser, API, Folder]:
     """ Load config, ensure a valid addons root, and build a live API + scanned Folder.
     The single seam a test needs to monkeypatch to drive commands without real network/disk. """
     config = load_config(config_file)
-    resolve_addons_root(config, game, config_file)
+    if resolve_addons_root(config, game):
+        save_config(config, config_file)
     api = API.live(config)
     local = Folder(game, config)
     local.scan(api)
@@ -339,7 +342,12 @@ def main(ctx: click.Context, game: str = 'ESO', config_file: pathlib.Path | None
     ctx.ensure_object(dict)
     ctx.obj['warnings'] = ctx.with_resource(warnings.catch_warnings(record=True))
 
-    config, api, local = build_app(game, config_file)
+    if ctx.invoked_subcommand == 'config':
+        # skip network fetch/filesystem scan as we may be trying to set those up
+        config = load_config(config_file)
+        api = local = None
+    else:
+        config, api, local = build_app(game, config_file)
     ctx.obj['config'] = config
     ctx.obj['game'] = game
     ctx.obj['config_file'] = config_file
