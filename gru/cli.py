@@ -43,7 +43,8 @@ def get_config_bool(ctx: click.Context, string: str) -> bool:
 class SectionedHelpGroup(click.Group):
     """ Sections commands into help groups """
 
-    _cmd_shortcuts = {'rm': 'remove', 'up': 'update', 'ls': 'list', 's': 'search', 'cc': 'clear-caches', 'df': 'diff'}
+    _cmd_shortcuts = {'rm': 'remove', 'up': 'update', 'ls': 'list', 's': 'search', 'cc': 'clear-caches', 'df': 'diff',
+                      'al': 'add-lock', 'rl': 'remove-lock', 'll': 'list-locks'}
 
     @classmethod
     def _cmd_group(cls, cmd: click.Command) -> str:
@@ -124,9 +125,11 @@ class TermDisplay:
         """ Show addon info from the API endpoint """
         click.echo()
         assert addon.infos is not None  # guaranteed by the is_local/id dispatch in __init__
-        update = '' if not addon.can_update else f'{click.style("update available", bold=True)} - '
+        update = '' if not addon.can_update or addon.locked else f'{click.style("update available", bold=True)} - '
         infos = addon.infos
         tags = []
+        if addon.locked:
+            tags.append('version locked')
         if addon.parent is not None:
             tags.append(f'bundled inside {addon.parent.title}')
         if len(infos.folders) > 1:
@@ -174,11 +177,13 @@ class TermDisplay:
         click.echo()
         # Based on verbosity level, only click.echo a number of those:
         parent = folder.parent
+        tags = []
+        if folder.locked:
+            tags.append('version locked')
         if parent and parent.id and parent.infos is not None:
-            parent_text = f', bundled inside {parent.infos.title}'
-        else:
-            parent_text = ''
-        click.echo(f'{item:{self.gutter}}{self._render_eso_text(folder.title)}  [installed{parent_text}]')
+            tags.append(f'bundled inside {parent.infos.title}')
+        suffix = ''.join(f', {tag}' for tag in tags)
+        click.echo(f'{item:{self.gutter}}{self._render_eso_text(folder.title)}  [installed{suffix}]')
         infos = [[
             f'Author: {self._styled_width(folder.author, 20)}',
             f'Version: {folder.version:10}',
@@ -283,15 +288,15 @@ def _progress(size: int, message: str) -> gru.install.ProgressProtocol:
 
 
 def _write_addons_csv(local: gru.install.Folder, out: typing.IO, recurse: bool = False) -> int:
-    """ Write dir/version/link rows for installed addons to `out`. Returns the row count. """
+    """ Write dir/version/link/locked rows for installed addons to `out`. Returns the row count. """
     writer = csv.writer(out)
-    writer.writerow(['dir', 'version', 'link'])
+    writer.writerow(['dir', 'version', 'link', 'locked'])
     count = 0
     for addon in local.installed:
         if not (recurse or addon.parent is None):
             continue
         link = addon.infos.metadata['link'] if addon.infos is not None else ''
-        writer.writerow([addon.dir, addon.version, link])
+        writer.writerow([addon.dir, addon.version, link, 'locked' if addon.locked else ''])
         count += 1
     return count
 
@@ -300,6 +305,20 @@ def _export_addon_state(local: gru.install.Folder) -> None:
     """ Keep <config>/<game>/addons.csv in sync with the current install state. """
     with user_config(local.game, 'addons.csv').open('w', newline='') as out:
         _write_addons_csv(local, out)
+
+
+def _load_locks(local: gru.install.Folder) -> None:
+    """ Restore the .locked flag onto freshly-scanned addons -- addons.csv is the only place that
+    state persists, the folder scan itself has no way to know about it. Matched by dir, same as
+    every other addons.csv column, so (as with those) a dir shared by several folders locks all of them. """
+    path = user_config(local.game, 'addons.csv')
+    if not path.exists():
+        return
+    with path.open(newline='') as f:
+        locked_dirs = {row['dir'] for row in csv.DictReader(f) if row.get('locked')}
+    for addon in local.installed:
+        if addon.dir in locked_dirs:
+            addon.locked = True
 
 
 NOT_INSTALLED = 'none'  # sentinel: version/NOT_INSTALLED means installed, NOT_INSTALLED/version means uninstalled
@@ -377,6 +396,7 @@ def build_app(game: str, config_file: pathlib.Path | None) -> tuple[configparser
     api = API.live(config)
     local = Folder(game, config)
     local.scan(api)
+    _load_locks(local)
     return config, api, local
 
 
@@ -663,6 +683,57 @@ def cleanup(ctx: click.Context, opt: bool | None = None, dedupe: bool = False) -
         _export_addon_state(local)
         _log_changes(local, ctx.obj['config'], before)
         show_warnings(ctx)
+
+
+@main.command('add-lock', help='Pin an addon to its currently installed version')
+@click.argument('addon', required=False)
+@click.pass_context
+def add_lock(ctx: click.Context, addon: str | None) -> None:
+    api = ctx.obj['api']
+    local = ctx.obj['local']
+
+    found = _find_installed(local, api, addon, 'Confirm lock target?')
+    if found is None:
+        show_warnings(ctx)
+        return
+
+    found.locked = True
+    _export_addon_state(local)
+    click.echo(f'{TermDisplay._render_eso_text(found.title)} is now version locked.')
+    show_warnings(ctx)
+
+
+@main.command('remove-lock', help='Unpin a previously version-locked addon')
+@click.argument('addon', required=False)
+@click.pass_context
+def remove_lock(ctx: click.Context, addon: str | None) -> None:
+    api = ctx.obj['api']
+    local = ctx.obj['local']
+
+    found = _find_installed(local, api, addon, 'Confirm unlock target?')
+    if found is None:
+        show_warnings(ctx)
+        return
+
+    found.locked = False
+    _export_addon_state(local)
+    click.echo(f'{TermDisplay._render_eso_text(found.title)} is no longer version locked.')
+    show_warnings(ctx)
+
+
+@main.command('list-locks', help='List version-locked addons')
+@click.pass_context
+def list_locks(ctx: click.Context) -> None:
+    local = ctx.obj['local']
+    locked = [addon for addon in local.installed if addon.locked]
+
+    if not locked:
+        click.echo('No version-locked addons.')
+        return
+
+    click.echo(f'{len(locked)} version-locked addon(s):')
+    TermDisplay(locked)
+    show_warnings(ctx)
 
 
 @main.command()

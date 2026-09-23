@@ -434,10 +434,10 @@ class TestExportCommand:
 
         # stdout only, not .output -- matches what `gru export > file.csv` would receive
         rows = list(csv.reader(io.StringIO(result.stdout)))
-        assert rows[0] == ['dir', 'version', 'link']
+        assert rows[0] == ['dir', 'version', 'link', 'locked']
         by_dir = {row[0]: row for row in rows[1:]}
-        assert by_dir['MyAddon'] == ['MyAddon', '3', cli_app['upstream'].metadata['link']]
-        assert by_dir['LocalOnly'] == ['LocalOnly', '1', '']
+        assert by_dir['MyAddon'] == ['MyAddon', '3', cli_app['upstream'].metadata['link'], '']
+        assert by_dir['LocalOnly'] == ['LocalOnly', '1', '', '']
 
     def test_export_writes_to_output_file(self, cli_app, tmp_path):
         out_path = tmp_path / 'out.csv'
@@ -447,9 +447,9 @@ class TestExportCommand:
         assert 'dir,version,link' not in result.output  # CSV rows went to the file, not stdout
 
         rows = list(csv.reader(out_path.open()))
-        assert rows[0] == ['dir', 'version', 'link']
+        assert rows[0] == ['dir', 'version', 'link', 'locked']
         by_dir = {row[0]: row for row in rows[1:]}
-        assert by_dir['MyAddon'] == ['MyAddon', '3', cli_app['upstream'].metadata['link']]
+        assert by_dir['MyAddon'] == ['MyAddon', '3', cli_app['upstream'].metadata['link'], '']
 
     def test_export_short_output_flag(self, cli_app, tmp_path):
         out_path = tmp_path / 'out.csv'

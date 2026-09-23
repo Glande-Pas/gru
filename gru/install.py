@@ -478,7 +478,7 @@ class Folder:
                patch: bool = False) -> tuple[int, int]:
         updates = []
         for addon in self.installed:
-            if not addon.can_update or addon.infos is None:
+            if not addon.can_update or addon.infos is None or addon.locked:
                 continue
             try:
                 updates.extend(self.unpack(addon.infos, api, progress=progress, path=addon.folder))

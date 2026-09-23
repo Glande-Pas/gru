@@ -139,6 +139,8 @@ class InstalledAddon(Dependency, DisplayAddonProtocol):
         self.id = None
         self.infos: AddonInfo | None = None
         self.parent = parent
+        #: Not derivable from the folder scan -- restored from addons.csv by cli.build_app()
+        self.locked = False
 
         # Validate
         self.metadata = self._parse_manifest()
