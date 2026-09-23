@@ -84,7 +84,7 @@ class StubAPI:
         return []
 
     # Any: tests override this to return a real AddonInfo, not just a StubAddon
-    def dir(self, name: str) -> typing.Any:
+    def dir(self, name: str, link: str | None = None) -> typing.Any:
         try:
             return self._addons[name]
         except KeyError:

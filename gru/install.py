@@ -20,6 +20,7 @@ import warnings
 import traceback
 import configparser
 import typing
+import csv
 from urllib.parse import quote as urllib_quote
 
 from .config import user_cache, user_config
@@ -103,11 +104,23 @@ class Folder:
             shutil.rmtree(temp_location)
 
     def scan(self, api: gru.api.API | None = None) -> None:
-        self._installed = self._scan(self.root, api)
+        self._installed = self._scan(self.root, api, links=self._read_addon_links())
 
-    def _scan(self, root: pathlib.Path, api: gru.api.API | None = None) -> dict[pathlib.Path, gru.addon.InstalledAddon]:
+    def _read_addon_links(self) -> dict[str, str]:
+        """ dir -> link from the last addons.csv snapshot. Only used to break a tie when a folder
+        name matches several different online addons (see API.dir()) -- the folder scan itself has
+        no way to know which of them a given install actually came from. """
+        path = user_config(self.game, 'addons.csv')
+        if not path.exists():
+            return {}
+        with path.open(newline='') as f:
+            return {row['dir']: row['link'] for row in csv.DictReader(f) if row.get('link')}
+
+    def _scan(self, root: pathlib.Path, api: gru.api.API | None = None,
+              links: dict[str, str] | None = None) -> dict[pathlib.Path, gru.addon.InstalledAddon]:
         """ List the root path """
         results: dict[pathlib.Path, gru.addon.InstalledAddon] = {}
+        links = links or {}
 
         # Additional housekeeping for partial parsing
         if root != self.root:
@@ -151,7 +164,7 @@ class Folder:
 
             try:
                 if api:
-                    addon.link(api.dir(path.name))
+                    addon.link(api.dir(path.name, link=links.get(path.name)))
             except FileNotFoundError:
                 # Only warn for lookup error on top-level addons
                 if parent is None:

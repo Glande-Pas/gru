@@ -11,7 +11,7 @@ import gru.install as install_mod
 from gru.install import Folder
 from gru.patch import addon_diff
 
-from .conftest import as_api, make_installed, make_addon_info, write_manifest, StubAPI
+from .conftest import as_api, make_api, make_installed, make_addon_info, write_manifest, StubAPI
 
 
 def _zip_bytes(entries: dict[str, str]) -> bytes:
@@ -350,12 +350,43 @@ class TestScan:
         info = make_addon_info(id_=7, title='MyAddon')
 
         class LinkableApi:
-            def dir(self, name):
+            def dir(self, name, link=None):
                 return info
 
         folder.scan(LinkableApi())
         [addon] = list(folder.installed)
         assert addon.id == 7
+
+    def test_scan_disambiguates_tied_dir_via_addons_csv_link(self, addon_root, folder, tmp_path):
+        """Real esoui.com scenario (BRHelper): several unrelated addons declare the same dir.
+        A previously recorded link in addons.csv breaks the tie by the id in its URL, exercising
+        the real API.dir() (not a stub reimplementing its logic)."""
+        make_installed(addon_root, 'BRHelper')
+        base = make_addon_info(id_=2181, title='Blackrose Prison Helper', directories=['BRHelper'])
+        jp_version = make_addon_info(id_=2996, title='Blackrose Prison Helper JP', directories=['BRHelper'])
+        api = make_api(addons={2181: base, 2996: jp_version})
+
+        csv_path = tmp_path / 'addons.csv'
+        csv_path.write_text('dir,version,link,locked\n'
+                            'BRHelper,1.0,https://www.esoui.com/downloads/info2996-BRHelperJP.html,\n')
+        install_mod.user_config = lambda *parts: csv_path if parts[-1] == 'addons.csv' else tmp_path.joinpath(*parts)
+
+        folder.scan(api)
+        [addon] = list(folder.installed)
+        assert addon.id == 2996
+
+    def test_scan_without_addons_csv_falls_back_to_unresolved_tie(self, addon_root, folder, tmp_path):
+        """No prior addons.csv (e.g. first-ever scan) -- _read_addon_links() finds nothing, and
+        API.dir() behaves exactly as it always did: whichever candidate is reached first wins."""
+        make_installed(addon_root, 'BRHelper')
+        base = make_addon_info(id_=2181, title='Blackrose Prison Helper', directories=['BRHelper'])
+        jp_version = make_addon_info(id_=2996, title='Blackrose Prison Helper JP', directories=['BRHelper'])
+        api = make_api(addons={2181: base, 2996: jp_version})
+        install_mod.user_config = lambda *parts: tmp_path.joinpath(*parts)  # no addons.csv written
+
+        folder.scan(api)
+        [addon] = list(folder.installed)
+        assert addon.id == 2181
 
     def test_scan_warns_for_toplevel_addon_missing_from_api(self, addon_root, folder):
         make_installed(addon_root, 'MyAddon')
@@ -498,7 +529,7 @@ class TestFolderInstallDeps:
         lib_info = make_addon_info(id_=2, title='LibFoo', directories=['LibFoo'])
 
         class DepApi(StubAPI):
-            def dir(self, name):
+            def dir(self, name, link=None):
                 if name == 'LibFoo':
                     return lib_info
                 raise FileNotFoundError(name)

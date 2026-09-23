@@ -134,6 +134,11 @@ def _extract_aid(href: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def _extract_info_id(link: str) -> int | None:
+    match = re.search(r'/info(?P<id>[0-9]+)-[^/]*\.html', link)
+    return int(match.group('id')) if match else None
+
+
 class _ArchivedFilesParser(html.parser.HTMLParser):
     """ Extracts the "Archived Files" table from an esoui.com addon info page -- the download link for a previous
     version's `aid` isn't exposed anywhere in the JSON API.
@@ -296,16 +301,36 @@ class API:
         """ Lookup a category by id """
         return self.categories[id_]
 
-    def dir(self, dir_: str) -> AddonInfo:
-        """ Lookup an addon by directory """
+    def dir(self, dir_: str, link: str | None = None) -> AddonInfo:
+        """ Lookup an addon by directory. Several unrelated addons can declare the same directory
+        (e.g. BRHelper -- a base addon, a JP translation and a third-party patch all use it); without
+        `link`, whichever is reached first wins, same as always. `link` -- a previously recorded
+        download-page link for this exact install, e.g. from addons.csv -- disambiguates the tie
+        via the addon id encoded in its URL, when it resolves to exactly one of the candidates. """
+        exact = []
         partial = []
         for addon in self.addons.values():
             if addon.dir == dir_:
-                return addon
+                exact.append(addon)
             elif dir_ in addon.metadata['directories']:
                 partial.append(addon)
+
+        id_ = _extract_info_id(link) if link is not None else None
+
+        if len(exact) > 1 and id_ is not None:
+            matches = [addon for addon in exact if addon.id == id_]
+            if len(matches) == 1:
+                return matches[0]
+        if exact:
+            return exact[0]  # unresolved tie: whichever was reached first, same as always
+
+        if len(partial) > 1 and id_ is not None:
+            matches = [addon for addon in partial if addon.id == id_]
+            if len(matches) == 1:
+                return matches[0]
         if len(partial) == 1:
             return partial[0]
+
         raise FileNotFoundError(f'Directory {dir_!r} not found in list')
 
     def name(self, name: str) -> AddonInfo:

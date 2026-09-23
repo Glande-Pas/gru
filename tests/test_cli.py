@@ -352,7 +352,7 @@ class TestCleanupCommand:
         upstream = make_addon_info(id_=1, title='LibShared', directories=['LibShared'])
 
         class LinkableApi(StubAPI):
-            def dir(self, name):  # pyright: ignore[reportIncompatibleMethodOverride] -- real AddonInfo, not StubAddon
+            def dir(self, name, link=None):  # pyright: ignore[reportIncompatibleMethodOverride] -- real AddonInfo
                 if name == 'LibShared':
                     return upstream
                 raise FileNotFoundError(name)
@@ -413,7 +413,7 @@ class TestExportCommand:
         upstream = make_addon_info(id_=1, title='MyAddon', version='3', directories=['MyAddon'])
 
         class LinkableApi(StubAPI):
-            def dir(self, name):  # pyright: ignore[reportIncompatibleMethodOverride] -- real AddonInfo, not StubAddon
+            def dir(self, name, link=None):  # pyright: ignore[reportIncompatibleMethodOverride] -- real AddonInfo
                 if name == 'MyAddon':
                     return upstream
                 raise FileNotFoundError(name)
@@ -483,7 +483,7 @@ class TestParentSuffixWording:
         upstream = make_addon_info(id_=1, title=upstream_title, directories=['MyAddon'])
 
         class LinkableApi(StubAPI):
-            def dir(self, name):
+            def dir(self, name, link=None):
                 return upstream
 
         return addons_root, config_file, LinkableApi()
@@ -514,7 +514,7 @@ class TestParentSuffixWording:
         upstream = make_addon_info(id_=1, title='BundleName', directories=['MainPart', 'ExtraPart'])
 
         class LinkableApi(StubAPI):
-            def dir(self, name):
+            def dir(self, name, link=None):
                 return upstream
 
         output = self._list_output(monkeypatch, addons_root, config_file, LinkableApi())
@@ -531,7 +531,7 @@ class TestParentSuffixWording:
         upstream = make_addon_info(id_=1, title='LibShared', directories=['CopyA'])
 
         class LinkableApi(StubAPI):
-            def dir(self, name):
+            def dir(self, name, link=None):
                 return upstream
 
         return addons_root, config_file, LinkableApi()
@@ -565,7 +565,7 @@ class TestParentSuffixWording:
         upstream = make_addon_info(id_=1, title='ParentAddon', directories=['ParentAddon'])
 
         class LinkableApi(StubAPI):
-            def dir(self, name):
+            def dir(self, name, link=None):
                 if name == 'ParentAddon':
                     return upstream
                 raise FileNotFoundError(name)
@@ -588,7 +588,7 @@ class TestParentSuffixWording:
         upstream_child = make_addon_info(id_=2, title='ChildLib', directories=['ChildLib'])
 
         class LinkableApi(StubAPI):
-            def dir(self, name):
+            def dir(self, name, link=None):
                 if name == 'ParentAddon':
                     return upstream_parent
                 elif name == 'ChildLib':
@@ -614,7 +614,7 @@ class TestParentSuffixWording:
         upstream_lib = make_addon_info(id_=2, title='LibExtendedJournal', directories=['LibExtendedJournal'])
 
         class LinkableApi(StubAPI):
-            def dir(self, name):
+            def dir(self, name, link=None):
                 if name == 'LootLog':
                     return upstream_parent
                 elif name == 'LibExtendedJournal':
@@ -994,7 +994,7 @@ class TestSearchAndMissCommands:
             def search(self, term, tiebreakattr=None, maxlen=30):
                 return [make_addon_info(id_=1, title='SearchResult', directories=['SearchResult'])]
 
-            def dir(self, name):
+            def dir(self, name, link=None):
                 if name == 'LibFoo':
                     return found_dep
                 raise FileNotFoundError(name)

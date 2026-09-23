@@ -7,7 +7,8 @@ import typing
 import pytest
 import requests
 
-from gru.api import to_list, case_insensitive, epoch_ms, _exception_root_cause, _fuzz, _filter, _lookup, ESOUIv3
+from gru.api import (to_list, case_insensitive, epoch_ms, _exception_root_cause, _fuzz, _filter, _lookup,
+                     _extract_info_id, ESOUIv3)
 from gru.addon import AddonInfo
 
 from .conftest import as_folder, make_addon_info, make_api
@@ -257,6 +258,51 @@ class TestApiLookups:
         # Confirm it's genuinely iteration-order-dependent, not id- or popularity-based
         api_reordered = make_api(addons={4252: patch, 2181: base, 2996: jp_version})
         assert api_reordered.dir('BRHelper') is patch
+
+    def test_dir_disambiguates_tie_via_link_id(self):
+        """A `link` (e.g. addons.csv's own record of which listing this install came from)
+        resolves the same BRHelper-style tie deterministically, by the id in its URL."""
+        base = make_addon_info(id_=2181, title='Blackrose Prison Helper', directories=['BRHelper'])
+        jp_version = make_addon_info(id_=2996, title='Blackrose Prison Helper JP Version', directories=['BRHelper'])
+        patch = make_addon_info(id_=4252, title='Blackrose Prison Helper (Patch)', directories=['BRHelper'])
+        api = make_api(addons={2181: base, 2996: jp_version, 4252: patch})
+
+        link = 'https://www.esoui.com/downloads/info2996-BlackrosePrisonHelperJPVersion.html'
+        assert api.dir('BRHelper', link=link) is jp_version
+
+    def test_dir_link_id_with_no_matching_candidate_falls_back_to_first(self):
+        base = make_addon_info(id_=2181, title='Blackrose Prison Helper', directories=['BRHelper'])
+        patch = make_addon_info(id_=4252, title='Blackrose Prison Helper (Patch)', directories=['BRHelper'])
+        api = make_api(addons={2181: base, 4252: patch})
+
+        link = 'https://www.esoui.com/downloads/info9999-SomeUnrelatedAddon.html'
+        assert api.dir('BRHelper', link=link) is base
+
+    def test_dir_malformed_link_falls_back_to_first(self):
+        base = make_addon_info(id_=2181, title='Blackrose Prison Helper', directories=['BRHelper'])
+        patch = make_addon_info(id_=4252, title='Blackrose Prison Helper (Patch)', directories=['BRHelper'])
+        api = make_api(addons={2181: base, 4252: patch})
+
+        assert api.dir('BRHelper', link='not a url at all') is base
+
+    def test_dir_link_disambiguates_ambiguous_secondary_directory(self):
+        a = make_addon_info(id_=1, title='A')
+        a.metadata['directories'] = ['A', 'Shared']
+        b = make_addon_info(id_=2, title='B')
+        b.metadata['directories'] = ['B', 'Shared']
+        api = make_api(addons={1: a, 2: b})
+
+        link = 'https://www.esoui.com/downloads/info2-B.html'
+        assert api.dir('Shared', link=link) is b
+
+
+class TestExtractInfoId:
+    def test_extracts_id_from_slugged_link(self):
+        assert _extract_info_id('https://www.esoui.com/downloads/info2111-AsylumTracker.html') == 2111
+
+    def test_no_match_returns_none(self):
+        assert _extract_info_id('https://www.esoui.com/downloads/info2111.html') is None  # no slug, no match
+        assert _extract_info_id('not a link') is None
 
 
 class TestApiFind:
