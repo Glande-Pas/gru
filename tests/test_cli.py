@@ -443,6 +443,96 @@ class TestCleanupCommand:
         assert not saved.exists()
 
 
+class TestLockCommands:
+    """gru add-lock/remove-lock: with no addon named, only browse/prompt among the relevant
+    subset (unlocked for add-lock, locked for remove-lock) -- not every installed addon,
+    which used to mean remove-lock could offer to unlock something that was never locked."""
+
+    @pytest.fixture
+    def cli_app(self, monkeypatch, tmp_path):
+        addons_root = tmp_path / 'AddOns'
+        addons_root.mkdir()
+        config_file = tmp_path / 'gru.ini'
+        config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
+        _patch_user_config(monkeypatch, tmp_path)
+
+        make_installed(addons_root, 'LockedAddon', Title='Locked Addon')
+        make_installed(addons_root, 'FreeAddon', Title='Free Addon')
+
+        # Set up the initial locked state once, persisted to (the patched) addons.csv, rather
+        # than forcing it inside fake_build_app -- that runs on every invoke() and would clobber
+        # whatever a prior invoke's add-lock/remove-lock had already changed.
+        setup_local = make_folder(addons_root)
+        setup_local.scan(StubAPI())  # pyright: ignore[reportArgumentType] -- stub API, not a real gru.api.API
+        [locked_addon] = list(setup_local.dir('LockedAddon'))
+        locked_addon.locked = True
+        setup_local.export_state()
+
+        def fake_build_app(game, cfg_file):
+            config = load_config(cfg_file)
+            api = StubAPI()
+            local = make_folder(addons_root)
+            local.scan(api)  # pyright: ignore[reportArgumentType] -- stub API, not a real gru.api.API
+            return config, api, local
+
+        monkeypatch.setattr(cli_mod, 'build_app', fake_build_app)
+        return {'config_file': config_file, 'addons_root': addons_root, 'config_dir': tmp_path / 'config'}
+
+    def test_add_lock_by_name(self, cli_app):
+        result = invoke(cli_app['config_file'], ['add-lock', 'FreeAddon'], input='y\n')
+        assert result.exit_code == 0
+        assert 'Free Addon is now version locked.' in result.output
+
+    def test_add_lock_no_name_only_offers_unlocked_addons(self, cli_app):
+        """Regression: used to browse/prompt among every installed addon, including ones
+        already locked -- with only FreeAddon eligible here, no disambiguation is even needed."""
+        result = invoke(cli_app['config_file'], ['add-lock'], input='y\n')
+        assert result.exit_code == 0
+        assert 'Locked Addon' not in result.output
+        assert 'Free Addon is now version locked.' in result.output
+
+    def test_add_lock_already_locked_addon_is_a_no_op(self, cli_app):
+        result = invoke(cli_app['config_file'], ['add-lock', 'LockedAddon'], input='y\n')
+        assert result.exit_code == 0
+        assert 'Locked Addon is already version locked.' in result.output
+
+    def test_add_lock_when_everything_already_locked(self, cli_app):
+        invoke(cli_app['config_file'], ['add-lock', 'FreeAddon'], input='y\n')
+        result = invoke(cli_app['config_file'], ['add-lock'])
+        assert result.exit_code == 0
+        assert 'All installed addons are already version locked.' in result.output
+
+    def test_remove_lock_by_name(self, cli_app):
+        result = invoke(cli_app['config_file'], ['remove-lock', 'LockedAddon'], input='y\n')
+        assert result.exit_code == 0
+        assert 'Locked Addon is no longer version locked.' in result.output
+
+    def test_remove_lock_no_name_only_offers_locked_addons(self, cli_app):
+        """The reported bug: remove-lock with no argument used to browse/prompt among every
+        installed addon -- including FreeAddon, which was never locked in the first place."""
+        result = invoke(cli_app['config_file'], ['remove-lock'], input='y\n')
+        assert result.exit_code == 0
+        assert 'Free Addon' not in result.output
+        assert 'Locked Addon is no longer version locked.' in result.output
+
+    def test_remove_lock_on_unlocked_addon_is_a_no_op(self, cli_app):
+        result = invoke(cli_app['config_file'], ['remove-lock', 'FreeAddon'], input='y\n')
+        assert result.exit_code == 0
+        assert 'Free Addon is not version locked.' in result.output
+
+    def test_remove_lock_when_nothing_locked(self, cli_app):
+        invoke(cli_app['config_file'], ['remove-lock', 'LockedAddon'], input='y\n')
+        result = invoke(cli_app['config_file'], ['remove-lock'])
+        assert result.exit_code == 0
+        assert 'No version-locked addons.' in result.output
+
+    def test_list_locks(self, cli_app):
+        result = invoke(cli_app['config_file'], ['list-locks'])
+        assert result.exit_code == 0
+        assert 'Locked Addon' in result.output
+        assert 'Free Addon' not in result.output
+
+
 class TestExportCommand:
     """gru export: CSV to stdout by default, or to a file with --output/-o; includes the
     online info-page link as an extra column when the addon is matched, blank otherwise."""

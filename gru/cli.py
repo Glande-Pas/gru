@@ -263,11 +263,14 @@ def _prompt_addon(results: Iterable[AddonT], confirm_prompt: str | None = None,
 
 
 def _find_installed(local: gru.install.Folder, api: gru.api.API, term: str | None,
-                    confirm_prompt: str | None = None) -> gru.addon.InstalledAddon | None:
+                    confirm_prompt: str | None = None,
+                    pool: Iterable[gru.addon.InstalledAddon] | None = None) -> gru.addon.InstalledAddon | None:
+    """ `pool` narrows what an empty `term` browses/prompts among (default: every installed addon)
+    -- e.g. remove-lock only wants to offer already-locked addons, not all of them. """
     if term:
         addon = local.find(term.lower(), api)
     else:
-        addon = local.installed
+        addon = pool if pool is not None else local.installed
 
     if not addon:
         click.echo('No corresponding addon found.')
@@ -661,8 +664,19 @@ def add_lock(ctx: click.Context, addon: str | None) -> None:
     api = ctx.obj['api']
     local = ctx.obj['local']
 
-    found = _find_installed(local, api, addon, 'Confirm lock target?')
+    unlocked = [a for a in local.installed if not a.locked]
+    if not addon and not unlocked:
+        click.echo('All installed addons are already version locked.')
+        show_warnings(ctx)
+        return
+
+    found = _find_installed(local, api, addon, 'Confirm lock target?', pool=unlocked)
     if found is None:
+        show_warnings(ctx)
+        return
+
+    if found.locked:
+        click.echo(f'{TermDisplay._render_eso_text(found.title)} is already version locked.')
         show_warnings(ctx)
         return
 
@@ -679,8 +693,19 @@ def remove_lock(ctx: click.Context, addon: str | None) -> None:
     api = ctx.obj['api']
     local = ctx.obj['local']
 
-    found = _find_installed(local, api, addon, 'Confirm unlock target?')
+    locked = [a for a in local.installed if a.locked]
+    if not addon and not locked:
+        click.echo('No version-locked addons.')
+        show_warnings(ctx)
+        return
+
+    found = _find_installed(local, api, addon, 'Confirm unlock target?', pool=locked)
     if found is None:
+        show_warnings(ctx)
+        return
+
+    if not found.locked:
+        click.echo(f'{TermDisplay._render_eso_text(found.title)} is not version locked.')
         show_warnings(ctx)
         return
 
