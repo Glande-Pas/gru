@@ -8,6 +8,7 @@ import pytest
 import gru.cli as cli_mod
 import gru.config as config_mod
 import gru.install as install_mod
+import gru.app as app_mod
 from gru.config import encoding_open, load_config, display_config, update_config, install_translation
 
 
@@ -34,6 +35,9 @@ class TestUserConfigSafetyNet:
     def test_install_module_reference_is_also_redirected(self, tmp_path):
         assert install_mod.user_config('probe.txt').is_relative_to(tmp_path)
         assert install_mod.user_cache('probe.txt').is_relative_to(tmp_path)
+
+    def test_app_module_reference_is_also_redirected(self, tmp_path):
+        assert app_mod.user_config('probe.txt').is_relative_to(tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +88,6 @@ class TestDisplayUpdateConfig:
     def test_display_config_roundtrip(self, isolated_user_dirs):
         config = load_config(isolated_user_dirs['config_file'])
         shown = display_config(config, 'ESO')
-        assert shown['app.open_in_browser'] == 'off'
         assert shown['addons.patch_updates'] == 'on'
         assert shown['addons.remove_saved_variables'] == 'ask'
 

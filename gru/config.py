@@ -53,7 +53,6 @@ log_lines = 100
 remove_saved_variables = ask
 
 [app]
-open_in_browser = off
 """
 
 CONFIG_FILENAME = 'config.ini'

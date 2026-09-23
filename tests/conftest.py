@@ -27,6 +27,7 @@ def _no_real_user_config(tmp_path, monkeypatch):
     import gru.config as config_mod
     import gru.cli as cli_mod
     import gru.install as install_mod
+    import gru.app as app_mod
 
     def make_fake(base: pathlib.Path) -> typing.Callable[..., pathlib.Path]:
         def fake(*parts: str) -> pathlib.Path:
@@ -40,6 +41,7 @@ def _no_real_user_config(tmp_path, monkeypatch):
     for mod in (config_mod, cli_mod, install_mod):
         monkeypatch.setattr(mod, 'user_config', fake_config)
         monkeypatch.setattr(mod, 'user_cache', fake_cache)
+    monkeypatch.setattr(app_mod, 'user_config', fake_config)  # app.py has no user_cache of its own
 
 
 # ---------------------------------------------------------------------------

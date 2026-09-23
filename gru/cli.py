@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import configparser
-import collections
 import warnings
-import datetime
 import pathlib
 import locale
 import shutil
@@ -14,7 +12,6 @@ import click
 import math
 import typing
 import re
-import csv
 import sys
 import click_repl
 import prompt_toolkit.history as prompt_history
@@ -26,6 +23,7 @@ from .api import API
 from .addon import AddonInfo, InstalledAddon, _parse_version
 from .install import Folder
 from .patch import addon_diff, addon_patch_file
+from . import app as gru_app
 
 if typing.TYPE_CHECKING:
     import gru.addon
@@ -287,80 +285,6 @@ def _progress(size: int, message: str) -> gru.install.ProgressProtocol:
     return click.progressbar(length=size, label=message, width=0)
 
 
-def _write_addons_csv(local: gru.install.Folder, out: typing.IO, recurse: bool = False) -> int:
-    """ Write dir/version/link/locked rows for installed addons to `out`. Returns the row count. """
-    writer = csv.writer(out)
-    writer.writerow(['dir', 'version', 'link', 'locked'])
-    count = 0
-    for addon in local.installed:
-        if not (recurse or addon.parent is None):
-            continue
-        link = addon.infos.metadata['link'] if addon.infos is not None else ''
-        writer.writerow([addon.dir, addon.version, link, 'locked' if addon.locked else ''])
-        count += 1
-    return count
-
-
-def _export_addon_state(local: gru.install.Folder) -> None:
-    """ Keep <config>/<game>/addons.csv in sync with the current install state. """
-    with user_config(local.game, 'addons.csv').open('w', newline='') as out:
-        _write_addons_csv(local, out)
-
-
-def _load_locks(local: gru.install.Folder) -> None:
-    """ Restore the .locked flag onto freshly-scanned addons -- addons.csv is the only place that
-    state persists, the folder scan itself has no way to know about it. Matched by dir, same as
-    every other addons.csv column, so (as with those) a dir shared by several folders locks all of them. """
-    path = user_config(local.game, 'addons.csv')
-    if not path.exists():
-        return
-    with path.open(newline='') as f:
-        locked_dirs = {row['dir'] for row in csv.DictReader(f) if row.get('locked')}
-    for addon in local.installed:
-        if addon.dir in locked_dirs:
-            addon.locked = True
-
-
-NOT_INSTALLED = 'none'  # sentinel: version/NOT_INSTALLED means installed, NOT_INSTALLED/version means uninstalled
-
-
-def _addon_snapshot(local: gru.install.Folder) -> dict[pathlib.Path, tuple[str, str, str]]:
-    """ folder -> (dir, version, link) for every currently-installed addon. Keyed by folder,
-    not dir: two folders can share the same dir name (a standalone/bundled duplicate pair),
-    and a dir-keyed dict would silently drop one of them. """
-    return {addon.folder: (addon.dir, addon.version, addon.infos.metadata['link'] if addon.infos is not None else '')
-            for addon in local.installed}
-
-
-def _append_change_log(path: pathlib.Path, row: list[str], max_lines: int) -> None:
-    rows: collections.deque[list[str]] = collections.deque(maxlen=max(max_lines, 0))
-    if path.exists():
-        with path.open(newline='') as f:
-            reader = csv.reader(f)
-            next(reader, None)
-            rows.extend(reader)
-    rows.append(row)
-    with path.open('w', newline='') as out:
-        writer = csv.writer(out)
-        writer.writerow(['dir', 'version', 'link', 'date', 'previous_state'])
-        writer.writerows(rows)
-
-
-def _log_changes(local: gru.install.Folder, config: configparser.ConfigParser,
-                 before: dict[pathlib.Path, tuple[str, str, str]]) -> None:
-    """ Append one changes.csv row per folder whose version differs between `before` and now. """
-    after = _addon_snapshot(local)
-    max_lines = config.getint(f'{local.game}.addons', 'log_lines')
-    now = datetime.datetime.now().astimezone().isoformat(timespec='seconds')
-    path = user_config(local.game, 'changes.csv')
-    for folder in before.keys() | after.keys():
-        old_dir, old_version, old_link = before.get(folder, ('', NOT_INSTALLED, ''))
-        new_dir, new_version, new_link = after.get(folder, ('', NOT_INSTALLED, ''))
-        if old_version == new_version:
-            continue
-        _append_change_log(path, [new_dir or old_dir, new_version, new_link or old_link, now, old_version], max_lines)
-
-
 def add_repl_commands(group: click.Group) -> None:
     """ Adds commands that are only useful in REPL mode to a click group """
     @group.command('help', help='Print CLI help')
@@ -376,27 +300,24 @@ def add_repl_commands(group: click.Group) -> None:
 def resolve_addons_root(config: configparser.ConfigParser, game: str) -> bool:
     """ Ensure `config` has a valid addons root, prompting interactively if missing.
     Returns whether `config` was changed, so the caller can decide whether to persist it. """
-    root = config.get(f'{game}.addons', 'root')
-    if not root or not pathlib.Path(root).exists():
-        click.echo(f'{game} addons directory not found!')
-        root = typing.cast(pathlib.Path, click.prompt(
-            'Path to addons directory', prompt_suffix=':\n>> ',
-            type=click.Path(exists=True, file_okay=False, path_type=pathlib.Path)))
-        config.set(f'{game}.addons', 'root', str(root.resolve()))
-        return True
-    return False
+    if gru_app.addons_root_configured(config, game):
+        return False
+    click.echo(f'{game} addons directory not found!')
+    root = typing.cast(pathlib.Path, click.prompt(
+        'Path to addons directory', prompt_suffix=':\n>> ',
+        type=click.Path(exists=True, file_okay=False, path_type=pathlib.Path)))
+    config.set(f'{game}.addons', 'root', str(root.resolve()))
+    return True
 
 
 def build_app(game: str, config_file: pathlib.Path | None) -> tuple[configparser.ConfigParser, API, Folder]:
-    """ Load config, ensure a valid addons root, and build a live API + scanned Folder.
-    The single seam a test needs to monkeypatch to drive commands without real network/disk. """
+    """ Load config, ensure a valid addons root (prompting interactively if needed), and build a
+    live API + scanned Folder via gru.app.build_app(). The single seam a test needs to monkeypatch
+    to drive commands without real network/disk. """
     config = load_config(config_file)
     if resolve_addons_root(config, game):
         save_config(config, config_file)
-    api = API.live(config)
-    local = Folder(game, config)
-    local.scan(api)
-    _load_locks(local)
+    api, local = gru_app.build_app(game, config)
     return config, api, local
 
 
@@ -518,7 +439,7 @@ def get(ctx: click.Context, addon: list[str], auto_deps: bool = True, opt: bool 
     """ Find, download, and install an addon """
     api = ctx.obj['api']
     local = ctx.obj['local']
-    before = _addon_snapshot(local)
+    before = local.snapshot()
 
     if opt is None:
         opt = get_config_bool(ctx, '{game}.addons.optional')
@@ -581,8 +502,8 @@ def get(ctx: click.Context, addon: list[str], auto_deps: bool = True, opt: bool 
             else:
                 click.echo(f'Done installing {TermDisplay._render_eso_text(found.title)} and {result} dependence(s)')
     finally:
-        _export_addon_state(local)
-        _log_changes(local, ctx.obj['config'], before)
+        local.export_state()
+        gru_app.log_changes(local, ctx.obj['config'], before)
         show_warnings(ctx)
 
 
@@ -630,7 +551,7 @@ def remove(ctx: click.Context, addon: str | None, clean_deps: bool = False, opt:
     """ Find and uninstall an addon """
     api = ctx.obj['api']
     local = ctx.obj['local']
-    before = _addon_snapshot(local)
+    before = local.snapshot()
 
     if opt is None:
         opt = get_config_bool(ctx, '{game}.addons.optional')
@@ -659,8 +580,8 @@ def remove(ctx: click.Context, addon: str | None, clean_deps: bool = False, opt:
             names = ', '.join(TermDisplay._render_eso_text(name) for name in vars_removed)
             click.echo(f'Also removed saved variables for: {names}')
     finally:
-        _export_addon_state(local)
-        _log_changes(local, ctx.obj['config'], before)
+        local.export_state()
+        gru_app.log_changes(local, ctx.obj['config'], before)
         show_warnings(ctx)
 
 
@@ -673,7 +594,7 @@ def update(ctx: click.Context, auto_deps: bool, opt: bool | None, patch: bool | 
     """ Find out-of-date and missing addons and install them """
     api = ctx.obj['api']
     local = ctx.obj['local']
-    before = _addon_snapshot(local)
+    before = local.snapshot()
 
     if opt is None:
         opt = get_config_bool(ctx, '{game}.addons.optional')
@@ -690,8 +611,8 @@ def update(ctx: click.Context, auto_deps: bool, opt: bool | None, patch: bool | 
         else:
             click.echo(f'Updated {updates} addon(s)')
     finally:
-        _export_addon_state(local)
-        _log_changes(local, ctx.obj['config'], before)
+        local.export_state()
+        gru_app.log_changes(local, ctx.obj['config'], before)
         show_warnings(ctx)
 
 
@@ -705,7 +626,7 @@ def cleanup(ctx: click.Context, opt: bool | None = None, dedupe: bool = False,
             remove_vars: bool | None = None) -> None:
     """ Find and uninstall an addon """
     local = ctx.obj['local']
-    before = _addon_snapshot(local)
+    before = local.snapshot()
 
     if opt is None:
         opt = get_config_bool(ctx, '{game}.addons.optional')
@@ -727,8 +648,8 @@ def cleanup(ctx: click.Context, opt: bool | None = None, dedupe: bool = False,
             names = ', '.join(TermDisplay._render_eso_text(name) for name in vars_removed)
             click.echo(f'Also removed saved variables for: {names}')
     finally:
-        _export_addon_state(local)
-        _log_changes(local, ctx.obj['config'], before)
+        local.export_state()
+        gru_app.log_changes(local, ctx.obj['config'], before)
         show_warnings(ctx)
 
 
@@ -745,7 +666,7 @@ def add_lock(ctx: click.Context, addon: str | None) -> None:
         return
 
     found.locked = True
-    _export_addon_state(local)
+    local.export_state()
     click.echo(f'{TermDisplay._render_eso_text(found.title)} is now version locked.')
     show_warnings(ctx)
 
@@ -763,7 +684,7 @@ def remove_lock(ctx: click.Context, addon: str | None) -> None:
         return
 
     found.locked = False
-    _export_addon_state(local)
+    local.export_state()
     click.echo(f'{TermDisplay._render_eso_text(found.title)} is no longer version locked.')
     show_warnings(ctx)
 
@@ -853,11 +774,11 @@ def export(ctx: click.Context, recurse: bool = False, output_path: pathlib.Path 
         return
 
     if output_path is None:
-        _write_addons_csv(local, sys.stdout, recurse)
+        local.write_csv(sys.stdout, recurse)
         sys.stdout.flush()  # unlike click.echo(), a raw sys.stdout write isn't auto-flushed
     else:
         with output_path.open('w', newline='') as out:
-            count = _write_addons_csv(local, out, recurse)
+            count = local.write_csv(out, recurse)
         click.echo(f'All {count} addon(s) exported to:\n{output_path.resolve()}')
     show_warnings(ctx)
 

@@ -13,6 +13,7 @@ import pytest
 from click.testing import CliRunner
 
 import gru.cli as cli_mod
+import gru.app as app_mod
 from gru.cli import main, TermDisplay
 from gru.config import load_config
 
@@ -44,14 +45,11 @@ def cli_config(tmp_path, monkeypatch):
     """A config file pointing at a real, empty addons folder. user_config() is redirected
     into tmp_path so commands that write metadata (addons.csv, patches) never touch the
     real user config dir, even though build_app() itself isn't stubbed here."""
-    import gru.install as install_mod
-
     addons_root = tmp_path / 'AddOns'
     addons_root.mkdir()
     config_file = tmp_path / 'gru.ini'
     config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
-    monkeypatch.setattr(cli_mod, 'user_config', lambda *parts: _touch_config_path(tmp_path, *parts))
-    monkeypatch.setattr(install_mod, 'user_config', lambda *parts: _touch_config_path(tmp_path, *parts))
+    _patch_user_config(monkeypatch, tmp_path)
     return config_file
 
 
@@ -60,103 +58,18 @@ def invoke(config_file, args, input=None):
     return runner.invoke(main, ['--config', str(config_file), *args], input=input)
 
 
-class TestAppendChangeLog:
-    """_append_change_log() keeps at most max_lines data rows, oldest evicted first."""
+def _patch_user_config(monkeypatch, tmp_path: pathlib.Path) -> None:
+    """Redirect user_config() to tmp_path/config across every module with its own imported
+    reference (cli, install, app) -- state-writing code (addons.csv, changes.csv, patches) is
+    reached via whichever of them owns it, and a test must see all of it land in one place."""
+    import gru.install as install_mod
+    import gru.app as app_mod
 
-    def test_writes_header_and_row(self, tmp_path):
-        path = tmp_path / 'changes.csv'
-        cli_mod._append_change_log(path, ['MyAddon', '1.0', 'link', 'date', 'none'], 100)
+    def fake(*parts: str) -> pathlib.Path:
+        return _touch_config_path(tmp_path, *parts)
 
-        rows = list(csv.reader(path.open()))
-        assert rows[0] == ['dir', 'version', 'link', 'date', 'previous_state']
-        assert rows[1] == ['MyAddon', '1.0', 'link', 'date', 'none']
-
-    def test_rotates_out_oldest_row_beyond_max_lines(self, tmp_path):
-        path = tmp_path / 'changes.csv'
-        for i in range(5):
-            cli_mod._append_change_log(path, [f'Addon{i}', '1.0', '', 'date', 'none'], 3)
-
-        rows = list(csv.reader(path.open()))
-        assert [row[0] for row in rows[1:]] == ['Addon2', 'Addon3', 'Addon4']
-
-    def test_zero_max_lines_disables_logging(self, tmp_path):
-        path = tmp_path / 'changes.csv'
-        cli_mod._append_change_log(path, ['MyAddon', '1.0', '', 'date', 'none'], 0)
-
-        rows = list(csv.reader(path.open()))
-        assert rows == [['dir', 'version', 'link', 'date', 'previous_state']]
-
-
-class TestLogChanges:
-    """_log_changes() diffs before/after install state and appends one row per addon whose
-    version differs -- NOT_INSTALLED is the sentinel for a fresh install or a removal."""
-
-    def _config(self) -> configparser.ConfigParser:
-        config = configparser.ConfigParser()
-        config.add_section('ESO.addons')
-        config.set('ESO.addons', 'log_lines', '100')
-        return config
-
-    def _changes(self, tmp_path: pathlib.Path) -> list[list[str]]:
-        with (tmp_path / 'config' / 'ESO' / 'changes.csv').open() as f:
-            return list(csv.reader(f))
-
-    def test_new_install_logs_sentinel_as_previous_state(self, addon_root, folder, monkeypatch, tmp_path):
-        monkeypatch.setattr(cli_mod, 'user_config', lambda *parts: _touch_config_path(tmp_path, *parts))
-        before = cli_mod._addon_snapshot(folder)
-
-        installed = make_installed(addon_root, 'MyAddon', Version='1.0')
-        upstream = make_addon_info(id_=1, title='MyAddon', version='1.0', directories=['MyAddon'])
-        installed.link(upstream)
-        folder._installed = {installed.folder: installed}
-
-        cli_mod._log_changes(folder, self._config(), before)
-
-        rows = self._changes(tmp_path)
-        assert rows[1][:3] == ['MyAddon', '1.0', upstream.metadata['link']]
-        assert rows[1][4] == cli_mod.NOT_INSTALLED
-
-    def test_removal_logs_sentinel_as_new_version(self, addon_root, folder, monkeypatch, tmp_path):
-        monkeypatch.setattr(cli_mod, 'user_config', lambda *parts: _touch_config_path(tmp_path, *parts))
-        installed = make_installed(addon_root, 'MyAddon', Version='1.0')
-        upstream = make_addon_info(id_=1, title='MyAddon', version='1.0', directories=['MyAddon'])
-        installed.link(upstream)
-        folder._installed = {installed.folder: installed}
-        before = cli_mod._addon_snapshot(folder)
-
-        folder._installed = {}
-
-        cli_mod._log_changes(folder, self._config(), before)
-
-        rows = self._changes(tmp_path)
-        assert rows[1][:3] == ['MyAddon', cli_mod.NOT_INSTALLED, upstream.metadata['link']]
-        assert rows[1][4] == '1.0'
-
-    def test_update_logs_both_real_versions(self, addon_root, folder, monkeypatch, tmp_path):
-        monkeypatch.setattr(cli_mod, 'user_config', lambda *parts: _touch_config_path(tmp_path, *parts))
-        installed = make_installed(addon_root, 'MyAddon', Version='1.0')
-        upstream = make_addon_info(id_=1, title='MyAddon', version='1.0', directories=['MyAddon'])
-        installed.link(upstream)
-        folder._installed = {installed.folder: installed}
-        before = cli_mod._addon_snapshot(folder)
-
-        installed.version = '2.0'
-
-        cli_mod._log_changes(folder, self._config(), before)
-
-        rows = self._changes(tmp_path)
-        assert rows[1][:3] == ['MyAddon', '2.0', upstream.metadata['link']]
-        assert rows[1][4] == '1.0'
-
-    def test_no_change_writes_nothing(self, addon_root, folder, monkeypatch, tmp_path):
-        monkeypatch.setattr(cli_mod, 'user_config', lambda *parts: _touch_config_path(tmp_path, *parts))
-        installed = make_installed(addon_root, 'MyAddon', Version='1.0')
-        folder._installed = {installed.folder: installed}
-        before = cli_mod._addon_snapshot(folder)
-
-        cli_mod._log_changes(folder, self._config(), before)
-
-        assert not (tmp_path / 'config' / 'ESO' / 'changes.csv').exists()
+    for mod in (cli_mod, install_mod, app_mod):
+        monkeypatch.setattr(mod, 'user_config', fake)
 
 
 class TestResolveAddonsRoot:
@@ -269,11 +182,11 @@ class TestNoNetworkSmokeTests:
         `input=` is given, so if this did hit click.prompt() it would fail rather than hang."""
         config_file = tmp_path / 'gru.ini'  # deliberately no [ESO.addons] root at all
 
-        result = invoke(config_file, ['config', 'get', 'app.open_in_browser'])
+        result = invoke(config_file, ['config', 'get', 'addons.optional'])
         assert result.exit_code == 0
         assert result.output.strip() == 'off'
 
-        result = invoke(config_file, ['config', 'set', 'app.open_in_browser', 'on'])
+        result = invoke(config_file, ['config', 'set', 'addons.optional', 'on'])
         assert result.exit_code == 0
         assert 'root = \n' in config_file.read_text()  # stayed empty -- never resolved/prompted for
 
@@ -288,7 +201,7 @@ class TestWithRealAddons:
         addons_root.mkdir()
         config_file = tmp_path / 'gru.ini'
         config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
-        monkeypatch.setattr(cli_mod, 'user_config', lambda *parts: _touch_config_path(tmp_path, *parts))
+        _patch_user_config(monkeypatch, tmp_path)
 
         def fake_build_app(game, cfg_file):
             config = load_config(cfg_file)
@@ -321,7 +234,7 @@ class TestWithRealAddons:
         # changes.csv records the removal, with the sentinel as the new "version"
         changes = list(csv.reader((cli_app['config_dir'] / 'ESO' / 'changes.csv').open()))
         assert changes[1][0] == 'MyAddon'
-        assert changes[1][1] == cli_mod.NOT_INSTALLED
+        assert changes[1][1] == app_mod.NOT_INSTALLED
         assert changes[1][4] == '1.0'
 
     def test_remove_no_match_falls_through_without_crashing(self, cli_app):
@@ -455,7 +368,7 @@ class TestCleanupCommand:
         addons_root.mkdir()
         config_file = tmp_path / 'gru.ini'
         config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
-        monkeypatch.setattr(cli_mod, 'user_config', lambda *parts: _touch_config_path(tmp_path, *parts))
+        _patch_user_config(monkeypatch, tmp_path)
 
         make_installed(addons_root, 'Parent', Title='Parent', DependsOn='LibShared>=1')
         make_installed(addons_root / 'Parent', 'LibShared', Title='LibShared', IsLibrary='true', Version='2.0')
@@ -498,7 +411,7 @@ class TestCleanupCommand:
 
         changes = list(csv.reader((cli_app['config_dir'] / 'ESO' / 'changes.csv').open()))
         assert changes[1][0] == 'LibShared'
-        assert changes[1][1] == cli_mod.NOT_INSTALLED
+        assert changes[1][1] == app_mod.NOT_INSTALLED
         assert changes[1][4] == '1.0'
 
     def test_without_dedupe_flag_duplicate_is_left_alone(self, cli_app):
@@ -540,7 +453,7 @@ class TestExportCommand:
         addons_root.mkdir()
         config_file = tmp_path / 'gru.ini'
         config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
-        monkeypatch.setattr(cli_mod, 'user_config', lambda *parts: _touch_config_path(tmp_path, *parts))
+        _patch_user_config(monkeypatch, tmp_path)
 
         make_installed(addons_root, 'MyAddon', Version='3')
         make_installed(addons_root, 'LocalOnly', Version='1')
@@ -857,7 +770,7 @@ class TestDiffCommand:
         monkeypatch.setattr(install_mod.requests, 'get',
                             lambda url, stream=True, allow_redirects=True: FakeResponse(content=zip_bytes))
         monkeypatch.setattr(install_mod, 'user_cache', lambda *parts: _touch_cache_path(tmp_path, *parts))
-        monkeypatch.setattr(cli_mod, 'user_config', lambda *parts: _touch_config_path(tmp_path, *parts))
+        _patch_user_config(monkeypatch, tmp_path)
 
         def fake_build_app(game, cfg_file):
             config = load_config(cfg_file)
@@ -946,8 +859,7 @@ class TestUpdateCommand:
         monkeypatch.setattr(install_mod.requests, 'get',
                             lambda url, stream=True, allow_redirects=True: FakeResponse(content=zip_bytes))
         monkeypatch.setattr(install_mod, 'user_cache', lambda *parts: _touch_cache_path(tmp_path, *parts))
-        monkeypatch.setattr(install_mod, 'user_config', lambda *parts: _touch_config_path(tmp_path, *parts))
-        monkeypatch.setattr(cli_mod, 'user_config', lambda *parts: _touch_config_path(tmp_path, *parts))
+        _patch_user_config(monkeypatch, tmp_path)
 
         def fake_build_app(game, cfg_file):
             config = load_config(cfg_file)
@@ -994,7 +906,7 @@ class TestAddonStateSurvivesCrash:
         addons_root.mkdir()
         config_file = tmp_path / 'gru.ini'
         config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
-        monkeypatch.setattr(cli_mod, 'user_config', lambda *parts: _touch_config_path(tmp_path, *parts))
+        _patch_user_config(monkeypatch, tmp_path)
 
         make_installed(addons_root, 'MyAddon', Version='1.0')
 
@@ -1069,7 +981,7 @@ class TestPatchCommand:
         addons_root.mkdir()
         config_file = tmp_path / 'gru.ini'
         config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
-        monkeypatch.setattr(cli_mod, 'user_config', lambda *parts: _touch_config_path(tmp_path, *parts))
+        _patch_user_config(monkeypatch, tmp_path)
 
         installed = make_installed(addons_root, 'MyAddon', Title='MyAddon')
         (installed.folder / 'Data.lua').write_text('old = 2\n')
@@ -1197,7 +1109,7 @@ class TestGetCommand:
         addons_root.mkdir()
         config_file = tmp_path / 'gru.ini'
         config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
-        monkeypatch.setattr(cli_mod, 'user_config', lambda *parts: _touch_config_path(tmp_path, *parts))
+        _patch_user_config(monkeypatch, tmp_path)
         return {'addons_root': addons_root, 'config_file': config_file, 'config_dir': tmp_path / 'config'}
 
     def _wire_build_app(self, monkeypatch, addons_root, api):
@@ -1299,7 +1211,7 @@ class TestGetCommand:
 
         rows = list(csv.reader((cli_app['config_dir'] / 'ESO' / 'changes.csv').open()))
         assert rows[1][:2] == ['MyAddon', '1.0']
-        assert rows[1][4] == cli_mod.NOT_INSTALLED
+        assert rows[1][4] == app_mod.NOT_INSTALLED
 
 
 class TestFolderSearchTiebreak:

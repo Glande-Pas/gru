@@ -110,23 +110,57 @@ class Folder:
             shutil.rmtree(temp_location)
 
     def scan(self, api: gru.api.API | None = None) -> None:
-        self._installed = self._scan(self.root, api, links=self._read_addon_links())
+        links, locked = self._read_csv_hints()
+        self._installed = self._scan(self.root, api, links=links, locked=locked)
 
-    def _read_addon_links(self) -> dict[str, str]:
-        """ dir -> link from the last addons.csv snapshot. Only used to break a tie when a folder
-        name matches several different online addons (see API.dir()) -- the folder scan itself has
-        no way to know which of them a given install actually came from. """
+    def _read_csv_hints(self) -> tuple[dict[str, str], set[str]]:
+        """ dir -> link, and the set of locked dirs, from the last addons.csv snapshot -- the
+        folder scan itself has no way to derive either: `links` only breaks a tie when a folder
+        name matches several different online addons (see API.dir()), `locked` restores the
+        .locked flag InstalledAddon otherwise always starts False with. Both matched by dir, same
+        as every other addons.csv column, so a dir shared by several folders gets the same
+        link/lock state for all of them. """
         path = user_config(self.game, 'addons.csv')
         if not path.exists():
-            return {}
+            return {}, set()
         with path.open(newline='') as f:
-            return {row['dir']: row['link'] for row in csv.DictReader(f) if row.get('link')}
+            rows = list(csv.DictReader(f))
+        links = {row['dir']: row['link'] for row in rows if row.get('link')}
+        locked = {row['dir'] for row in rows if row.get('locked')}
+        return links, locked
 
-    def _scan(self, root: pathlib.Path, api: gru.api.API | None = None,
-              links: dict[str, str] | None = None) -> dict[pathlib.Path, gru.addon.InstalledAddon]:
+    def snapshot(self) -> dict[pathlib.Path, tuple[str, str, str]]:
+        """ folder -> (dir, version, link) for every currently-installed addon. Keyed by folder,
+        not dir: two folders can share the same dir name (a standalone/bundled duplicate pair),
+        and a dir-keyed dict would silently drop one of them. """
+        return {addon.folder: (addon.dir, addon.version,
+                               addon.infos.metadata['link'] if addon.infos is not None else '')
+                for addon in self.installed}
+
+    def write_csv(self, out: typing.IO, recurse: bool = False) -> int:
+        """ Write dir/version/link/locked rows for installed addons to `out`. Returns the row count. """
+        writer = csv.writer(out)
+        writer.writerow(['dir', 'version', 'link', 'locked'])
+        count = 0
+        for addon in self.installed:
+            if not (recurse or addon.parent is None):
+                continue
+            link = addon.infos.metadata['link'] if addon.infos is not None else ''
+            writer.writerow([addon.dir, addon.version, link, 'locked' if addon.locked else ''])
+            count += 1
+        return count
+
+    def export_state(self) -> None:
+        """ Keep <config>/<game>/addons.csv in sync with the current install state. """
+        with user_config(self.game, 'addons.csv').open('w', newline='') as out:
+            self.write_csv(out)
+
+    def _scan(self, root: pathlib.Path, api: gru.api.API | None = None, links: dict[str, str] | None = None,
+              locked: set[str] | None = None) -> dict[pathlib.Path, gru.addon.InstalledAddon]:
         """ List the root path """
         results: dict[pathlib.Path, gru.addon.InstalledAddon] = {}
         links = links or {}
+        locked = locked or set()
 
         # Additional housekeeping for partial parsing
         if root != self.root:
@@ -168,6 +202,7 @@ class Folder:
                 warnings.warn(f'Skipping addon at {path.relative_to(self.root)} due to {type(err).__name__} {err}')
                 continue
 
+            addon.locked = path.name in locked
             try:
                 if api:
                     addon.link(api.dir(path.name, link=links.get(path.name)))
