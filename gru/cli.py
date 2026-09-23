@@ -18,6 +18,7 @@ import csv
 import sys
 import click_repl
 import prompt_toolkit.history as prompt_history
+import urllib.parse
 from collections.abc import Iterable
 
 from .config import load_config, save_config, user_cache, user_config, display_config, update_config
@@ -792,10 +793,14 @@ def diff(ctx: click.Context, addon: str | None, url: str | None = None) -> None:
         return
 
     if not url and found.infos.version != found.version:
-        click.echo('Addon is out of date!  Can not fetch unmodified source automatically.')
-        click.echo()
-        url = click.prompt(f'Please manually specify {found.version} download url',
-                           prompt_suffix=':\n>> ', type=str)
+        archived = next((v for v in api.previous_versions(found.infos.id) if v.version == found.version), None)
+        if archived is not None:
+            url = urllib.parse.urljoin(api.info_url_template, archived.download_url)
+        else:
+            click.echo(f'Failed to fetch unmodified source for version {found.version} automatically.')
+            click.echo()
+            url = click.prompt(f'Please manually specify {found.version} download url',
+                               prompt_suffix=':\n>> ', type=str)
 
     result_path = user_config(local.game, f'{found.dir}.patch')
 

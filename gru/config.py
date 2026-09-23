@@ -36,7 +36,6 @@ filedetails = filedetails/{id}.json
 
 [ESO.links]
 info = https://www.esoui.com/downloads/info{id}.html
-#download = https://cdn.esoui.com/downloads/file{id}/
 download = https://cdn.esoui.com/downloads/getfile.php?id={id}
 
 [ESO.addons]

@@ -13,8 +13,10 @@ import functools
 import collections
 import collections.abc
 import configparser
+import html.parser
+import re
 import typing
-from typing import TypeVar
+from typing import TypeVar, NamedTuple
 from collections.abc import Iterable, Iterator, Mapping
 
 from . import config as gruconfig
@@ -118,6 +120,86 @@ def _lookup(source: Iterable[T], attr: str, match: str | int | None) -> T:
         raise ValueError(f'{attr} {match!r} not found in list')
 
 
+class PreviousVersion(NamedTuple):
+    version: str
+    size: str
+    uploader: str | None
+    date: str
+    download_url: str
+    aid: int
+
+
+def _extract_aid(href: str) -> int | None:
+    match = re.search(r'[?&]aid=(\d+)', href)
+    return int(match.group(1)) if match else None
+
+
+class _ArchivedFilesParser(html.parser.HTMLParser):
+    """ Extracts the "Archived Files" table from an esoui.com addon info page -- the download link for a previous
+    version's `aid` isn't exposed anywhere in the JSON API.
+
+    div#other_t holds several tables, told apart only by a preceding heading div. Row/cell boundaries are matched by
+    literal tag name (<table>/<tr>/<td> are always closed in practice).
+
+    One row per <tr>, one slot per <td> (kept even if empty, so a blank cell can never shift
+    the following cells out of position): [file link href, version, size, uploader, date]. """
+
+    HEADING = 'Archived Files'
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.rows: list[list[str | None]] = []
+        self._reading_heading = False
+        self._found_heading = False
+        self._in_table = False
+        self._done = False
+        self._in_row = False
+        self._in_cell = False
+        self._in_link = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if self._done:
+            return
+        attrs_ = dict(attrs)
+
+        match tag:
+            case 'div' if 'title' in (attrs_.get('class') or '').split():
+                self._reading_heading = True
+            case 'table' if self._found_heading and not self._in_table:
+                self._in_table = True
+            case 'tr' if self._in_table:
+                self._in_row = True
+                self.rows.append([])
+            case 'td' if self._in_row:
+                self._in_cell = True
+                self.rows[-1].append(None)
+            case 'a' if self._in_cell and not self._in_link:
+                self._in_link = True
+                self.rows[-1][-1] = attrs_.get('href')
+
+    def handle_endtag(self, tag: str) -> None:
+        match tag:
+            case 'table' if self._in_table:
+                self._in_table = False
+                self._done = self._found_heading  # got the table we wanted, ignore the rest
+            case 'tr':
+                self._in_row = False
+            case 'td':
+                self._in_cell = False
+            case 'a':
+                self._in_link = False
+
+    def handle_data(self, data: str) -> None:
+        if self._reading_heading:
+            self._reading_heading = False
+            if data.strip().startswith(self.HEADING):
+                self._found_heading = True
+        elif self._in_cell and not self._in_link and self.rows[-1][-1] is None:
+            text = data.strip()
+            if text:
+                self.rows[-1][-1] = text
+
+
 class API:
     # Provided by subclasses (ESOUIv3/ESOUIv4): game/version as class attributes,
     # addons/categories as cached_property. TYPE_CHECKING-only so it documents the type for
@@ -135,6 +217,7 @@ class API:
         endpoint = config.get('api', 'endpoint')
         gamepaths = config.items(f'{self.game}UIv{self.version}.paths')
         self.pages = {key: endpoint.format(version=self.version, game=self.game, path=path) for key, path in gamepaths}
+        self.info_url_template: str = config.get(f'{self.game}.links', 'info')
         self.session = requests_cache.CachedSession(gruconfig.user_cache('api'),
                                                     expire_after=datetime.timedelta(hours=1))
 
@@ -156,6 +239,41 @@ class API:
         except requests.RequestException as err:
             warnings.warn(f'Error loading {url!r}: {err}')
         return fallback
+
+    def _load_html(self, url: str) -> str:
+        """ Load a page and return its decoded text. Decoding follows the server's declared
+        charset (requests reads it from the Content-Type header into response.encoding), so
+        this must not hardcode an encoding of its own. """
+        try:
+            response = self.session.get(url)
+            response.raise_for_status()
+            return response.text
+        except requests.HTTPError as err:
+            status = err.response.status_code if err.response is not None else 'unknown'
+            warnings.warn(f'HTTP error while loading {url!r} status code {status}: {err}')
+        except (requests.ConnectionError, requests.Timeout) as err:
+            msg = _exception_root_cause(err)
+            warnings.warn(f'Connection error while loading {url!r}: {msg}')
+        except requests.RequestException as err:
+            warnings.warn(f'Error loading {url!r}: {err}')
+        return ''
+
+    def previous_versions(self, id_: int) -> list[PreviousVersion]:
+        """ Archived (previously released) versions of an addon, scraped from its info page --
+        the download link for a specific old version (its `aid`) isn't exposed by the JSON API. """
+        parser = _ArchivedFilesParser()
+        parser.feed(self._load_html(self.info_url_template.format(id=id_)))
+
+        versions = []
+        for row in parser.rows:
+            if len(row) != 5:
+                warnings.warn(f'Unexpected archived-files row shape for addon {id_}: {row!r}')
+                continue
+            href, version, size, uploader, date = row
+            if href is None or (aid := _extract_aid(href)) is None:
+                continue  # not a data row (e.g. the header) or missing its download link
+            versions.append(PreviousVersion(version or '', size or '', uploader, date or '', href, aid))
+        return versions
 
     @classmethod
     def reset(cls) -> None:
