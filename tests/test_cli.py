@@ -506,6 +506,84 @@ class TestUpdateCommand:
         assert 'Nothing to do' in result.output
 
 
+class TestAddonStateSurvivesCrash:
+    """addons.csv (and pending warnings) must still be written/shown even when get/remove/update
+    raise partway through -- both live in a finally: block precisely so a crash doesn't leave
+    addons.csv stale. Regression guard: Click's own result_callback (which also calls
+    show_warnings()) does NOT run when the command raises, so there is no safety net above this."""
+
+    @pytest.fixture
+    def cli_app(self, monkeypatch, tmp_path):
+        addons_root = tmp_path / 'AddOns'
+        addons_root.mkdir()
+        config_file = tmp_path / 'gru.ini'
+        config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
+        monkeypatch.setattr(cli_mod, 'user_config', lambda *parts: _touch_config_path(tmp_path, *parts))
+
+        make_installed(addons_root, 'MyAddon', Version='1.0')
+
+        def fake_build_app(game, cfg_file):
+            config = load_config(cfg_file)
+            api = StubAPI()
+            local = make_folder(addons_root)
+            local.scan(api)  # pyright: ignore[reportArgumentType] -- stub API, not a real gru.api.API
+            return config, api, local
+
+        monkeypatch.setattr(cli_mod, 'build_app', fake_build_app)
+        return {'config_file': config_file, 'config_dir': tmp_path / 'config'}
+
+    def _addons_csv_rows(self, cli_app):
+        with (cli_app['config_dir'] / 'ESO' / 'addons.csv').open() as f:
+            return [row[0] for row in csv.reader(f)][1:]
+
+    def test_update_crash_still_writes_addons_csv(self, monkeypatch, cli_app):
+        def boom(self, *a, **kw):
+            raise RuntimeError('simulated crash')
+        monkeypatch.setattr(cli_mod.Folder, 'update', boom)
+
+        result = invoke(cli_app['config_file'], ['update'])
+        assert result.exit_code != 0
+        assert isinstance(result.exception, RuntimeError)
+        assert self._addons_csv_rows(cli_app) == ['MyAddon']
+
+    def test_remove_crash_still_writes_addons_csv(self, monkeypatch, cli_app):
+        def boom(self, *a, **kw):
+            raise RuntimeError('simulated crash')
+        monkeypatch.setattr(cli_mod.Folder, 'remove', boom)
+
+        result = invoke(cli_app['config_file'], ['remove', 'MyAddon'], input='y\n')
+        assert result.exit_code != 0
+        assert isinstance(result.exception, RuntimeError)
+        assert self._addons_csv_rows(cli_app) == ['MyAddon']
+
+    def test_get_crash_still_writes_addons_csv(self, monkeypatch, cli_app):
+        upstream = make_addon_info(id_=1, title='OtherAddon', directories=['OtherAddon'])
+
+        class FindableApi(StubAPI):
+            def find(self, val, local):
+                return [upstream]
+
+        addons_root = cli_app['config_dir'].parent / 'AddOns'
+
+        def fake_build_app(game, cfg_file):
+            config = load_config(cfg_file)
+            api = FindableApi()
+            local = make_folder(addons_root)
+            local.scan(api)  # pyright: ignore[reportArgumentType] -- stub API, not a real gru.api.API
+            return config, api, local
+
+        monkeypatch.setattr(cli_mod, 'build_app', fake_build_app)
+
+        def boom(self, *a, **kw):
+            raise RuntimeError('simulated crash')
+        monkeypatch.setattr(cli_mod.Folder, 'install', boom)
+
+        result = invoke(cli_app['config_file'], ['get', 'OtherAddon', '--yes'])
+        assert result.exit_code != 0
+        assert isinstance(result.exception, RuntimeError)
+        assert self._addons_csv_rows(cli_app) == ['MyAddon']
+
+
 class TestPatchCommand:
     """gru patch: addon_patch_file() applying a real, on-disk .patch file end-to-end."""
 

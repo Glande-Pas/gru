@@ -443,62 +443,64 @@ def get(ctx: click.Context, addon: list[str], auto_deps: bool = True, opt: bool 
 
     addon_list = addon or [click.prompt('Addon to install', prompt_suffix=':\n>> ')]
 
-    for addon_spec in addon_list:
+    try:
+        for addon_spec in addon_list:
 
-        matches = api.find(addon_spec, local)
-        if not matches:
-            click.echo('No corresponding addon found')
-            click.echo()
-            if batch:
-                warnings.warn(f'Skipped install of unmatched addon {addon_spec}')
-            continue
-
-        picked: gru.addon.AddonInfo | gru.addon.InstalledAddon | None
-        if not batch:
-            picked = _prompt_addon(matches, 'Confirm installation?')
-        elif len(matches) == 1:
-            picked = matches[0]
-        else:
-            click.echo(f'Ambiguous addon specificiation {addon_spec}, skipping')
-            warnings.warn(f'Skipped install of ambiguous addon {addon_spec}')
-            picked = None
-
-        if picked is None:
-            continue
-
-        if not isinstance(picked, AddonInfo):
-            # Matched only by local directory name, not present in the online catalog --
-            # nothing to download.
-            click.echo(f'{addon_spec} is already installed locally and not found online, skipping')
-            continue
-        found = picked
-
-        # Try to reuse an existing install dir
-        install_path = None
-        try:
-            installed_addon = next(ad for ad in local.id(found.id) if ad.parent is None)
-            if batch or _confirm(f'Addon found at {installed_addon.folder}, update?'):
-                install_path = installed_addon.folder
-            else:
-                click.echo('Nothing to do.')
+            matches = api.find(addon_spec, local)
+            if not matches:
+                click.echo('No corresponding addon found')
+                click.echo()
+                if batch:
+                    warnings.warn(f'Skipped install of unmatched addon {addon_spec}')
                 continue
-        except StopIteration:
-            pass
 
-        try:
-            result = local.install(found, api, _progress, path=install_path, deps=auto_deps, opt=opt)
-        except KeyError as exc:
-            click.echo(f'Failed installing {addon_spec}: {type(exc).__name__} {exc}')
+            picked: gru.addon.AddonInfo | gru.addon.InstalledAddon | None
             if not batch:
-                break
-            continue
+                picked = _prompt_addon(matches, 'Confirm installation?')
+            elif len(matches) == 1:
+                picked = matches[0]
+            else:
+                click.echo(f'Ambiguous addon specificiation {addon_spec}, skipping')
+                warnings.warn(f'Skipped install of ambiguous addon {addon_spec}')
+                picked = None
 
-        if result is None:
-            click.echo(f'Done installing {TermDisplay._render_eso_text(found.title)}')
-        else:
-            click.echo(f'Done installing {TermDisplay._render_eso_text(found.title)} and {result} dependence(s)')
-    _export_addon_state(local)
-    show_warnings(ctx)
+            if picked is None:
+                continue
+
+            if not isinstance(picked, AddonInfo):
+                # Matched only by local directory name, not present in the online catalog --
+                # nothing to download.
+                click.echo(f'{addon_spec} is already installed locally and not found online, skipping')
+                continue
+            found = picked
+
+            # Try to reuse an existing install dir
+            install_path = None
+            try:
+                installed_addon = next(ad for ad in local.id(found.id) if ad.parent is None)
+                if batch or _confirm(f'Addon found at {installed_addon.folder}, update?'):
+                    install_path = installed_addon.folder
+                else:
+                    click.echo('Nothing to do.')
+                    continue
+            except StopIteration:
+                pass
+
+            try:
+                result = local.install(found, api, _progress, path=install_path, deps=auto_deps, opt=opt)
+            except KeyError as exc:
+                click.echo(f'Failed installing {addon_spec}: {type(exc).__name__} {exc}')
+                if not batch:
+                    break
+                continue
+
+            if result is None:
+                click.echo(f'Done installing {TermDisplay._render_eso_text(found.title)}')
+            else:
+                click.echo(f'Done installing {TermDisplay._render_eso_text(found.title)} and {result} dependence(s)')
+    finally:
+        _export_addon_state(local)
+        show_warnings(ctx)
 
 
 @main.command()
@@ -524,15 +526,17 @@ def remove(ctx: click.Context, addon: str | None, clean_deps: bool = False, opt:
         show_warnings(ctx)
         return
 
-    nremoved = local.remove(installed_addon, deps=clean_deps, opt=opt)
+    try:
+        nremoved = local.remove(installed_addon, deps=clean_deps, opt=opt)
 
-    title = TermDisplay._render_eso_text(installed_addon.title)
-    if not clean_deps:
-        click.echo(f'Removed addon {title}.')
-    else:
-        click.echo(f'Removed addon {title} and {nremoved} unused dependence(s).')
-    _export_addon_state(local)
-    show_warnings(ctx)
+        title = TermDisplay._render_eso_text(installed_addon.title)
+        if not clean_deps:
+            click.echo(f'Removed addon {title}.')
+        else:
+            click.echo(f'Removed addon {title} and {nremoved} unused dependence(s).')
+    finally:
+        _export_addon_state(local)
+        show_warnings(ctx)
 
 
 @main.command()
@@ -550,16 +554,18 @@ def update(ctx: click.Context, auto_deps: bool, opt: bool | None, patch: bool | 
     if patch is None:
         patch = get_config_bool(ctx, '{game}.addons.patch_updates')
 
-    updates, added = local.update(api, _progress, opt=opt, deps=auto_deps, patch=patch)
+    try:
+        updates, added = local.update(api, _progress, opt=opt, deps=auto_deps, patch=patch)
 
-    if updates + added == 0:
-        click.echo('Nothing to do')
-    elif auto_deps:
-        click.echo(f'Updated {updates} addon(s) and installed {added} dependence(s)')
-    else:
-        click.echo(f'Updated {updates} addon(s)')
-    _export_addon_state(local)
-    show_warnings(ctx)
+        if updates + added == 0:
+            click.echo('Nothing to do')
+        elif auto_deps:
+            click.echo(f'Updated {updates} addon(s) and installed {added} dependence(s)')
+        else:
+            click.echo(f'Updated {updates} addon(s)')
+    finally:
+        _export_addon_state(local)
+        show_warnings(ctx)
 
 
 @main.command(help='Remove unused dependences')
