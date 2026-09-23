@@ -3,6 +3,8 @@
 main() builds its API/Folder through cli.build_app(), which TestWithRealAddons monkeypatches
 to a stub -- letting these commands run against real installed addons with zero network."""
 
+import csv
+import io
 import pathlib
 
 import click
@@ -37,12 +39,18 @@ class TestRenderEsoText:
 
 
 @pytest.fixture
-def cli_config(tmp_path):
-    """A config file pointing at a real, empty addons folder."""
+def cli_config(tmp_path, monkeypatch):
+    """A config file pointing at a real, empty addons folder. user_config() is redirected
+    into tmp_path so commands that write metadata (addons.csv, patches) never touch the
+    real user config dir, even though build_app() itself isn't stubbed here."""
+    import gru.install as install_mod
+
     addons_root = tmp_path / 'AddOns'
     addons_root.mkdir()
     config_file = tmp_path / 'gru.ini'
     config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
+    monkeypatch.setattr(cli_mod, 'user_config', lambda *parts: _touch_config_path(tmp_path, *parts))
+    monkeypatch.setattr(install_mod, 'user_config', lambda *parts: _touch_config_path(tmp_path, *parts))
     return config_file
 
 
@@ -116,10 +124,15 @@ class TestWithRealAddons:
 
     def test_remove_by_exact_name(self, cli_app):
         make_installed(cli_app['addons_root'], 'MyAddon', Title='My Addon')
+        make_installed(cli_app['addons_root'], 'OtherAddon', Title='Other Addon')
         result = invoke(cli_app['config_file'], ['remove', 'my addon', '--no-clean-deps'], input='y\n')
         assert result.exit_code == 0
         assert 'Removed addon My Addon.' in result.output
         assert not (cli_app['addons_root'] / 'MyAddon').exists()
+
+        # addons.csv is kept in sync after remove -- the removed addon is gone from it
+        rows = list(csv.reader((cli_app['config_dir'] / 'ESO' / 'addons.csv').open()))
+        assert [row[0] for row in rows[1:]] == ['OtherAddon']
 
     def test_remove_no_match_falls_through_without_crashing(self, cli_app):
         """Regression guard: used to crash reaching Folder.search() (dict_values.values())."""
@@ -127,13 +140,71 @@ class TestWithRealAddons:
         result = invoke(cli_app['config_file'], ['remove', 'totally-unrelated'])
         assert result.exit_code == 0
         assert 'No corresponding addon found.' in result.output
+        # Nothing was removed -- addons.csv must not have been (re)written
+        assert not (cli_app['config_dir'] / 'ESO' / 'addons.csv').exists()
 
-    def test_export_writes_installed_addons(self, cli_app):
-        make_installed(cli_app['addons_root'], 'MyAddon', Version='3')
+
+class TestExportCommand:
+    """gru export: CSV to stdout by default, or to a file with --output/-o; includes the
+    online info-page link as an extra column when the addon is matched, blank otherwise."""
+
+    @pytest.fixture
+    def cli_app(self, monkeypatch, tmp_path):
+        addons_root = tmp_path / 'AddOns'
+        addons_root.mkdir()
+        config_file = tmp_path / 'gru.ini'
+        config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
+        monkeypatch.setattr(cli_mod, 'user_config', lambda *parts: _touch_config_path(tmp_path, *parts))
+
+        make_installed(addons_root, 'MyAddon', Version='3')
+        make_installed(addons_root, 'LocalOnly', Version='1')
+        upstream = make_addon_info(id_=1, title='MyAddon', version='3', directories=['MyAddon'])
+
+        class LinkableApi(StubAPI):
+            def dir(self, name):  # pyright: ignore[reportIncompatibleMethodOverride] -- real AddonInfo, not StubAddon
+                if name == 'MyAddon':
+                    return upstream
+                raise FileNotFoundError(name)
+
+        def fake_build_app(game, cfg_file):
+            config = load_config(cfg_file)
+            api = LinkableApi()
+            local = make_folder(addons_root)
+            local.scan(api)  # pyright: ignore[reportArgumentType] -- stub API, not a real gru.api.API
+            return config, api, local
+
+        monkeypatch.setattr(cli_mod, 'build_app', fake_build_app)
+        return {'config_file': config_file, 'upstream': upstream}
+
+    def test_export_prints_csv_to_stdout_by_default(self, cli_app):
         result = invoke(cli_app['config_file'], ['export'])
         assert result.exit_code == 0
-        exported = (cli_app['config_dir'] / 'ESO' / 'addons.txt').read_text()
-        assert 'MyAddon = 3' in exported
+
+        # stdout only (not .output, which also mixes in show_warnings()'s stderr text) --
+        # matches what `gru export > file.csv` would actually receive.
+        rows = list(csv.reader(io.StringIO(result.stdout)))
+        assert rows[0] == ['dir', 'version', 'link']
+        by_dir = {row[0]: row for row in rows[1:]}
+        assert by_dir['MyAddon'] == ['MyAddon', '3', cli_app['upstream'].metadata['link']]
+        assert by_dir['LocalOnly'] == ['LocalOnly', '1', '']
+
+    def test_export_writes_to_output_file(self, cli_app, tmp_path):
+        out_path = tmp_path / 'out.csv'
+        result = invoke(cli_app['config_file'], ['export', '--output', str(out_path)])
+        assert result.exit_code == 0
+        assert 'exported to' in result.output
+        assert 'dir,version,link' not in result.output  # CSV rows went to the file, not stdout
+
+        rows = list(csv.reader(out_path.open()))
+        assert rows[0] == ['dir', 'version', 'link']
+        by_dir = {row[0]: row for row in rows[1:]}
+        assert by_dir['MyAddon'] == ['MyAddon', '3', cli_app['upstream'].metadata['link']]
+
+    def test_export_short_output_flag(self, cli_app, tmp_path):
+        out_path = tmp_path / 'out.csv'
+        result = invoke(cli_app['config_file'], ['export', '-o', str(out_path)])
+        assert result.exit_code == 0
+        assert out_path.exists()
 
 
 class TestParentSuffixWording:
@@ -405,6 +476,7 @@ class TestUpdateCommand:
                             lambda url, stream=True, allow_redirects=True: FakeResponse(content=zip_bytes))
         monkeypatch.setattr(install_mod, 'user_cache', lambda *parts: _touch_cache_path(tmp_path, *parts))
         monkeypatch.setattr(install_mod, 'user_config', lambda *parts: _touch_config_path(tmp_path, *parts))
+        monkeypatch.setattr(cli_mod, 'user_config', lambda *parts: _touch_config_path(tmp_path, *parts))
 
         def fake_build_app(game, cfg_file):
             config = load_config(cfg_file)
@@ -416,13 +488,17 @@ class TestUpdateCommand:
             return config, api, local
 
         monkeypatch.setattr(cli_mod, 'build_app', fake_build_app)
-        return {'config_file': config_file, 'addons_root': addons_root}
+        return {'config_file': config_file, 'addons_root': addons_root, 'config_dir': tmp_path / 'config'}
 
     def test_update_installs_new_version(self, cli_app):
         result = invoke(cli_app['config_file'], ['update'])
         assert result.exit_code == 0
         assert 'Updated 1 addon(s) and installed 0 dependence(s)' in result.output
         assert (cli_app['addons_root'] / 'MyAddon' / 'Data.lua').read_text() == 'new = 2\n'
+
+        # addons.csv is refreshed after update
+        rows = list(csv.reader((cli_app['config_dir'] / 'ESO' / 'addons.csv').open()))
+        assert [row[0] for row in rows[1:]] == ['MyAddon']
 
     def test_update_with_nothing_to_do(self, cli_config):
         result = invoke(cli_config, ['update'])
@@ -567,7 +643,8 @@ class TestGetCommand:
         addons_root.mkdir()
         config_file = tmp_path / 'gru.ini'
         config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
-        return {'addons_root': addons_root, 'config_file': config_file}
+        monkeypatch.setattr(cli_mod, 'user_config', lambda *parts: _touch_config_path(tmp_path, *parts))
+        return {'addons_root': addons_root, 'config_file': config_file, 'config_dir': tmp_path / 'config'}
 
     def _wire_build_app(self, monkeypatch, addons_root, api):
         def fake_build_app(game, cfg_file):
@@ -594,6 +671,10 @@ class TestGetCommand:
         assert 'AttributeError' not in result.output
         assert 'register' not in result.output
         assert 'already installed locally and not found online' in result.output
+
+        # addons.csv is (re)written after get, even when nothing new was installed
+        rows = list(csv.reader((cli_app['config_dir'] / 'ESO' / 'addons.csv').open()))
+        assert [row[0] for row in rows[1:]] == ['LocalOnly']
 
     def test_batch_mode_continues_cleanly_after_install_failure(self, monkeypatch, cli_app):
         """Regression: on KeyError from local.install() in batch (--yes) mode, the loop

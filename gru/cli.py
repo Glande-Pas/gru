@@ -12,6 +12,8 @@ import click
 import math
 import typing
 import re
+import csv
+import sys
 import click_repl
 import prompt_toolkit.history as prompt_history
 from collections.abc import Iterable
@@ -264,6 +266,26 @@ def _progress(size: int, message: str) -> gru.install.ProgressProtocol:
     return click.progressbar(length=size, label=message, width=0)
 
 
+def _write_addons_csv(local: gru.install.Folder, out: typing.IO, recurse: bool = False) -> int:
+    """ Write dir/version/link rows for installed addons to `out`. Returns the row count. """
+    writer = csv.writer(out)
+    writer.writerow(['dir', 'version', 'link'])
+    count = 0
+    for addon in local.installed:
+        if not (recurse or addon.parent is None):
+            continue
+        link = addon.infos.metadata['link'] if addon.infos is not None else ''
+        writer.writerow([addon.dir, addon.version, link])
+        count += 1
+    return count
+
+
+def _export_addon_state(local: gru.install.Folder) -> None:
+    """ Keep <config>/<game>/addons.csv in sync with the current install state. """
+    with user_config(local.game, 'addons.csv').open('w', newline='') as out:
+        _write_addons_csv(local, out)
+
+
 def add_repl_commands(group: click.Group) -> None:
     """ Adds commands that are only useful in REPL mode to a click group """
     @group.command('help', help='Print CLI help')
@@ -475,6 +497,7 @@ def get(ctx: click.Context, addon: list[str], auto_deps: bool = True, opt: bool 
             click.echo(f'Done installing {TermDisplay._render_eso_text(found.title)}')
         else:
             click.echo(f'Done installing {TermDisplay._render_eso_text(found.title)} and {result} dependence(s)')
+    _export_addon_state(local)
     show_warnings(ctx)
 
 
@@ -508,6 +531,7 @@ def remove(ctx: click.Context, addon: str | None, clean_deps: bool = False, opt:
         click.echo(f'Removed addon {title}.')
     else:
         click.echo(f'Removed addon {title} and {nremoved} unused dependence(s).')
+    _export_addon_state(local)
     show_warnings(ctx)
 
 
@@ -534,6 +558,7 @@ def update(ctx: click.Context, auto_deps: bool, opt: bool | None, patch: bool | 
         click.echo(f'Updated {updates} addon(s) and installed {added} dependence(s)')
     else:
         click.echo(f'Updated {updates} addon(s)')
+    _export_addon_state(local)
     show_warnings(ctx)
 
 
@@ -612,21 +637,23 @@ def list_(ctx: click.Context) -> None:
 
 @main.command(help='export installed add-ons')
 @click.option('--recurse', '-r', help='Recurse into subdirectories (will show private libraries)', default=False)
+@click.option('--output', '-o', 'output_path', type=click.Path(dir_okay=False, path_type=pathlib.Path),
+              help='Write to a file instead of stdout')
 @click.pass_context
-def export(ctx: click.Context, recurse: bool = False) -> None:
+def export(ctx: click.Context, recurse: bool = False, output_path: pathlib.Path | None = None) -> None:
     local = ctx.obj['local']
 
     if not local.installed:
         click.echo('No addons installed.')
         return
 
-    export_path = user_config(local.game, 'addons.txt')
-    with export_path.open('w') as out:
-        for addon in local.installed:
-            if recurse or addon.parent is None:
-                print(f'{addon.dir} = {addon.version}', file=out)
-
-    click.echo(f'All {len(local.installed)} addon(s) exported to:\n{export_path.resolve()}')
+    if output_path is None:
+        _write_addons_csv(local, sys.stdout, recurse)
+        sys.stdout.flush()  # unlike click.echo(), a raw sys.stdout write isn't auto-flushed
+    else:
+        with output_path.open('w', newline='') as out:
+            count = _write_addons_csv(local, out, recurse)
+        click.echo(f'All {count} addon(s) exported to:\n{output_path.resolve()}')
     show_warnings(ctx)
 
 
