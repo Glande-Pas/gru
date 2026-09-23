@@ -333,6 +333,117 @@ class TestWithRealAddons:
         # Nothing was removed -- addons.csv must not have been (re)written
         assert not (cli_app['config_dir'] / 'ESO' / 'addons.csv').exists()
 
+    def _saved_var_path(self, cli_app, addon_dir: str = 'MyAddon') -> pathlib.Path:
+        """Named after the addon's own dir, not the declared SavedVariables table name(s)."""
+        return cli_app['addons_root'].parent / 'SavedVariables' / f'{addon_dir}.lua'
+
+    def _set_remove_saved_variables(self, cli_app, setting: str) -> None:
+        with cli_app['config_file'].open('a') as f:
+            f.write(f'remove_saved_variables = {setting}\n')
+
+    def test_remove_default_ask_prompts_and_removes_on_yes(self, cli_app):
+        make_installed(cli_app['addons_root'], 'MyAddon', SavedVariables='MyAddonVars')
+        saved = self._saved_var_path(cli_app)
+        saved.parent.mkdir(parents=True)
+        saved.write_text('-- vars --')
+
+        result = invoke(cli_app['config_file'], ['remove', 'MyAddon', '--no-clean-deps'], input='y\ny\n')
+        assert result.exit_code == 0
+        assert 'Also remove saved variables for MyAddon?' in result.output
+        assert 'Removed addon MyAddon.' in result.output
+        assert 'Also removed saved variables for: MyAddon' in result.output
+        assert not saved.exists()
+
+    def test_remove_default_ask_keeps_on_no(self, cli_app):
+        make_installed(cli_app['addons_root'], 'MyAddon', SavedVariables='MyAddonVars')
+        saved = self._saved_var_path(cli_app)
+        saved.parent.mkdir(parents=True)
+        saved.write_text('-- vars --')
+
+        result = invoke(cli_app['config_file'], ['remove', 'MyAddon', '--no-clean-deps'], input='y\nn\n')
+        assert result.exit_code == 0
+        assert 'Removed addon MyAddon.' in result.output
+        assert saved.exists()
+
+    def test_remove_ask_skips_prompt_when_no_saved_variables_file(self, cli_app):
+        """Declared but never written (or already gone) -- nothing to offer removing."""
+        make_installed(cli_app['addons_root'], 'MyAddon', SavedVariables='MyAddonVars')
+        result = invoke(cli_app['config_file'], ['remove', 'MyAddon', '--no-clean-deps'], input='y\n')
+        assert result.exit_code == 0
+        assert 'Also remove saved variables' not in result.output
+        assert 'Removed addon MyAddon.' in result.output
+
+    def test_remove_config_yes_removes_without_prompting(self, cli_app):
+        make_installed(cli_app['addons_root'], 'MyAddon', SavedVariables='MyAddonVars')
+        saved = self._saved_var_path(cli_app)
+        saved.parent.mkdir(parents=True)
+        saved.write_text('-- vars --')
+        self._set_remove_saved_variables(cli_app, 'yes')
+
+        result = invoke(cli_app['config_file'], ['remove', 'MyAddon', '--no-clean-deps'], input='y\n')
+        assert result.exit_code == 0
+        assert 'Also remove saved variables' not in result.output
+        assert 'Removed addon MyAddon.' in result.output
+        assert 'Also removed saved variables for: MyAddon' in result.output
+        assert not saved.exists()
+
+    def test_remove_config_no_keeps_without_prompting(self, cli_app):
+        make_installed(cli_app['addons_root'], 'MyAddon', SavedVariables='MyAddonVars')
+        saved = self._saved_var_path(cli_app)
+        saved.parent.mkdir(parents=True)
+        saved.write_text('-- vars --')
+        self._set_remove_saved_variables(cli_app, 'no')
+
+        result = invoke(cli_app['config_file'], ['remove', 'MyAddon', '--no-clean-deps'], input='y\n')
+        assert result.exit_code == 0
+        assert 'Also remove saved variables' not in result.output
+        assert 'Removed addon MyAddon.' in result.output
+        assert saved.exists()
+
+    def test_remove_vars_flag_overrides_config_no_prompt(self, cli_app):
+        make_installed(cli_app['addons_root'], 'MyAddon', SavedVariables='MyAddonVars')
+        saved = self._saved_var_path(cli_app)
+        saved.parent.mkdir(parents=True)
+        saved.write_text('-- vars --')
+        self._set_remove_saved_variables(cli_app, 'no')
+
+        result = invoke(cli_app['config_file'], ['remove', 'MyAddon', '--no-clean-deps', '--remove-vars'],
+                        input='y\n')
+        assert result.exit_code == 0
+        assert 'Also remove saved variables' not in result.output
+        assert not saved.exists()
+
+    def test_keep_vars_flag_overrides_config_yes_no_prompt(self, cli_app):
+        make_installed(cli_app['addons_root'], 'MyAddon', SavedVariables='MyAddonVars')
+        saved = self._saved_var_path(cli_app)
+        saved.parent.mkdir(parents=True)
+        saved.write_text('-- vars --')
+        self._set_remove_saved_variables(cli_app, 'yes')
+
+        result = invoke(cli_app['config_file'], ['remove', 'MyAddon', '--no-clean-deps', '--keep-vars'],
+                        input='y\n')
+        assert result.exit_code == 0
+        assert 'Also remove saved variables' not in result.output
+        assert saved.exists()
+
+    def test_remove_clean_deps_prompts_for_cascaded_dependency_too(self, cli_app):
+        """A lib pulled in as an unused dependency (--clean-deps) gets its own independent
+        saved-variables prompt, separate from the addon named on the command line."""
+        make_installed(cli_app['addons_root'], 'MyAddon', DependsOn='LibFoo>=1')
+        make_installed(cli_app['addons_root'], 'LibFoo', IsLibrary='true', SavedVariables='LibFooVars')
+        lib_saved = self._saved_var_path(cli_app, 'LibFoo')
+        lib_saved.parent.mkdir(parents=True)
+        lib_saved.write_text('-- vars --')
+
+        # 'y' confirms the approximate-match prompt (StubAPI never matches anything online),
+        # then a second 'y' answers the SavedVariables prompt for LibFoo (MyAddon has none).
+        result = invoke(cli_app['config_file'], ['remove', 'MyAddon', '--clean-deps'], input='y\ny\n')
+        assert result.exit_code == 0
+        assert 'Also remove saved variables for LibFoo?' in result.output
+        assert 'Also removed saved variables for: LibFoo' in result.output
+        assert not lib_saved.exists()
+        assert not (cli_app['addons_root'] / 'LibFoo').exists()
+
 
 class TestCleanupCommand:
     """gru cleanup --dedupe: removes a standalone library install superseded by an
@@ -348,7 +459,8 @@ class TestCleanupCommand:
 
         make_installed(addons_root, 'Parent', Title='Parent', DependsOn='LibShared>=1')
         make_installed(addons_root / 'Parent', 'LibShared', Title='LibShared', IsLibrary='true', Version='2.0')
-        make_installed(addons_root, 'LibShared', Title='LibShared', IsLibrary='true', Version='1.0')
+        make_installed(addons_root, 'LibShared', Title='LibShared', IsLibrary='true', Version='1.0',
+                       SavedVariables='LibSharedVars')
         upstream = make_addon_info(id_=1, title='LibShared', directories=['LibShared'])
 
         class LinkableApi(StubAPI):
@@ -394,6 +506,28 @@ class TestCleanupCommand:
         assert result.exit_code == 0
         assert 'duplicate' not in result.output
         assert (cli_app['addons_root'] / 'LibShared').exists()
+
+    def test_dedupe_prompts_to_remove_saved_variables_of_removed_duplicate(self, cli_app):
+        saved = cli_app['addons_root'].parent / 'SavedVariables' / 'LibShared.lua'
+        saved.parent.mkdir(parents=True)
+        saved.write_text('-- vars --')
+
+        result = invoke(cli_app['config_file'], ['cleanup', '--dedupe'], input='y\n')
+        assert result.exit_code == 0
+        assert 'Also remove saved variables for LibShared?' in result.output
+        assert 'Also removed saved variables for: LibShared' in result.output
+        assert not saved.exists()
+
+    def test_dedupe_remove_vars_flag_skips_prompt(self, cli_app):
+        saved = cli_app['addons_root'].parent / 'SavedVariables' / 'LibShared.lua'
+        saved.parent.mkdir(parents=True)
+        saved.write_text('-- vars --')
+
+        result = invoke(cli_app['config_file'], ['cleanup', '--dedupe', '--remove-vars'])
+        assert result.exit_code == 0
+        assert 'Also remove saved variables' not in result.output
+        assert 'Also removed saved variables for: LibShared' in result.output
+        assert not saved.exists()
 
 
 class TestExportCommand:

@@ -49,6 +49,8 @@ patch_updates = on
 sortkey = downloads
 # Number of rows kept in the rotating changes.csv log
 log_lines = 100
+# Whether `remove` also deletes an addon's SavedVariables file(s): yes, no, or ask
+remove_saved_variables = ask
 
 [app]
 open_in_browser = off

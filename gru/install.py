@@ -48,6 +48,12 @@ class ProgressProtocol(Protocol):
 #: (called as its own constructor) or a plain factory function like cli.py's _progress().
 ProgressFactory = Callable[[int, str], ProgressProtocol]
 
+#: Either a fixed answer, or a per-addon decision (e.g. cli.py prompting once per addon that
+#: actually has a SavedVariables file) -- reused as-is for cascaded dependency/duplicate removals,
+#: so a lib pulled in by remove(deps=True)/remove_unused_deps()/remove_duplicates() gets the same
+#: policy as the addon(s) the caller removed directly.
+RemoveVarsPolicy = typing.Union[bool, Callable[[InstalledAddon], bool]]
+
 
 class SilentProgress:
     """ NOP class "implementing" progress as context manager """
@@ -535,13 +541,29 @@ class Folder:
 
         return added
 
+    def saved_variable_files(self, addon: gru.addon.InstalledAddon) -> list[pathlib.Path]:
+        """ This addon's SavedVariables file, if it declares any (## SavedVariables: Name ...) and
+        it actually exists on disk -- named after the addon itself (not the declared variable
+        name(s), which are Lua globals inside that one file), at
+        <AddOns root>/../SavedVariables/{addon.dir}.lua. """
+        if not addon.metadata.get('savedvariables', '').strip():
+            return []
+        path = self.root.parent / 'SavedVariables' / f'{addon.dir}.lua'
+        return [path] if path.exists() else []
+
     def remove(self, addon: gru.addon.InstalledAddon | gru.addon.AddonInfo, deps: bool = False,
-               opt: bool = True) -> int:
-        """ Uninstall addon """
+               opt: bool = True, remove_vars: RemoveVarsPolicy = False) -> int:
+        """ Uninstall addon. `remove_vars` also applies to any dependency this cascades into
+        removing (deps=True): a fixed bool answers for all of them, a callable is asked again
+        for each -- e.g. cli.py prompting once per addon that actually has SavedVariables. """
         if isinstance(addon, AddonInfo):
             if not addon.folders:
                 raise ValueError(f'Addon {addon.title} is not installed')
             addon = list(addon.folders.values())[0]
+
+        if remove_vars(addon) if callable(remove_vars) else remove_vars:
+            for path in self.saved_variable_files(addon):
+                path.unlink()
 
         if addon.folder.exists():
             shutil.rmtree(addon.folder)
@@ -552,13 +574,13 @@ class Folder:
         if not deps:
             return 0
 
-        return self.remove_unused_deps(opt=opt)
+        return self.remove_unused_deps(opt=opt, remove_vars=remove_vars)
 
-    def remove_unused_deps(self, opt: bool = True) -> int:
+    def remove_unused_deps(self, opt: bool = True, remove_vars: RemoveVarsPolicy = False) -> int:
         removed = 0
         while unused := self.unused_deps(self.installed, opt=opt):
             for dep in unused:
-                self.remove(dep)
+                self.remove(dep, remove_vars=remove_vars)
             removed += len(unused)
 
         return removed
@@ -586,8 +608,9 @@ class Folder:
                     break
         return redundant
 
-    def remove_duplicates(self) -> list[tuple[gru.addon.InstalledAddon, gru.addon.InstalledAddon]]:
+    def remove_duplicates(self, remove_vars: RemoveVarsPolicy = False
+                          ) -> list[tuple[gru.addon.InstalledAddon, gru.addon.InstalledAddon]]:
         pairs = self.duplicate_standalones(self.installed)
         for addon, _ in pairs:
-            self.remove(addon)
+            self.remove(addon, remove_vars=remove_vars)
         return pairs

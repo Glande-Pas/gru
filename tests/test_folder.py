@@ -232,6 +232,51 @@ class TestRemove:
         assert not folder_path.exists()
         assert list(populated_folder.dir('MyAddon')) == []
 
+    def test_saved_variable_files_finds_existing_declared_file(self, addon_root, folder):
+        make_installed(addon_root, 'MyAddon', SavedVariables='MyAddonVars')
+        folder.scan()
+        [addon] = list(folder.dir('MyAddon'))
+        saved = addon_root.parent / 'SavedVariables' / 'MyAddon.lua'
+        saved.parent.mkdir(parents=True)
+        saved.write_text('-- vars --')
+
+        assert folder.saved_variable_files(addon) == [saved]
+
+    def test_saved_variable_files_skips_missing_file(self, addon_root, folder):
+        """Declared in the manifest but never actually written (or already deleted)."""
+        make_installed(addon_root, 'MyAddon', SavedVariables='MyAddonVars')
+        folder.scan()
+        [addon] = list(folder.dir('MyAddon'))
+        assert folder.saved_variable_files(addon) == []
+
+    def test_saved_variable_files_empty_when_not_declared(self, addon_root, folder):
+        make_installed(addon_root, 'MyAddon')
+        folder.scan()
+        [addon] = list(folder.dir('MyAddon'))
+        assert folder.saved_variable_files(addon) == []
+
+    def test_remove_with_remove_vars_deletes_saved_variables(self, addon_root, folder):
+        make_installed(addon_root, 'MyAddon', SavedVariables='MyAddonVars')
+        folder.scan()
+        [addon] = list(folder.dir('MyAddon'))
+        saved = addon_root.parent / 'SavedVariables' / 'MyAddon.lua'
+        saved.parent.mkdir(parents=True)
+        saved.write_text('-- vars --')
+
+        folder.remove(addon, remove_vars=True)
+        assert not saved.exists()
+
+    def test_remove_without_remove_vars_keeps_saved_variables(self, addon_root, folder):
+        make_installed(addon_root, 'MyAddon', SavedVariables='MyAddonVars')
+        folder.scan()
+        [addon] = list(folder.dir('MyAddon'))
+        saved = addon_root.parent / 'SavedVariables' / 'MyAddon.lua'
+        saved.parent.mkdir(parents=True)
+        saved.write_text('-- vars --')
+
+        folder.remove(addon, remove_vars=False)
+        assert saved.exists()
+
     def test_remove_deregisters_from_linked_addoninfo(self, addon_root, folder):
         make_installed(addon_root, 'MyAddon')
         folder.scan()
@@ -266,6 +311,47 @@ class TestRemove:
         removed_count = folder.remove(addon, deps=True)
         assert removed_count == 1
         assert list(folder.dir('LibFoo')) == []
+
+    def test_remove_vars_callable_policy_is_asked_again_for_cascaded_dependency(self, addon_root, folder):
+        """remove_vars can be a per-addon callable, not just a fixed bool -- reused for the
+        cascaded dependency removal (deps=True), not just the addon passed in directly."""
+        make_installed(addon_root, 'MyAddon', DependsOn='LibFoo>=1', SavedVariables='MyAddonVars')
+        make_installed(addon_root, 'LibFoo', IsLibrary='true', SavedVariables='LibFooVars')
+        folder.scan()
+        [addon] = list(folder.dir('MyAddon'))
+
+        main_saved = addon_root.parent / 'SavedVariables' / 'MyAddon.lua'
+        lib_saved = addon_root.parent / 'SavedVariables' / 'LibFoo.lua'
+        for saved in (main_saved, lib_saved):
+            saved.parent.mkdir(parents=True, exist_ok=True)
+            saved.write_text('-- vars --')
+
+        asked = []
+
+        def policy(candidate):
+            asked.append(candidate.dir)
+            return candidate.dir == 'LibFoo'  # only agree to remove LibFoo's vars, not MyAddon's
+
+        folder.remove(addon, deps=True, remove_vars=policy)
+        assert set(asked) == {'MyAddon', 'LibFoo'}
+        assert main_saved.exists()
+        assert not lib_saved.exists()
+
+    def test_remove_duplicates_threads_remove_vars_policy(self, addon_root, folder):
+        make_installed(addon_root, 'Parent', DependsOn='LibShared>=1')
+        make_installed(addon_root / 'Parent', 'LibShared', IsLibrary='true', Version='2.0')
+        make_installed(addon_root, 'LibShared', IsLibrary='true', Version='1.0', SavedVariables='LibSharedVars')
+        upstream = make_addon_info(id_=1, title='LibShared', directories=['LibShared'])
+        api = make_api(addons={1: upstream})
+        folder.scan(api)
+
+        saved = addon_root.parent / 'SavedVariables' / 'LibShared.lua'
+        saved.parent.mkdir(parents=True)
+        saved.write_text('-- vars --')
+
+        pairs = folder.remove_duplicates(remove_vars=True)
+        assert len(pairs) == 1
+        assert not saved.exists()
 
     def test_remove_unused_deps_cascades(self, addon_root, folder):
         """LibA depends on LibB; removing LibA as unused should also free LibB."""

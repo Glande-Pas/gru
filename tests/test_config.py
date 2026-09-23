@@ -86,6 +86,18 @@ class TestDisplayUpdateConfig:
         shown = display_config(config, 'ESO')
         assert shown['app.open_in_browser'] == 'off'
         assert shown['addons.patch_updates'] == 'on'
+        assert shown['addons.remove_saved_variables'] == 'ask'
+
+    def test_update_config_allows_three_state_enum_transitions(self, isolated_user_dirs):
+        """remove_saved_variables is yes/no/ask -- none of which is 'on'/'off', so
+        update_config()'s boolean-mismatch guard must never block moving between them."""
+        config = load_config(isolated_user_dirs['config_file'])
+        update_config(config, 'ESO', {'addons.remove_saved_variables': 'yes'})
+        assert config.get('ESO.addons', 'remove_saved_variables') == 'yes'
+        update_config(config, 'ESO', {'addons.remove_saved_variables': 'no'})
+        assert config.get('ESO.addons', 'remove_saved_variables') == 'no'
+        update_config(config, 'ESO', {'addons.remove_saved_variables': 'ask'})
+        assert config.get('ESO.addons', 'remove_saved_variables') == 'ask'
 
     def test_update_config_changes_value(self, isolated_user_dirs):
         config = load_config(isolated_user_dirs['config_file'])

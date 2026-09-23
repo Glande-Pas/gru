@@ -586,12 +586,47 @@ def get(ctx: click.Context, addon: list[str], auto_deps: bool = True, opt: bool 
         show_warnings(ctx)
 
 
+def _remove_vars_policy(ctx: click.Context, local: gru.install.Folder, remove_vars: bool | None
+                        ) -> tuple[gru.install.RemoveVarsPolicy, list[str]]:
+    """ Builds the policy passed to Folder.remove()/remove_unused_deps()/remove_duplicates(), so
+    the same answer governs the addon(s) named on the command line AND any dependency or duplicate
+    that removal cascades into -- each gets asked again when that policy prompts. Also returns the
+    (growing) list of addon titles actually stripped of their SavedVariables, for the final summary
+    message; an addon with nothing declared/on disk never gets prompted or added to that list.
+
+    --remove-vars/--keep-vars was given explicitly: fixed answer for everything, no prompting.
+    Otherwise: fall back to config (yes/no/ask), prompting only when it's 'ask'. """
+    if remove_vars is None:
+        setting = ctx.obj['config'].get(f'{local.game}.addons', 'remove_saved_variables')
+        forced = None if setting == 'ask' else setting == 'yes'
+    else:
+        forced = remove_vars
+
+    removed: list[str] = []
+
+    def resolve(addon: gru.addon.InstalledAddon) -> bool:
+        if not local.saved_variable_files(addon):
+            return False
+        if forced is not None:
+            decision = forced
+        else:
+            title = TermDisplay._render_eso_text(addon.title)
+            decision = click.confirm(f'Also remove saved variables for {title}?', prompt_suffix=':\n>> ')
+        if decision:
+            removed.append(addon.title)
+        return decision
+
+    return resolve, removed
+
+
 @main.command()
 @click.argument('addon', required=False)
 @click.option('--clean-deps/--no-clean-deps', default=False, help='Clean up unused dependences')
 @click.option('--opt/--no-opt', default=None, help='Keep optional dependences')
+@click.option('--remove-vars/--keep-vars', default=None, help='Remove SavedVariables (default: from config)')
 @click.pass_context
-def remove(ctx: click.Context, addon: str | None, clean_deps: bool = False, opt: bool | None = None) -> None:
+def remove(ctx: click.Context, addon: str | None, clean_deps: bool = False, opt: bool | None = None,
+           remove_vars: bool | None = None) -> None:
     """ Find and uninstall an addon """
     api = ctx.obj['api']
     local = ctx.obj['local']
@@ -610,14 +645,19 @@ def remove(ctx: click.Context, addon: str | None, clean_deps: bool = False, opt:
         show_warnings(ctx)
         return
 
+    remove_vars_policy, vars_removed = _remove_vars_policy(ctx, local, remove_vars)
+
     try:
-        nremoved = local.remove(installed_addon, deps=clean_deps, opt=opt)
+        nremoved = local.remove(installed_addon, deps=clean_deps, opt=opt, remove_vars=remove_vars_policy)
 
         title = TermDisplay._render_eso_text(installed_addon.title)
         if not clean_deps:
             click.echo(f'Removed addon {title}.')
         else:
             click.echo(f'Removed addon {title} and {nremoved} unused dependence(s).')
+        if vars_removed:
+            names = ', '.join(TermDisplay._render_eso_text(name) for name in vars_removed)
+            click.echo(f'Also removed saved variables for: {names}')
     finally:
         _export_addon_state(local)
         _log_changes(local, ctx.obj['config'], before)
@@ -659,26 +699,33 @@ def update(ctx: click.Context, auto_deps: bool, opt: bool | None, patch: bool | 
 @click.option('--opt/--no-opt', default=True, help='Keep optional dependences')
 @click.option('--dedupe/--no-dedupe', default=False,
               help='Also remove standalone libraries superseded by an equal-or-newer bundled copy')
+@click.option('--remove-vars/--keep-vars', default=None, help='Remove SavedVariables (default: from config)')
 @click.pass_context
-def cleanup(ctx: click.Context, opt: bool | None = None, dedupe: bool = False) -> None:
+def cleanup(ctx: click.Context, opt: bool | None = None, dedupe: bool = False,
+            remove_vars: bool | None = None) -> None:
     """ Find and uninstall an addon """
     local = ctx.obj['local']
     before = _addon_snapshot(local)
 
     if opt is None:
         opt = get_config_bool(ctx, '{game}.addons.optional')
+    remove_vars_policy, vars_removed = _remove_vars_policy(ctx, local, remove_vars)
 
     try:
-        nremoved = local.remove_unused_deps(opt=opt)
+        nremoved = local.remove_unused_deps(opt=opt, remove_vars=remove_vars_policy)
         click.echo(f'Removed {nremoved} unused dependence(s).')
 
         if dedupe:
-            pairs = local.remove_duplicates()
+            pairs = local.remove_duplicates(remove_vars=remove_vars_policy)
             for addon, bundled_in in pairs:
                 assert bundled_in.parent is not None  # duplicate_standalones() only pairs with nested siblings
                 parent_title = bundled_in.parent.title
                 click.echo(f'Removed duplicate {addon.dir}, superseded by the copy bundled inside {parent_title}')
             click.echo(f'Removed {len(pairs)} duplicate install(s).')
+
+        if vars_removed:
+            names = ', '.join(TermDisplay._render_eso_text(name) for name in vars_removed)
+            click.echo(f'Also removed saved variables for: {names}')
     finally:
         _export_addon_state(local)
         _log_changes(local, ctx.obj['config'], before)
