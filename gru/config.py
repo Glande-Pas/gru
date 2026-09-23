@@ -48,6 +48,8 @@ optional = off
 patch_updates = on
 # Sort equal matches in search according to one of: downloads, monthly, favorites
 sortkey = downloads
+# Number of rows kept in the rotating changes.csv log
+log_lines = 100
 
 [app]
 open_in_browser = off

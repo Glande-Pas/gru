@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import configparser
+import collections
 import warnings
+import datetime
 import pathlib
 import locale
 import shutil
@@ -286,6 +288,44 @@ def _export_addon_state(local: gru.install.Folder) -> None:
         _write_addons_csv(local, out)
 
 
+NOT_INSTALLED = 'none'  # sentinel: version/NOT_INSTALLED means installed, NOT_INSTALLED/version means uninstalled
+
+
+def _addon_snapshot(local: gru.install.Folder) -> dict[str, tuple[str, str]]:
+    """ dir -> (version, link) for every currently-installed addon """
+    return {addon.dir: (addon.version, addon.infos.metadata['link'] if addon.infos is not None else '')
+            for addon in local.installed}
+
+
+def _append_change_log(path: pathlib.Path, row: list[str], max_lines: int) -> None:
+    rows: collections.deque[list[str]] = collections.deque(maxlen=max(max_lines, 0))
+    if path.exists():
+        with path.open(newline='') as f:
+            reader = csv.reader(f)
+            next(reader, None)
+            rows.extend(reader)
+    rows.append(row)
+    with path.open('w', newline='') as out:
+        writer = csv.writer(out)
+        writer.writerow(['dir', 'version', 'link', 'date', 'previous_state'])
+        writer.writerows(rows)
+
+
+def _log_changes(local: gru.install.Folder, config: configparser.ConfigParser,
+                 before: dict[str, tuple[str, str]]) -> None:
+    """ Append one changes.csv row per addon whose version differs between `before` and now. """
+    after = _addon_snapshot(local)
+    max_lines = config.getint(f'{local.game}.addons', 'log_lines')
+    now = datetime.datetime.now().astimezone().isoformat(timespec='seconds')
+    path = user_config(local.game, 'changes.csv')
+    for dir_ in before.keys() | after.keys():
+        old_version, old_link = before.get(dir_, (NOT_INSTALLED, ''))
+        new_version, new_link = after.get(dir_, (NOT_INSTALLED, ''))
+        if old_version == new_version:
+            continue
+        _append_change_log(path, [dir_, new_version, new_link or old_link, now, old_version], max_lines)
+
+
 def add_repl_commands(group: click.Group) -> None:
     """ Adds commands that are only useful in REPL mode to a click group """
     @group.command('help', help='Print CLI help')
@@ -442,6 +482,7 @@ def get(ctx: click.Context, addon: list[str], auto_deps: bool = True, opt: bool 
     """ Find, download, and install an addon """
     api = ctx.obj['api']
     local = ctx.obj['local']
+    before = _addon_snapshot(local)
 
     if opt is None:
         opt = get_config_bool(ctx, '{game}.addons.optional')
@@ -505,6 +546,7 @@ def get(ctx: click.Context, addon: list[str], auto_deps: bool = True, opt: bool 
                 click.echo(f'Done installing {TermDisplay._render_eso_text(found.title)} and {result} dependence(s)')
     finally:
         _export_addon_state(local)
+        _log_changes(local, ctx.obj['config'], before)
         show_warnings(ctx)
 
 
@@ -517,6 +559,7 @@ def remove(ctx: click.Context, addon: str | None, clean_deps: bool = False, opt:
     """ Find and uninstall an addon """
     api = ctx.obj['api']
     local = ctx.obj['local']
+    before = _addon_snapshot(local)
 
     if opt is None:
         opt = get_config_bool(ctx, '{game}.addons.optional')
@@ -541,6 +584,7 @@ def remove(ctx: click.Context, addon: str | None, clean_deps: bool = False, opt:
             click.echo(f'Removed addon {title} and {nremoved} unused dependence(s).')
     finally:
         _export_addon_state(local)
+        _log_changes(local, ctx.obj['config'], before)
         show_warnings(ctx)
 
 
@@ -553,6 +597,7 @@ def update(ctx: click.Context, auto_deps: bool, opt: bool | None, patch: bool | 
     """ Find out-of-date and missing addons and install them """
     api = ctx.obj['api']
     local = ctx.obj['local']
+    before = _addon_snapshot(local)
 
     if opt is None:
         opt = get_config_bool(ctx, '{game}.addons.optional')
@@ -570,6 +615,7 @@ def update(ctx: click.Context, auto_deps: bool, opt: bool | None, patch: bool | 
             click.echo(f'Updated {updates} addon(s)')
     finally:
         _export_addon_state(local)
+        _log_changes(local, ctx.obj['config'], before)
         show_warnings(ctx)
 
 

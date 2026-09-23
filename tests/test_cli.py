@@ -60,6 +60,105 @@ def invoke(config_file, args, input=None):
     return runner.invoke(main, ['--config', str(config_file), *args], input=input)
 
 
+class TestAppendChangeLog:
+    """_append_change_log() keeps at most max_lines data rows, oldest evicted first."""
+
+    def test_writes_header_and_row(self, tmp_path):
+        path = tmp_path / 'changes.csv'
+        cli_mod._append_change_log(path, ['MyAddon', '1.0', 'link', 'date', 'none'], 100)
+
+        rows = list(csv.reader(path.open()))
+        assert rows[0] == ['dir', 'version', 'link', 'date', 'previous_state']
+        assert rows[1] == ['MyAddon', '1.0', 'link', 'date', 'none']
+
+    def test_rotates_out_oldest_row_beyond_max_lines(self, tmp_path):
+        path = tmp_path / 'changes.csv'
+        for i in range(5):
+            cli_mod._append_change_log(path, [f'Addon{i}', '1.0', '', 'date', 'none'], 3)
+
+        rows = list(csv.reader(path.open()))
+        assert [row[0] for row in rows[1:]] == ['Addon2', 'Addon3', 'Addon4']
+
+    def test_zero_max_lines_disables_logging(self, tmp_path):
+        path = tmp_path / 'changes.csv'
+        cli_mod._append_change_log(path, ['MyAddon', '1.0', '', 'date', 'none'], 0)
+
+        rows = list(csv.reader(path.open()))
+        assert rows == [['dir', 'version', 'link', 'date', 'previous_state']]
+
+
+class TestLogChanges:
+    """_log_changes() diffs before/after install state and appends one row per addon whose
+    version differs -- NOT_INSTALLED is the sentinel for a fresh install or a removal."""
+
+    def _config(self) -> configparser.ConfigParser:
+        config = configparser.ConfigParser()
+        config.add_section('ESO.addons')
+        config.set('ESO.addons', 'log_lines', '100')
+        return config
+
+    def _changes(self, tmp_path: pathlib.Path) -> list[list[str]]:
+        with (tmp_path / 'config' / 'ESO' / 'changes.csv').open() as f:
+            return list(csv.reader(f))
+
+    def test_new_install_logs_sentinel_as_previous_state(self, addon_root, folder, monkeypatch, tmp_path):
+        monkeypatch.setattr(cli_mod, 'user_config', lambda *parts: _touch_config_path(tmp_path, *parts))
+        before = cli_mod._addon_snapshot(folder)
+
+        installed = make_installed(addon_root, 'MyAddon', Version='1.0')
+        upstream = make_addon_info(id_=1, title='MyAddon', version='1.0', directories=['MyAddon'])
+        installed.link(upstream)
+        folder._installed = {installed.folder: installed}
+
+        cli_mod._log_changes(folder, self._config(), before)
+
+        rows = self._changes(tmp_path)
+        assert rows[1][:3] == ['MyAddon', '1.0', upstream.metadata['link']]
+        assert rows[1][4] == cli_mod.NOT_INSTALLED
+
+    def test_removal_logs_sentinel_as_new_version(self, addon_root, folder, monkeypatch, tmp_path):
+        monkeypatch.setattr(cli_mod, 'user_config', lambda *parts: _touch_config_path(tmp_path, *parts))
+        installed = make_installed(addon_root, 'MyAddon', Version='1.0')
+        upstream = make_addon_info(id_=1, title='MyAddon', version='1.0', directories=['MyAddon'])
+        installed.link(upstream)
+        folder._installed = {installed.folder: installed}
+        before = cli_mod._addon_snapshot(folder)
+
+        folder._installed = {}
+
+        cli_mod._log_changes(folder, self._config(), before)
+
+        rows = self._changes(tmp_path)
+        assert rows[1][:3] == ['MyAddon', cli_mod.NOT_INSTALLED, upstream.metadata['link']]
+        assert rows[1][4] == '1.0'
+
+    def test_update_logs_both_real_versions(self, addon_root, folder, monkeypatch, tmp_path):
+        monkeypatch.setattr(cli_mod, 'user_config', lambda *parts: _touch_config_path(tmp_path, *parts))
+        installed = make_installed(addon_root, 'MyAddon', Version='1.0')
+        upstream = make_addon_info(id_=1, title='MyAddon', version='1.0', directories=['MyAddon'])
+        installed.link(upstream)
+        folder._installed = {installed.folder: installed}
+        before = cli_mod._addon_snapshot(folder)
+
+        installed.version = '2.0'
+
+        cli_mod._log_changes(folder, self._config(), before)
+
+        rows = self._changes(tmp_path)
+        assert rows[1][:3] == ['MyAddon', '2.0', upstream.metadata['link']]
+        assert rows[1][4] == '1.0'
+
+    def test_no_change_writes_nothing(self, addon_root, folder, monkeypatch, tmp_path):
+        monkeypatch.setattr(cli_mod, 'user_config', lambda *parts: _touch_config_path(tmp_path, *parts))
+        installed = make_installed(addon_root, 'MyAddon', Version='1.0')
+        folder._installed = {installed.folder: installed}
+        before = cli_mod._addon_snapshot(folder)
+
+        cli_mod._log_changes(folder, self._config(), before)
+
+        assert not (tmp_path / 'config' / 'ESO' / 'changes.csv').exists()
+
+
 class TestResolveAddonsRoot:
     """resolve_addons_root() is a plain function (no Click context needed): it mutates `config`
     in-memory and reports whether it changed anything via its return value -- build_app() only
@@ -218,6 +317,12 @@ class TestWithRealAddons:
         # addons.csv is kept in sync after remove -- the removed addon is gone from it
         rows = list(csv.reader((cli_app['config_dir'] / 'ESO' / 'addons.csv').open()))
         assert [row[0] for row in rows[1:]] == ['OtherAddon']
+
+        # changes.csv records the removal, with the sentinel as the new "version"
+        changes = list(csv.reader((cli_app['config_dir'] / 'ESO' / 'changes.csv').open()))
+        assert changes[1][0] == 'MyAddon'
+        assert changes[1][1] == cli_mod.NOT_INSTALLED
+        assert changes[1][4] == '1.0'
 
     def test_remove_no_match_falls_through_without_crashing(self, cli_app):
         """Regression guard: used to crash reaching Folder.search() (dict_values.values())."""
@@ -584,6 +689,11 @@ class TestUpdateCommand:
         rows = list(csv.reader((cli_app['config_dir'] / 'ESO' / 'addons.csv').open()))
         assert [row[0] for row in rows[1:]] == ['MyAddon']
 
+        # changes.csv records the version transition
+        changes = list(csv.reader((cli_app['config_dir'] / 'ESO' / 'changes.csv').open()))
+        assert changes[1][:2] == ['MyAddon', '2.0']
+        assert changes[1][4] == '1.0'
+
     def test_update_with_nothing_to_do(self, cli_config):
         result = invoke(cli_config, ['update'])
         assert result.exit_code == 0
@@ -859,6 +969,55 @@ class TestGetCommand:
         assert result.exit_code == 0
         assert 'UnboundLocalError' not in result.output
         assert 'Failed installing' in result.output
+
+    def test_fresh_install_logs_change_with_sentinel_previous_state(self, monkeypatch, cli_app):
+        upstream = make_addon_info(id_=1, title='MyAddon', version='1.0', directories=['MyAddon'])
+
+        class FindableApi(StubAPI):
+            def find(self, val, local):
+                return [upstream]
+
+        self._wire_build_app(monkeypatch, cli_app['addons_root'], FindableApi())
+
+        import zipfile
+        import gru.install as install_mod
+
+        class FakeResponse:
+            content: bytes
+
+            def __init__(self, **attrs):
+                self.__dict__.update(attrs)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def iter_content(self, chunk_size=1024):
+                yield self.content
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w') as zf:
+            manifest = '## Title: MyAddon\n## APIVersion: 100035\n## Version: 1.0\n## Author: Test\n'
+            zf.writestr('MyAddon/MyAddon.txt', manifest)
+        zip_bytes = buf.getvalue()
+
+        headers = {'content-length': str(len(zip_bytes))}
+        monkeypatch.setattr(install_mod.requests, 'head',
+                            lambda url, allow_redirects=True: FakeResponse(headers=headers))
+        monkeypatch.setattr(install_mod.requests, 'get',
+                            lambda url, stream=True, allow_redirects=True: FakeResponse(content=zip_bytes))
+        cache_base = cli_app['addons_root'].parent
+        monkeypatch.setattr(install_mod, 'user_cache', lambda *parts: _touch_cache_path(cache_base, *parts))
+
+        result = invoke(cli_app['config_file'], ['get', 'MyAddon', '--yes'])
+        assert result.exit_code == 0
+        assert 'Done installing' in result.output
+
+        rows = list(csv.reader((cli_app['config_dir'] / 'ESO' / 'changes.csv').open()))
+        assert rows[1][:2] == ['MyAddon', '1.0']
+        assert rows[1][4] == cli_mod.NOT_INSTALLED
 
 
 class TestFolderSearchTiebreak:
