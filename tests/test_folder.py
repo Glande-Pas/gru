@@ -277,6 +277,63 @@ class TestRemove:
         assert list(folder.installed) == []
 
 
+class TestDuplicateStandalones:
+    """duplicate_standalones()/remove_duplicates(): a standalone (top-level) library install
+    made redundant by an equal-or-newer bundled copy of the same online addon -- ESO always
+    loads the highest version it finds, so these top-level copies serve no purpose. Bundled
+    copies themselves must never be flagged as the redundant side."""
+
+    def _bundled_and_standalone(self, addon_root, folder, bundled_version, standalone_version, is_lib='true'):
+        make_installed(addon_root, 'Parent', Title='Parent')
+        make_installed(addon_root / 'Parent', 'LibShared', Title='LibShared',
+                       IsLibrary=is_lib, Version=bundled_version)
+        make_installed(addon_root, 'LibShared', Title='LibShared', IsLibrary=is_lib, Version=standalone_version)
+        folder.scan()
+
+        info = make_addon_info(id_=1, title='LibShared')
+        for addon in folder.installed:
+            if addon.dir == 'LibShared':
+                addon.link(info)
+
+    def test_finds_standalone_superseded_by_newer_bundled_copy(self, addon_root, folder):
+        self._bundled_and_standalone(addon_root, folder, bundled_version='2.0', standalone_version='1.0')
+        [standalone] = [a for a in folder.installed if a.dir == 'LibShared' and a.parent is None]
+        [bundled] = [a for a in folder.installed if a.dir == 'LibShared' and a.parent is not None]
+
+        assert folder.duplicate_standalones(folder.installed) == [(standalone, bundled)]
+
+    def test_tied_versions_also_count_as_superseded(self, addon_root, folder):
+        self._bundled_and_standalone(addon_root, folder, bundled_version='1.0', standalone_version='1.0')
+        pairs = folder.duplicate_standalones(folder.installed)
+        assert len(pairs) == 1
+        addon, bundled_in = pairs[0]
+        assert addon.parent is None and bundled_in.parent is not None
+
+    def test_standalone_newer_than_bundled_is_not_flagged(self, addon_root, folder):
+        self._bundled_and_standalone(addon_root, folder, bundled_version='1.0', standalone_version='2.0')
+        assert folder.duplicate_standalones(folder.installed) == []
+
+    def test_bundled_copy_itself_never_flagged_as_redundant(self, addon_root, folder):
+        self._bundled_and_standalone(addon_root, folder, bundled_version='1.0', standalone_version='2.0')
+        pairs = folder.duplicate_standalones(folder.installed)
+        assert all(addon.parent is None for addon, _ in pairs)
+
+    def test_non_library_duplicates_are_ignored(self, addon_root, folder):
+        self._bundled_and_standalone(addon_root, folder, bundled_version='2.0',
+                                     standalone_version='1.0', is_lib='false')
+        assert folder.duplicate_standalones(folder.installed) == []
+
+    def test_unparseable_version_is_not_flagged(self, addon_root, folder):
+        self._bundled_and_standalone(addon_root, folder, bundled_version='2.0', standalone_version='unknown')
+        assert folder.duplicate_standalones(folder.installed) == []
+
+    def test_remove_duplicates_removes_standalone_and_returns_pairs(self, addon_root, folder):
+        self._bundled_and_standalone(addon_root, folder, bundled_version='2.0', standalone_version='1.0')
+        removed = folder.remove_duplicates()
+        assert len(removed) == 1
+        assert list(folder.dir('LibShared')) == [removed[0][1]]  # only the bundled copy remains
+
+
 # ---------------------------------------------------------------------------
 # scan / _scan
 # ---------------------------------------------------------------------------

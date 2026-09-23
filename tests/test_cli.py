@@ -334,6 +334,68 @@ class TestWithRealAddons:
         assert not (cli_app['config_dir'] / 'ESO' / 'addons.csv').exists()
 
 
+class TestCleanupCommand:
+    """gru cleanup --dedupe: removes a standalone library install superseded by an
+    equal-or-newer copy bundled inside another addon; without the flag, it's left alone."""
+
+    @pytest.fixture
+    def cli_app(self, monkeypatch, tmp_path):
+        addons_root = tmp_path / 'AddOns'
+        addons_root.mkdir()
+        config_file = tmp_path / 'gru.ini'
+        config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
+        monkeypatch.setattr(cli_mod, 'user_config', lambda *parts: _touch_config_path(tmp_path, *parts))
+
+        make_installed(addons_root, 'Parent', Title='Parent', DependsOn='LibShared>=1')
+        make_installed(addons_root / 'Parent', 'LibShared', Title='LibShared', IsLibrary='true', Version='2.0')
+        make_installed(addons_root, 'LibShared', Title='LibShared', IsLibrary='true', Version='1.0')
+        upstream = make_addon_info(id_=1, title='LibShared', directories=['LibShared'])
+
+        class LinkableApi(StubAPI):
+            def dir(self, name):  # pyright: ignore[reportIncompatibleMethodOverride] -- real AddonInfo, not StubAddon
+                if name == 'LibShared':
+                    return upstream
+                raise FileNotFoundError(name)
+
+        def fake_build_app(game, cfg_file):
+            config = load_config(cfg_file)
+            api = LinkableApi()
+            local = make_folder(addons_root)
+            local.scan(api)  # pyright: ignore[reportArgumentType] -- stub API, not a real gru.api.API
+            return config, api, local
+
+        monkeypatch.setattr(cli_mod, 'build_app', fake_build_app)
+        return {'config_file': config_file, 'addons_root': addons_root, 'config_dir': tmp_path / 'config'}
+
+    def test_dedupe_removes_superseded_standalone_and_reports_it(self, cli_app):
+        result = invoke(cli_app['config_file'], ['cleanup', '--dedupe'])
+        assert result.exit_code == 0
+        assert 'Removed duplicate LibShared, superseded by the copy bundled inside Parent' in result.output
+        assert 'Removed 1 duplicate install(s).' in result.output
+        assert not (cli_app['addons_root'] / 'LibShared').exists()
+        assert (cli_app['addons_root'] / 'Parent' / 'LibShared').exists()
+
+    def test_dedupe_removal_is_reflected_in_addons_csv_and_changes_csv(self, cli_app):
+        """Regression: cleanup used to skip _export_addon_state()/_log_changes() entirely,
+        so removals (including --dedupe ones) never showed up in either file."""
+        result = invoke(cli_app['config_file'], ['cleanup', '--dedupe'])
+        assert result.exit_code == 0
+
+        addons = list(csv.reader((cli_app['config_dir'] / 'ESO' / 'addons.csv').open()))
+        assert [row[0] for row in addons[1:]] == ['Parent']  # only the nested LibShared remains, hidden from export
+
+        changes = list(csv.reader((cli_app['config_dir'] / 'ESO' / 'changes.csv').open()))
+        assert changes[1][0] == 'LibShared'
+        assert changes[1][1] == cli_mod.NOT_INSTALLED
+        assert changes[1][4] == '1.0'
+
+    def test_without_dedupe_flag_duplicate_is_left_alone(self, cli_app):
+        result = invoke(cli_app['config_file'], ['cleanup'])
+        assert result.exit_code == 0
+        assert 'duplicate' not in result.output
+        assert (cli_app['addons_root'] / 'LibShared').exists()
+
+
 class TestExportCommand:
     """gru export: CSV to stdout by default, or to a file with --output/-o; includes the
     online info-page link as an extra column when the addon is matched, blank otherwise."""
@@ -458,6 +520,40 @@ class TestParentSuffixWording:
         output = self._list_output(monkeypatch, addons_root, config_file, LinkableApi())
         assert ', part of BundleName' in output
 
+    def _duplicate_setup(self, tmp_path, version_a, version_b):
+        addons_root = tmp_path / 'AddOns'
+        addons_root.mkdir()
+        config_file = tmp_path / 'gru.ini'
+        config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
+
+        make_installed(addons_root, 'CopyA', Title='CopyA', Version=version_a)
+        make_installed(addons_root, 'CopyB', Title='CopyB', Version=version_b)
+        upstream = make_addon_info(id_=1, title='LibShared', directories=['CopyA'])
+
+        class LinkableApi(StubAPI):
+            def dir(self, name):
+                return upstream
+
+        return addons_root, config_file, LinkableApi()
+
+    def test_version_precedence_marks_higher_version_active_lower_superseded(self, monkeypatch, tmp_path):
+        addons_root, config_file, api = self._duplicate_setup(tmp_path, '2.0', '1.0')
+        output = self._list_output(monkeypatch, addons_root, config_file, api)
+        assert 'CopyA [installed, part of LibShared (active)]' in output
+        assert 'CopyB [installed, part of LibShared (superseded)]' in output
+
+    def test_version_precedence_ties_are_both_active(self, monkeypatch, tmp_path):
+        addons_root, config_file, api = self._duplicate_setup(tmp_path, '1.0', '1.0')
+        output = self._list_output(monkeypatch, addons_root, config_file, api)
+        assert output.count(', part of LibShared (active)') == 2
+        assert 'superseded' not in output
+
+    def test_version_precedence_omitted_when_a_version_is_unparseable(self, monkeypatch, tmp_path):
+        addons_root, config_file, api = self._duplicate_setup(tmp_path, '2.0', 'unknown')
+        output = self._list_output(monkeypatch, addons_root, config_file, api)
+        assert ', part of LibShared]' in output
+        assert 'active' not in output and 'superseded' not in output
+
     def test_bundled_inside_for_unmatched_nested_folder(self, monkeypatch, tmp_path):
         addons_root = tmp_path / 'AddOns'
         addons_root.mkdir()
@@ -476,6 +572,58 @@ class TestParentSuffixWording:
 
         output = self._list_output(monkeypatch, addons_root, config_file, LinkableApi())
         assert ', bundled inside ParentAddon' in output
+
+    def test_bundled_inside_for_matched_nested_addon(self, monkeypatch, tmp_path):
+        """A nested addon that IS itself matched online goes through _installed(), not
+        _folder() -- it must still show where it's bundled. This was the missing annotation:
+        _installed() checked infos.folders (duplicate online match) but never addon.parent."""
+        addons_root = tmp_path / 'AddOns'
+        addons_root.mkdir()
+        config_file = tmp_path / 'gru.ini'
+        config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
+
+        make_installed(addons_root, 'ParentAddon', Title='ParentAddon')
+        make_installed(addons_root / 'ParentAddon', 'ChildLib', Title='ChildLib')
+        upstream_parent = make_addon_info(id_=1, title='ParentAddon', directories=['ParentAddon'])
+        upstream_child = make_addon_info(id_=2, title='ChildLib', directories=['ChildLib'])
+
+        class LinkableApi(StubAPI):
+            def dir(self, name):
+                if name == 'ParentAddon':
+                    return upstream_parent
+                elif name == 'ChildLib':
+                    return upstream_child
+                raise FileNotFoundError(name)
+
+        output = self._list_output(monkeypatch, addons_root, config_file, LinkableApi())
+        assert ', bundled inside ParentAddon' in output
+
+    def test_bundled_inside_and_part_of_combine_for_duplicate_nested_install(self, monkeypatch, tmp_path):
+        """Real-world shape: a library bundled inside another addon's folder, also installed
+        standalone at top level. Both folders share one online AddonInfo (-> 'part of' on
+        both), and the nested one additionally shows where it's bundled."""
+        addons_root = tmp_path / 'AddOns'
+        addons_root.mkdir()
+        config_file = tmp_path / 'gru.ini'
+        config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
+
+        make_installed(addons_root, 'LootLog', Title='Loot Log')
+        make_installed(addons_root / 'LootLog', 'LibExtendedJournal', Title='LibExtendedJournal')
+        make_installed(addons_root, 'LibExtendedJournal', Title='LibExtendedJournal')
+        upstream_parent = make_addon_info(id_=1, title='LootLog', directories=['LootLog'])
+        upstream_lib = make_addon_info(id_=2, title='LibExtendedJournal', directories=['LibExtendedJournal'])
+
+        class LinkableApi(StubAPI):
+            def dir(self, name):
+                if name == 'LootLog':
+                    return upstream_parent
+                elif name == 'LibExtendedJournal':
+                    return upstream_lib
+                raise FileNotFoundError(name)
+
+        output = self._list_output(monkeypatch, addons_root, config_file, LinkableApi())
+        assert ', bundled inside Loot Log, part of LibExtendedJournal' in output
+        assert output.count(', part of LibExtendedJournal') == 2
 
 
 class TestNoColor:

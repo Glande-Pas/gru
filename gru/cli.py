@@ -22,7 +22,7 @@ from collections.abc import Iterable
 
 from .config import load_config, save_config, user_cache, user_config, display_config, update_config
 from .api import API
-from .addon import AddonInfo, InstalledAddon
+from .addon import AddonInfo, InstalledAddon, _parse_version
 from .install import Folder
 from .patch import addon_diff, addon_patch_file
 
@@ -108,19 +108,32 @@ class TermDisplay:
         text = self._render_eso_text(text)
         return text + ' ' * max(0, width - len(click.unstyle(text)))
 
+    @staticmethod
+    def _version_precedence(addon: gru.addon.InstalledAddon, infos: gru.addon.AddonInfo) -> str:
+        """ ' (active)'/' (superseded)' by version rank among all folders sharing `infos`,
+        or '' if any of them has a version ESO can't compare (not all-numeric/dotted). """
+        others = list(infos.folders.values())
+        versions = [v for other in others if (v := _parse_version(other.version)) is not None]
+        if len(versions) != len(others):
+            return ''
+        this = versions[others.index(addon)]
+        return ' (active)' if this == max(versions) else ' (superseded)'
+
     def _installed(self, item: str, addon: gru.addon.InstalledAddon) -> None:
         """ Show addon info from the API endpoint """
         click.echo()
         assert addon.infos is not None  # guaranteed by the is_local/id dispatch in __init__
         update = '' if not addon.can_update else f'{click.style("update available", bold=True)} - '
         infos = addon.infos
+        tags = []
+        if addon.parent is not None:
+            tags.append(f'bundled inside {addon.parent.title}')
         if len(infos.folders) > 1:
-            parent = f', part of {infos.title}'
+            tags.append(f'part of {infos.title}{self._version_precedence(addon, infos)}')
         elif addon.title.strip() != infos.title.strip():
-            parent = f', listed online as {infos.title}'
-        else:
-            parent = ''
-        click.echo(f'{item:{self.gutter}}{self._render_eso_text(addon.title)} [{update}installed{parent}]')
+            tags.append(f'listed online as {infos.title}')
+        suffix = ''.join(f', {tag}' for tag in tags)
+        click.echo(f'{item:{self.gutter}}{self._render_eso_text(addon.title)} [{update}installed{suffix}]')
         # TODO: Based on verbosity level, only click.echo a number of those:
         self._wrapped([
             f'Author: {self._styled_width(addon.author, 25)}',
@@ -291,9 +304,11 @@ def _export_addon_state(local: gru.install.Folder) -> None:
 NOT_INSTALLED = 'none'  # sentinel: version/NOT_INSTALLED means installed, NOT_INSTALLED/version means uninstalled
 
 
-def _addon_snapshot(local: gru.install.Folder) -> dict[str, tuple[str, str]]:
-    """ dir -> (version, link) for every currently-installed addon """
-    return {addon.dir: (addon.version, addon.infos.metadata['link'] if addon.infos is not None else '')
+def _addon_snapshot(local: gru.install.Folder) -> dict[pathlib.Path, tuple[str, str, str]]:
+    """ folder -> (dir, version, link) for every currently-installed addon. Keyed by folder,
+    not dir: two folders can share the same dir name (a standalone/bundled duplicate pair),
+    and a dir-keyed dict would silently drop one of them. """
+    return {addon.folder: (addon.dir, addon.version, addon.infos.metadata['link'] if addon.infos is not None else '')
             for addon in local.installed}
 
 
@@ -312,18 +327,18 @@ def _append_change_log(path: pathlib.Path, row: list[str], max_lines: int) -> No
 
 
 def _log_changes(local: gru.install.Folder, config: configparser.ConfigParser,
-                 before: dict[str, tuple[str, str]]) -> None:
-    """ Append one changes.csv row per addon whose version differs between `before` and now. """
+                 before: dict[pathlib.Path, tuple[str, str, str]]) -> None:
+    """ Append one changes.csv row per folder whose version differs between `before` and now. """
     after = _addon_snapshot(local)
     max_lines = config.getint(f'{local.game}.addons', 'log_lines')
     now = datetime.datetime.now().astimezone().isoformat(timespec='seconds')
     path = user_config(local.game, 'changes.csv')
-    for dir_ in before.keys() | after.keys():
-        old_version, old_link = before.get(dir_, (NOT_INSTALLED, ''))
-        new_version, new_link = after.get(dir_, (NOT_INSTALLED, ''))
+    for folder in before.keys() | after.keys():
+        old_dir, old_version, old_link = before.get(folder, ('', NOT_INSTALLED, ''))
+        new_dir, new_version, new_link = after.get(folder, ('', NOT_INSTALLED, ''))
         if old_version == new_version:
             continue
-        _append_change_log(path, [dir_, new_version, new_link or old_link, now, old_version], max_lines)
+        _append_change_log(path, [new_dir or old_dir, new_version, new_link or old_link, now, old_version], max_lines)
 
 
 def add_repl_commands(group: click.Group) -> None:
@@ -621,18 +636,32 @@ def update(ctx: click.Context, auto_deps: bool, opt: bool | None, patch: bool | 
 
 @main.command(help='Remove unused dependences')
 @click.option('--opt/--no-opt', default=True, help='Keep optional dependences')
+@click.option('--dedupe/--no-dedupe', default=False,
+              help='Also remove standalone libraries superseded by an equal-or-newer bundled copy')
 @click.pass_context
-def cleanup(ctx: click.Context, opt: bool | None = None) -> None:
+def cleanup(ctx: click.Context, opt: bool | None = None, dedupe: bool = False) -> None:
     """ Find and uninstall an addon """
     local = ctx.obj['local']
+    before = _addon_snapshot(local)
 
     if opt is None:
         opt = get_config_bool(ctx, '{game}.addons.optional')
 
-    nremoved = local.remove_unused_deps(opt=opt)
+    try:
+        nremoved = local.remove_unused_deps(opt=opt)
+        click.echo(f'Removed {nremoved} unused dependence(s).')
 
-    click.echo(f'Removed {nremoved} unused dependence(s).')
-    show_warnings(ctx)
+        if dedupe:
+            pairs = local.remove_duplicates()
+            for addon, bundled_in in pairs:
+                assert bundled_in.parent is not None  # duplicate_standalones() only pairs with nested siblings
+                parent_title = bundled_in.parent.title
+                click.echo(f'Removed duplicate {addon.dir}, superseded by the copy bundled inside {parent_title}')
+            click.echo(f'Removed {len(pairs)} duplicate install(s).')
+    finally:
+        _export_addon_state(local)
+        _log_changes(local, ctx.obj['config'], before)
+        show_warnings(ctx)
 
 
 @main.command()

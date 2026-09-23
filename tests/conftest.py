@@ -15,6 +15,34 @@ from gru.addon import AddonInfo, InstalledAddon
 
 
 # ---------------------------------------------------------------------------
+# Safety net: no test may ever touch the real ~/.config/gru or ~/.cache/gru
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _no_real_user_config(tmp_path, monkeypatch):
+    """Every test gets user_config()/user_cache() redirected under tmp_path, so a fixture that
+    forgets to mock one (as happened once already) can never write into the real user's home
+    directory. A test's own fixture can still layer a more specific fake on top -- whichever
+    monkeypatch.setattr() call runs last wins, and fixtures run after autouse ones."""
+    import gru.config as config_mod
+    import gru.cli as cli_mod
+    import gru.install as install_mod
+
+    def make_fake(base: pathlib.Path) -> typing.Callable[..., pathlib.Path]:
+        def fake(*parts: str) -> pathlib.Path:
+            path = base.joinpath(*parts)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            return path
+        return fake
+
+    fake_config = make_fake(tmp_path / '_autouse_fake_config')
+    fake_cache = make_fake(tmp_path / '_autouse_fake_cache')
+    for mod in (config_mod, cli_mod, install_mod):
+        monkeypatch.setattr(mod, 'user_config', fake_config)
+        monkeypatch.setattr(mod, 'user_cache', fake_cache)
+
+
+# ---------------------------------------------------------------------------
 # Zip helpers
 # ---------------------------------------------------------------------------
 

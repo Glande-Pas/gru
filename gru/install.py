@@ -23,7 +23,7 @@ import typing
 from urllib.parse import quote as urllib_quote
 
 from .config import user_cache, user_config
-from .addon import InstalledAddon, AddonInfo, GARBAGE, MANIFEST_EXTS
+from .addon import InstalledAddon, AddonInfo, GARBAGE, MANIFEST_EXTS, _parse_version
 from .api import _fuzz, _filter
 from .patch import addon_patch_file
 
@@ -549,3 +549,32 @@ class Folder:
             removed += len(unused)
 
         return removed
+
+    def duplicate_standalones(self, pool: Iterable[gru.addon.InstalledAddon]
+                              ) -> list[tuple[gru.addon.InstalledAddon, gru.addon.InstalledAddon]]:
+        """ (standalone, bundled) pairs where a standalone library install is made redundant by
+        an equal-or-newer bundled copy of the same online addon -- ESO always loads the highest
+        version it finds regardless of bundling, so these top-level copies serve no purpose.
+        Bundled copies are never included as the redundant side: only get/remove of their
+        parent addon should touch them. """
+        redundant = []
+        for addon in pool:
+            if not addon.is_lib or addon.parent is not None or addon.infos is None:
+                continue
+            this = _parse_version(addon.version)
+            if this is None:
+                continue
+            for other in addon.infos.folders.values():
+                if other.parent is None:
+                    continue
+                other_version = _parse_version(other.version)
+                if other_version is not None and other_version >= this:
+                    redundant.append((addon, other))
+                    break
+        return redundant
+
+    def remove_duplicates(self) -> list[tuple[gru.addon.InstalledAddon, gru.addon.InstalledAddon]]:
+        pairs = self.duplicate_standalones(self.installed)
+        for addon, _ in pairs:
+            self.remove(addon)
+        return pairs

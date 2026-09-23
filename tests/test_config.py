@@ -5,8 +5,35 @@ import pathlib
 
 import pytest
 
+import gru.cli as cli_mod
 import gru.config as config_mod
+import gru.install as install_mod
 from gru.config import encoding_open, load_config, display_config, update_config, install_translation
+
+
+# ---------------------------------------------------------------------------
+# Autouse safety net (conftest._no_real_user_config): no test, even one that mocks nothing
+# itself, may ever compute a real path under the user's actual home directory.
+# ---------------------------------------------------------------------------
+
+class TestUserConfigSafetyNet:
+    def test_user_config_is_redirected_under_tmp_path(self, tmp_path):
+        path = config_mod.user_config('probe.txt')
+        assert path.is_relative_to(tmp_path)
+        assert not path.is_relative_to(pathlib.Path.home())
+
+    def test_user_cache_is_redirected_under_tmp_path(self, tmp_path):
+        path = config_mod.user_cache('probe.txt')
+        assert path.is_relative_to(tmp_path)
+        assert not path.is_relative_to(pathlib.Path.home())
+
+    def test_cli_module_reference_is_also_redirected(self, tmp_path):
+        assert cli_mod.user_config('probe.txt').is_relative_to(tmp_path)
+        assert cli_mod.user_cache('probe.txt').is_relative_to(tmp_path)
+
+    def test_install_module_reference_is_also_redirected(self, tmp_path):
+        assert install_mod.user_config('probe.txt').is_relative_to(tmp_path)
+        assert install_mod.user_cache('probe.txt').is_relative_to(tmp_path)
 
 
 # ---------------------------------------------------------------------------
