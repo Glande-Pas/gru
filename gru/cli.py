@@ -333,10 +333,7 @@ def main(ctx: click.Context, game: str = 'ESO', config_file: pathlib.Path | None
          no_color: bool = False) -> None:
     locale.setlocale(locale.LC_ALL, '')
 
-    # click.echo() defaults to auto-detecting whether to strip ANSI styling based on
-    # whether the stream looks like a tty. Setting ctx.color makes every echo() call
-    # (none of which pass color= explicitly) respect this instead, so piping/redirecting
-    # gru's output still keeps addon title styling unless --no-color is passed.
+    # Default to color even when piping
     ctx.color = not no_color
 
     ctx.ensure_object(dict)
