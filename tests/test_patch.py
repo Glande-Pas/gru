@@ -36,6 +36,23 @@ class TestLineDiff:
         assert '+new line' in diff
 
 
+class TestLineDiffNoTrailingNewline:
+    """Regression: a final line lacking '\\n' used to run straight into whatever text_patch
+    entry followed it (e.g. '-foo+bar' instead of '-foo\\n+bar\\n'), corrupting the diff."""
+
+    def test_last_line_changed_does_not_glue_to_next_line(self):
+        diff = line_diff('foo', 'bar')
+        assert '-foo\n' in diff
+        assert '+bar\n' in diff
+
+    def test_no_trailing_newline_side_gets_marker(self):
+        diff = line_diff('line1\nline2', 'line1\nline2\nline3\n')
+        assert f'-line2\n{patch_mod.NO_NEWLINE_MARKER}\n' in diff
+
+    def test_identical_text_without_trailing_newline_gives_empty_diff(self):
+        assert line_diff('same\ntext', 'same\ntext') == ''
+
+
 # ---------------------------------------------------------------------------
 # parse_diff
 # ---------------------------------------------------------------------------
@@ -55,7 +72,7 @@ class TestParseDiff:
         assert str(infile) == 'Foo/a.lua' and str(outfile) == 'Foo/a.lua'
         [(header, block)] = patch[(infile, outfile)]
         assert header == '-1 +1'
-        assert block == [('-', ['old']), ('+', ['new'])]
+        assert block == [('-', ['old'], False), ('+', ['new'], False)]
 
     def test_missing_plusplus_line_raises(self):
         text = '--- Foo/a.lua\tdate\nnotplusplus\n'
@@ -185,6 +202,94 @@ class TestRoundTripCreateDelete:
         assert not (orig.folder / 'Old.lua').exists()
 
 
+class TestRoundTripNoTrailingNewline:
+    """Regression: a file's own missing trailing newline used to get silently added (or the
+    patch failed to apply at all) -- see line_diff()/apply_patch()'s NO_NEWLINE_MARKER handling."""
+
+    def test_modified_last_line_without_trailing_newline_round_trips(self, tmp_path):
+        orig = make_installed(tmp_path / 'orig', 'MyAddon')
+        new = make_installed(tmp_path / 'new', 'MyAddon')
+        (orig.folder / 'Data.lua').write_text('old = 1')
+        (new.folder / 'Data.lua').write_text('old = 2')
+
+        stream = io.StringIO()
+        n = addon_diff(new, orig, out=stream)
+        assert n == 1
+
+        stream.seek(0)
+        patch = parse_diff(stream)
+        result = addon_patch(orig, patch)
+
+        assert result.clean and len(result.files) == 1
+        assert (orig.folder / 'Data.lua').read_text() == 'old = 2'
+
+    def test_adding_trailing_newline_round_trips(self, tmp_path):
+        orig = make_installed(tmp_path / 'orig', 'MyAddon')
+        new = make_installed(tmp_path / 'new', 'MyAddon')
+        (orig.folder / 'Data.lua').write_text('unchanged')
+        (new.folder / 'Data.lua').write_text('unchanged\n')
+
+        stream = io.StringIO()
+        n = addon_diff(new, orig, out=stream)
+        assert n == 1
+
+        stream.seek(0)
+        patch = parse_diff(stream)
+        result = addon_patch(orig, patch)
+
+        assert result.clean and len(result.files) == 1
+        assert (orig.folder / 'Data.lua').read_text() == 'unchanged\n'
+
+    def test_removing_trailing_newline_round_trips(self, tmp_path):
+        orig = make_installed(tmp_path / 'orig', 'MyAddon')
+        new = make_installed(tmp_path / 'new', 'MyAddon')
+        (orig.folder / 'Data.lua').write_text('unchanged\n')
+        (new.folder / 'Data.lua').write_text('unchanged')
+
+        stream = io.StringIO()
+        n = addon_diff(new, orig, out=stream)
+        assert n == 1
+
+        stream.seek(0)
+        patch = parse_diff(stream)
+        result = addon_patch(orig, patch)
+
+        assert result.clean and len(result.files) == 1
+        assert (orig.folder / 'Data.lua').read_text() == 'unchanged'
+
+    def test_created_file_without_trailing_newline_round_trips(self, tmp_path):
+        orig = make_installed(tmp_path / 'orig', 'MyAddon')
+        new = make_installed(tmp_path / 'new', 'MyAddon')
+        (new.folder / 'Data.lua').write_text('return 42')
+
+        stream = io.StringIO()
+        n = addon_diff(new, orig, out=stream)
+        assert n == 1
+
+        stream.seek(0)
+        patch = parse_diff(stream)
+        result = addon_patch(orig, patch)
+
+        assert result.clean and len(result.files) == 1
+        assert (orig.folder / 'Data.lua').read_text() == 'return 42'
+
+    def test_deleted_file_without_trailing_newline_round_trips(self, tmp_path):
+        orig = make_installed(tmp_path / 'orig', 'MyAddon')
+        new = make_installed(tmp_path / 'new', 'MyAddon')
+        (orig.folder / 'Old.lua').write_text('legacy')
+
+        stream = io.StringIO()
+        n = addon_diff(new, orig, out=stream)
+        assert n == 1
+
+        stream.seek(0)
+        patch = parse_diff(stream)
+        result = addon_patch(orig, patch)
+
+        assert result.clean and len(result.files) == 1
+        assert not (orig.folder / 'Old.lua').exists()
+
+
 # ---------------------------------------------------------------------------
 # addon_patch against hand-built Patch structures (bypasses addon_diff)
 # ---------------------------------------------------------------------------
@@ -193,7 +298,7 @@ class TestAddonPatchCreate:
     def test_create_new_file(self, tmp_path):
         addon = make_installed(tmp_path, 'MyAddon')
         patch = {
-            (_p('MyAddon/New.lua', dev_null_in=True)): [('-0,0 +1,2', [('+', ['line1', 'line2'])])],
+            (_p('MyAddon/New.lua', dev_null_in=True)): [('-0,0 +1,2', [('+', ['line1', 'line2'], False)])],
         }
         result = addon_patch(addon, patch)
         assert result.clean
@@ -203,7 +308,7 @@ class TestAddonPatchCreate:
         addon = make_installed(tmp_path, 'MyAddon')
         (addon.folder / 'New.lua').write_text('existing\n')
         patch = {
-            (_p('MyAddon/New.lua', dev_null_in=True)): [('-0,0 +1,1', [('+', ['line1'])])],
+            (_p('MyAddon/New.lua', dev_null_in=True)): [('-0,0 +1,1', [('+', ['line1'], False)])],
         }
         result = addon_patch(addon, patch)
         assert result.backed_out
@@ -212,7 +317,7 @@ class TestAddonPatchCreate:
     def test_malformed_create_hunk_raises(self, tmp_path):
         addon = make_installed(tmp_path, 'MyAddon')
         patch = {
-            (_p('MyAddon/New.lua', dev_null_in=True)): [('-0,0 +1,1', [('-', ['not-a-plus'])])],
+            (_p('MyAddon/New.lua', dev_null_in=True)): [('-0,0 +1,1', [('-', ['not-a-plus'], False)])],
         }
         with pytest.raises(PatchError, match='Malformed patch instructions on creating'):
             addon_patch(addon, patch)
@@ -223,7 +328,7 @@ class TestAddonPatchDelete:
         addon = make_installed(tmp_path, 'MyAddon')
         (addon.folder / 'Old.lua').write_text('line1\n')
         patch = {
-            (_p('MyAddon/Old.lua', dev_null_out=True)): [('-1 +0,0', [('-', ['line1'])])],
+            (_p('MyAddon/Old.lua', dev_null_out=True)): [('-1 +0,0', [('-', ['line1'], False)])],
         }
         result = addon_patch(addon, patch)
         assert result.clean
@@ -233,7 +338,7 @@ class TestAddonPatchDelete:
         addon = make_installed(tmp_path, 'MyAddon')
         (addon.folder / 'Old.lua').write_text('different content\n')
         patch = {
-            (_p('MyAddon/Old.lua', dev_null_out=True)): [('-1 +0,0', [('-', ['line1'])])],
+            (_p('MyAddon/Old.lua', dev_null_out=True)): [('-1 +0,0', [('-', ['line1'], False)])],
         }
         result = addon_patch(addon, patch)
         assert result.backed_out
@@ -242,7 +347,7 @@ class TestAddonPatchDelete:
     def test_delete_missing_file_backs_out(self, tmp_path):
         addon = make_installed(tmp_path, 'MyAddon')
         patch = {
-            (_p('MyAddon/Gone.lua', dev_null_out=True)): [('-1 +0,0', [('-', ['line1'])])],
+            (_p('MyAddon/Gone.lua', dev_null_out=True)): [('-1 +0,0', [('-', ['line1'], False)])],
         }
         result = addon_patch(addon, patch)
         assert result.backed_out
@@ -253,7 +358,7 @@ class TestAddonPatchModifyFailureNormalMode:
         """A hunk that apply_patch() reports as unapplied must not be committed to disk."""
         addon = make_installed(tmp_path, 'MyAddon')
         (addon.folder / 'Data.lua').write_text('actual content\n')
-        changes = [('-1 +1', [('-', ['old']), ('+', ['new'])])]
+        changes = [('-1 +1', [('-', ['old'], False), ('+', ['new'], False)])]
         patch = {_p('MyAddon/Data.lua'): changes}
 
         monkeypatch.setattr(patch_mod, 'apply_patch', lambda orig, changes: ('new content\n', [False]))
@@ -271,8 +376,8 @@ class TestAddonPatchModifyFailureNormalMode:
         addon = make_installed(tmp_path, 'MyAddon')
         (addon.folder / 'Data.lua').write_text('line1\nline2\nline3\n')
         changes = [
-            ('-1 +1', [('-', ['line1']), ('+', ['LINE1'])]),
-            ('-99 +99', [('-', ['nonexistent']), ('+', ['NONEXISTENT'])]),
+            ('-1 +1', [('-', ['line1'], False), ('+', ['LINE1'], False)]),
+            ('-99 +99', [('-', ['nonexistent'], False), ('+', ['NONEXISTENT'], False)]),
         ]
         patch = {_p('MyAddon/Data.lua'): changes}
 
@@ -286,8 +391,8 @@ class TestAddonPatchModifyFailureNormalMode:
         addon = make_installed(tmp_path, 'MyAddon')
         (addon.folder / 'Data.lua').write_text('actual content\n')
         changes = [
-            ('-1 +1', [('-', ['old1']), ('+', ['new1'])]),
-            ('-5 +5', [('-', ['old2']), ('+', ['new2'])]),
+            ('-1 +1', [('-', ['old1'], False), ('+', ['new1'], False)]),
+            ('-5 +5', [('-', ['old2'], False), ('+', ['new2'], False)]),
         ]
         patch = {_p('MyAddon/Data.lua'): changes}
 
@@ -306,8 +411,8 @@ class TestAddonPatchModifyFailureNormalMode:
         (addon.folder / 'Good.lua').write_text('good old\n')
         (addon.folder / 'Bad.lua').write_text('bad old\n')
         patch = {
-            _p('MyAddon/Good.lua'): [('-1 +1', [('-', ['good old']), ('+', ['good new'])])],
-            _p('MyAddon/Bad.lua'): [('-1 +1', [('-', ['bad old']), ('+', ['bad new'])])],
+            _p('MyAddon/Good.lua'): [('-1 +1', [('-', ['good old'], False), ('+', ['good new'], False)])],
+            _p('MyAddon/Bad.lua'): [('-1 +1', [('-', ['bad old'], False), ('+', ['bad new'], False)])],
         }
 
         def fake_apply(orig, changes):
@@ -328,8 +433,8 @@ class TestAddonPatchPartial:
         addon = make_installed(tmp_path, 'MyAddon')
         (addon.folder / 'Data.lua').write_text('actual content\n')
         changes = [
-            ('-1 +1', [('-', ['old1']), ('+', ['new1'])]),
-            ('-5 +5', [('-', ['old2']), ('+', ['new2'])]),
+            ('-1 +1', [('-', ['old1'], False), ('+', ['new1'], False)]),
+            ('-5 +5', [('-', ['old2'], False), ('+', ['new2'], False)]),
         ]
         patch = {_p('MyAddon/Data.lua'): changes}
 
@@ -350,7 +455,7 @@ class TestAddonPatchPartial:
     def test_reject_file_is_a_reapplicable_patch(self, tmp_path, monkeypatch):
         addon = make_installed(tmp_path, 'MyAddon')
         (addon.folder / 'Data.lua').write_text('one\ntwo\n')
-        changes = [('-2 +2', [('-', ['two']), ('+', ['deux'])])]
+        changes = [('-2 +2', [('-', ['two'], False), ('+', ['deux'], False)])]
         patch = {_p('MyAddon/Data.lua'): changes}
 
         monkeypatch.setattr(patch_mod, 'apply_patch', lambda orig, changes: ('one\ntwo\n', [False]))
@@ -367,7 +472,7 @@ class TestAddonPatchPartial:
         addon = make_installed(tmp_path, 'MyAddon')
         (addon.folder / 'New.lua').write_text('existing\n')
         patch = {
-            (_p('MyAddon/New.lua', dev_null_in=True)): [('-0,0 +1,1', [('+', ['line1'])])],
+            (_p('MyAddon/New.lua', dev_null_in=True)): [('-0,0 +1,1', [('+', ['line1'], False)])],
         }
         result = addon_patch(addon, patch, partial=True)
         [outcome] = result.files
@@ -380,8 +485,8 @@ class TestAddonPatchPartial:
         (addon.folder / 'Good.lua').write_text('good old\n')
         (addon.folder / 'Bad.lua').write_text('bad old\n')
         patch = {
-            _p('MyAddon/Good.lua'): [('-1 +1', [('-', ['good old']), ('+', ['good new'])])],
-            _p('MyAddon/Bad.lua'): [('-1 +1', [('-', ['bad old']), ('+', ['bad new'])])],
+            _p('MyAddon/Good.lua'): [('-1 +1', [('-', ['good old'], False), ('+', ['good new'], False)])],
+            _p('MyAddon/Bad.lua'): [('-1 +1', [('-', ['bad old'], False), ('+', ['bad new'], False)])],
         }
 
         def fake_apply(orig, changes):
@@ -402,7 +507,7 @@ class TestAddonPatchSafety:
     def test_patch_outside_addon_folder_raises(self, tmp_path):
         addon = make_installed(tmp_path, 'MyAddon')
         patch = {
-            (_p('OtherAddon/Evil.lua', dev_null_in=True)): [('-0,0 +1,1', [('+', ['pwned'])])],
+            (_p('OtherAddon/Evil.lua', dev_null_in=True)): [('-0,0 +1,1', [('+', ['pwned'], False)])],
         }
         with pytest.raises(PatchError, match='outside of addon folder'):
             addon_patch(addon, patch)

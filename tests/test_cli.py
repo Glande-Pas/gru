@@ -1827,6 +1827,46 @@ class TestGetCommand:
         assert 'install' not in result.output
 
 
+class TestConfigLoadFailure:
+    """A config file gru can't create, open, or parse should error out cleanly (via
+    click.ClickException: 'Error: ...' + exit code 1) instead of crashing with a raw traceback."""
+
+    def test_config_dir_creation_failure_errors_out_cleanly(self, monkeypatch, tmp_path):
+        def boom(game, config_file):
+            raise PermissionError('Permission denied: /nonexistent/gru')
+        monkeypatch.setattr(cli_mod, 'build_app', boom)
+
+        result = invoke(tmp_path / 'gru.ini', ['list'])
+        assert result.exit_code == 1
+        assert 'Permission denied' in result.output
+
+    def test_corrupt_config_file_errors_out_cleanly(self, tmp_path):
+        config_file = tmp_path / 'gru.ini'
+        config_file.write_text('garbage, no section header\n')
+
+        result = invoke(config_file, ['list'])
+        assert result.exit_code == 1
+        assert 'garbage' in result.output
+
+    def test_config_set_write_failure_errors_out_cleanly(self, monkeypatch, cli_config):
+        def boom(config, config_file=None):
+            raise PermissionError('Permission denied: gru.ini')
+        monkeypatch.setattr(cli_mod, 'save_config', boom)
+
+        result = invoke(cli_config, ['config', 'set', 'addons.optional', 'on'])
+        assert result.exit_code == 1
+        assert 'Permission denied' in result.output
+
+    def test_unrelated_crash_still_propagates(self, monkeypatch, tmp_path):
+        def boom(game, config_file):
+            raise RuntimeError('simulated crash')
+        monkeypatch.setattr(cli_mod, 'build_app', boom)
+
+        result = invoke(tmp_path / 'gru.ini', ['list'])
+        assert result.exit_code != 0
+        assert isinstance(result.exception, RuntimeError)
+
+
 class TestFolderSearchTiebreak:
     def test_exactly_tied_candidates_do_not_crash_sorting(self, addon_root, folder):
         """Regression: Folder.search()'s default tiebreakattr=None used to become the

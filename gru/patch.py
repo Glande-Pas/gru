@@ -16,11 +16,13 @@ if typing.TYPE_CHECKING:
 
 Op = str
 Lines = list[str]
-BlockPatch = list[tuple[Op, Lines]]
+BlockPatch = list[tuple[Op, Lines, bool]]  # bool: last line above has no trailing newline in its own file
 BlockHeader = str
 FilePatch = list[tuple[BlockHeader, BlockPatch]]
 File = pathlib.Path
 Patch = dict[tuple[File, File], FilePatch]
+
+NO_NEWLINE_MARKER = r'\ No newline at end of file'
 
 
 def format_file_mtime(fname: pathlib.Path | None) -> str:
@@ -29,12 +31,23 @@ def format_file_mtime(fname: pathlib.Path | None) -> str:
 
 
 def line_diff(orig_text: str, changed_text: str) -> str:
+    # Line-splitting below treats '\n' as a separator: an unterminated final line would otherwise
+    # run straight into whatever text_patch entry follows it, corrupting the diff. Diff against a
+    # padded copy instead, flagged with NO_NEWLINE_MARKER so apply_patch() can leave it off again.
+    # '\x00' keeps a same-content-but-different-newline-state final line from padding down to an
+    # identical string on both sides, which would otherwise hide the only real difference there is.
+    orig_has_nl = not orig_text or orig_text.endswith('\n')
+    changed_has_nl = not changed_text or changed_text.endswith('\n')
+    orig_padded = orig_text if orig_has_nl else orig_text + '\x00\n'
+    changed_padded = changed_text if changed_has_nl else changed_text + '\x00\n'
+
     dmp = diff_match_patch.diff_match_patch()
     # Map lines to chars in both texts
-    orig_chars, changed_chars, line_array = dmp.diff_linesToChars(orig_text, changed_text)
+    orig_chars, changed_chars, line_array = dmp.diff_linesToChars(orig_padded, changed_padded)
 
     # Generate diff and remap chars and operand-symbols to lines and prefixes
     text_patch = []
+    orig_pos = changed_pos = 0
     for patch in dmp.patch_make(orig_chars, dmp.diff_main(orig_chars, changed_chars)):
         start = f'{patch.start1 + (1 if patch.length1 else 0)}{f",{patch.length1}" if patch.length1 != 1 else ""}'
         end = f'{patch.start2 + (1 if patch.length2 else 0)}{f",{patch.length2}" if patch.length2 != 2 else ""}'
@@ -43,7 +56,15 @@ def line_diff(orig_text: str, changed_text: str) -> str:
         for (op, data) in patch.diffs:
             sym = '+' if op > 0 else '-' if op < 0 else ' '
             for char in data:
-                text_patch.append(sym + line_array[ord(char)])
+                text_patch.append(sym + line_array[ord(char)].replace('\x00\n', '\n'))
+                if op <= 0:
+                    orig_pos += 1
+                    if not orig_has_nl and orig_pos == len(orig_chars):
+                        text_patch.append(f'{NO_NEWLINE_MARKER}\n')
+                if op >= 0:
+                    changed_pos += 1
+                    if not changed_has_nl and changed_pos == len(changed_chars):
+                        text_patch.append(f'{NO_NEWLINE_MARKER}\n')
 
     return ''.join(text_patch)
 
@@ -89,7 +110,13 @@ def parse_diff(handle: typing.IO) -> Patch:
             if len(block) and block[-1][0] == line[0]:
                 block[-1][1].append(line[1:])
             else:
-                block.append((line[0], [line[1:]]))
+                block.append((line[0], [line[1:]], False))
+
+        elif line == NO_NEWLINE_MARKER:
+            if not block:
+                raise ValueError(f'Unexpected "no newline" marker at line {n}')
+            op, block_lines, _ = block[-1]
+            block[-1] = (op, block_lines, True)
 
         elif line:
             raise ValueError(f'Malformed line at line {n}')
@@ -151,8 +178,11 @@ def apply_patch(orig: str, patch: FilePatch) -> tuple[str, list[bool]]:
     dmp = diff_match_patch.diff_match_patch()
 
     # Trailing '\n' needed: parse_diff() stripped it off each stored line, and without it
-    # back the last line loses its newline when reconstructed below.
-    diff_lines = '\n'.join(sum((lines for header, changes in patch for op, lines in changes), [])) + '\n'
+    # back the last line loses its newline when reconstructed below -- unless that last line
+    # genuinely has none of its own (NO_NEWLINE_MARKER), in which case leave it off.
+    blocks = [block for header, changes in patch for block in changes]
+    ends_without_nl = blocks[-1][2] if blocks else False
+    diff_lines = '\n'.join(sum((lines for op, lines, no_nl in blocks), [])) + ('' if ends_without_nl else '\n')
     orig_chars, diff_chars, line_array = dmp.diff_linesToChars(orig, diff_lines)
 
     # Reconstitute a char-diff from the patch and remapped diff text
@@ -160,7 +190,7 @@ def apply_patch(orig: str, patch: FilePatch) -> tuple[str, list[bool]]:
     char_patch = []
     for header, changes in patch:
         char_patch.append(f'@@ {header} @@')
-        for op, lines in changes:
+        for op, lines, no_nl in changes:
             char_patch.append(f'\n{op}')
             for line, char in zip(lines, iter_diff_chars):
                 char_patch.append(char)
@@ -217,20 +247,21 @@ def _compute_create(addon: gru.addon.InstalledAddon, infile: File, outfile: File
                     changes: FilePatch) -> _FileComputation:
     outpath = addon.folder.joinpath(*outfile.parts[1:]).resolve()
     header, block = changes[0] if changes else ('', [])
-    op, dat = block[0] if block else ('', [])
+    op, dat, no_nl = block[0] if block else ('', [], False)
     if len(changes) != 1 or header.split()[0] != '-0,0' or len(block) != 1 or op != '+':
         raise PatchError(f'Malformed patch instructions on creating {outfile}')
 
     if outpath.exists():
         return _FileComputation(infile, outfile, None, None, None, changes)
-    return _FileComputation(infile, outfile, outpath, '\n'.join(dat) + '\n', None, [])
+    content = '\n'.join(dat) + ('' if no_nl else '\n')
+    return _FileComputation(infile, outfile, outpath, content, None, [])
 
 
 def _compute_remove(addon: gru.addon.InstalledAddon, infile: File, outfile: File,
                     changes: FilePatch) -> _FileComputation:
     inpath = addon.folder.joinpath(*infile.parts[1:]).resolve()
     header, block = changes[0] if changes else ('', [])
-    op, dat = block[0] if block else ('', [])
+    op, dat, no_nl = block[0] if block else ('', [], False)
     if len(changes) != 1 or header.split()[-1] != '+0,0' or len(block) != 1 or op != '-':
         raise PatchError(f'Malformed patch instructions on removing {infile}')
 
@@ -240,7 +271,7 @@ def _compute_remove(addon: gru.addon.InstalledAddon, infile: File, outfile: File
     except FileNotFoundError:
         return _FileComputation(infile, outfile, None, None, None, changes)
 
-    if contents != '\n'.join(dat) + '\n':
+    if contents != '\n'.join(dat) + ('' if no_nl else '\n'):
         return _FileComputation(infile, outfile, None, None, None, changes)
     return _FileComputation(infile, outfile, None, None, inpath, [])
 
@@ -310,9 +341,11 @@ def _write_reject(addon: gru.addon.InstalledAddon, c: _FileComputation) -> pathl
         print(f'+++ {c.outfile}', file=f)
         for header, block in c.failed:
             print(f'@@ {header} @@', file=f)
-            for op, lines in block:
-                for line in lines:
+            for op, lines, no_nl in block:
+                for i, line in enumerate(lines):
                     print(f'{op}{line}', file=f)
+                    if no_nl and i == len(lines) - 1:
+                        print(NO_NEWLINE_MARKER, file=f)
     return reject_path
 
 
