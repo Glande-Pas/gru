@@ -479,10 +479,11 @@ class TestScan:
         [addon] = list(folder.installed)
         assert addon.id is None
 
-    def test_scan_warns_for_toplevel_addon_missing_from_api(self, addon_root, folder):
+    def test_scan_leaves_toplevel_addon_missing_from_api_unmatched_without_warning(self, addon_root, folder):
         make_installed(addon_root, 'MyAddon')
         api = StubAPI()  # empty -- MyAddon not found
-        with pytest.warns(UserWarning, match='not found in database'):
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')  # TermDisplay flags it instead, no scan-time warning
             folder.scan(api)
         [addon] = list(folder.installed)
         assert addon.id is None

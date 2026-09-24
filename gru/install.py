@@ -25,7 +25,7 @@ from urllib.parse import quote as urllib_quote
 
 from .config import user_cache, user_config
 from .addon import InstalledAddon, AddonInfo, GARBAGE, MANIFEST_EXTS, _parse_version
-from .api import _fuzz, _filter, AmbiguousDirectory
+from .api import _fuzz, _filter
 from .patch import addon_patch_file
 
 from typing import Protocol
@@ -206,12 +206,8 @@ class Folder:
             try:
                 if api:
                     addon.link(api.dir(path.name, link=links.get(path.name)))
-            except AmbiguousDirectory:
-                pass  # left unmatched -- TermDisplay flags it as ambiguous, no separate warning
             except FileNotFoundError:
-                # Only warn for lookup error on top-level addons
-                if parent is None:
-                    warnings.warn(f'Addon at {path.relative_to(self.root)} not found in database')
+                pass  # left unmatched -- TermDisplay flags it (no listing / ambiguous)
 
             results[path] = addon
 

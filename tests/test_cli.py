@@ -651,9 +651,9 @@ class TestReviewCommand:
 
 
 class TestParentSuffixWording:
-    """The ', <relation> X' suffix after 'installed' uses a distinct connector per relationship:
-    'listed online as' (title differs), 'part of' (multi-folder bundle), 'bundled inside'
-    (unmatched folder nested in a matched one) -- not a single overloaded 'as X'."""
+    """The ', <tag>' suffix uses a distinct tag per relationship: 'listed online as' (title
+    differs), 'active/superseded copy' (multi-folder bundle), 'bundled inside' (unmatched
+    folder nested in a matched one)."""
 
     def _list_output(self, monkeypatch, addons_root, config_file, api):
         def fake_build_app(game, cfg_file):
@@ -663,7 +663,7 @@ class TestParentSuffixWording:
             return config, api, local
 
         monkeypatch.setattr(cli_mod, 'build_app', fake_build_app)
-        return invoke(config_file, ['list']).output
+        return click.unstyle(invoke(config_file, ['list']).output)
 
     def _single_addon_setup(self, tmp_path, manifest_title, upstream_title):
         addons_root = tmp_path / 'AddOns'
@@ -686,8 +686,16 @@ class TestParentSuffixWording:
         now defaults on (see TestNoColor), the main title actually renders 'Necro' in color, giving
         a real visual cue for the difference instead of two seemingly-identical strings."""
         addons_root, config_file, api = self._single_addon_setup(tmp_path, 'HideGroup|c5050ffNecro|r', 'HideGroupNecro')
-        output = self._list_output(monkeypatch, addons_root, config_file, api)
-        assert ', listed online as HideGroupNecro' in output
+
+        def fake_build_app(game, cfg_file):
+            config = load_config(cfg_file)
+            local = make_folder(addons_root)
+            local.scan(api)  # pyright: ignore[reportArgumentType] -- stub API, not a real gru.api.API
+            return config, api, local
+        monkeypatch.setattr(cli_mod, 'build_app', fake_build_app)
+        output = invoke(config_file, ['list']).output  # raw, unstripped -- checking ANSI is present
+
+        assert ', listed online as HideGroupNecro' in click.unstyle(output)
         assert '\x1b[' in output
 
     def test_listed_online_as_when_titles_genuinely_differ(self, monkeypatch, tmp_path):
@@ -695,7 +703,7 @@ class TestParentSuffixWording:
         output = self._list_output(monkeypatch, addons_root, config_file, api)
         assert ', listed online as Completely Different Name' in output
 
-    def test_part_of_for_multi_folder_bundle(self, monkeypatch, tmp_path):
+    def test_copy_tag_for_multi_folder_bundle(self, monkeypatch, tmp_path):
         addons_root = tmp_path / 'AddOns'
         addons_root.mkdir()
         config_file = tmp_path / 'gru.ini'
@@ -710,7 +718,7 @@ class TestParentSuffixWording:
                 return upstream
 
         output = self._list_output(monkeypatch, addons_root, config_file, LinkableApi())
-        assert ', part of BundleName' in output
+        assert ', active copy' in output
 
     def _duplicate_setup(self, tmp_path, version_a, version_b):
         addons_root = tmp_path / 'AddOns'
@@ -731,19 +739,19 @@ class TestParentSuffixWording:
     def test_version_precedence_marks_higher_version_active_lower_superseded(self, monkeypatch, tmp_path):
         addons_root, config_file, api = self._duplicate_setup(tmp_path, '2.0', '1.0')
         output = self._list_output(monkeypatch, addons_root, config_file, api)
-        assert 'CopyA [installed, part of LibShared (active)]' in output
-        assert 'CopyB [installed, part of LibShared (superseded)]' in output
+        assert 'CopyA [up to date, active copy]' in output
+        assert 'CopyB [up to date, superseded copy]' in output
 
     def test_version_precedence_ties_are_both_active(self, monkeypatch, tmp_path):
         addons_root, config_file, api = self._duplicate_setup(tmp_path, '1.0', '1.0')
         output = self._list_output(monkeypatch, addons_root, config_file, api)
-        assert output.count(', part of LibShared (active)') == 2
+        assert output.count(', active copy') == 2
         assert 'superseded' not in output
 
     def test_version_precedence_omitted_when_a_version_is_unparseable(self, monkeypatch, tmp_path):
         addons_root, config_file, api = self._duplicate_setup(tmp_path, '2.0', 'unknown')
         output = self._list_output(monkeypatch, addons_root, config_file, api)
-        assert ', part of LibShared]' in output
+        assert ', copy]' in output
         assert 'active' not in output and 'superseded' not in output
 
     def test_bundled_inside_for_unmatched_nested_folder(self, monkeypatch, tmp_path):
@@ -790,9 +798,9 @@ class TestParentSuffixWording:
         output = self._list_output(monkeypatch, addons_root, config_file, LinkableApi())
         assert ', bundled inside ParentAddon' in output
 
-    def test_bundled_inside_and_part_of_combine_for_duplicate_nested_install(self, monkeypatch, tmp_path):
+    def test_bundled_inside_and_copy_tag_combine_for_duplicate_nested_install(self, monkeypatch, tmp_path):
         """Real-world shape: a library bundled inside another addon's folder, also installed
-        standalone at top level. Both folders share one online AddonInfo (-> 'part of' on
+        standalone at top level. Both folders share one online AddonInfo (-> a copy tag on
         both), and the nested one additionally shows where it's bundled."""
         addons_root = tmp_path / 'AddOns'
         addons_root.mkdir()
@@ -814,8 +822,8 @@ class TestParentSuffixWording:
                 raise FileNotFoundError(name)
 
         output = self._list_output(monkeypatch, addons_root, config_file, LinkableApi())
-        assert ', bundled inside Loot Log, part of LibExtendedJournal' in output
-        assert output.count(', part of LibExtendedJournal') == 2
+        assert ', bundled inside Loot Log, active copy' in output
+        assert output.count(', active copy') == 2
 
     def test_unmatched_addon_shows_no_listing(self, monkeypatch, tmp_path):
         addons_root = tmp_path / 'AddOns'

@@ -111,32 +111,37 @@ class TermDisplay:
 
     @staticmethod
     def _version_precedence(addon: gru.addon.InstalledAddon, infos: gru.addon.AddonInfo) -> str:
-        """ ' (active)'/' (superseded)' by version rank among all folders sharing `infos`,
+        """ 'active copy'/'superseded copy' by version rank among all folders sharing `infos`,
         or '' if any of them has a version ESO can't compare (not all-numeric/dotted). """
         others = list(infos.folders.values())
         versions = [v for other in others if (v := _parse_version(other.version)) is not None]
         if len(versions) != len(others):
             return ''
         this = versions[others.index(addon)]
-        return ' (active)' if this == max(versions) else ' (superseded)'
+        return 'active copy' if this == max(versions) else 'superseded copy'
 
     def _installed(self, item: str, addon: gru.addon.InstalledAddon) -> None:
         """ Show addon info from the API endpoint """
         click.echo()
         assert addon.infos is not None  # guaranteed by the is_local/id dispatch in __init__
-        update = '' if not addon.can_update or addon.locked else f'{click.style("update available", bold=True)} - '
+        if addon.can_update and not addon.locked:
+            status = click.style('update available', fg='yellow', bold=True)
+        else:
+            status = click.style('up to date', fg='green')
         infos = addon.infos
         tags = []
         if addon.locked:
-            tags.append('version locked')
+            tags.append(click.style('version locked', fg='cyan'))
         if addon.parent is not None:
             tags.append(f'bundled inside {addon.parent.title}')
         if len(infos.folders) > 1:
-            tags.append(f'part of {infos.title}{self._version_precedence(addon, infos)}')
+            precedence = self._version_precedence(addon, infos)
+            fg = {'active copy': 'green', 'superseded copy': 'yellow'}.get(precedence)
+            tags.append(click.style(precedence, fg=fg) if precedence else 'copy')
         elif addon.title.strip() != infos.title.strip():
             tags.append(f'listed online as {infos.title}')
         suffix = ''.join(f', {tag}' for tag in tags)
-        click.echo(f'{item:{self.gutter}}{self._render_eso_text(addon.title)} [{update}installed{suffix}]')
+        click.echo(f'{item:{self.gutter}}{self._render_eso_text(addon.title)} [{status}{suffix}]')
         # TODO: Based on verbosity level, only click.echo a number of those:
         self._wrapped([
             f'Author: {self._styled_width(addon.author, 25)}',
@@ -176,11 +181,11 @@ class TermDisplay:
         try:
             self.api.dir(folder.dir)
         except AmbiguousDirectory:
-            return 'ambiguous - see gru match'
+            return click.style('ambiguous - see gru match', fg='red', bold=True)
         except FileNotFoundError:
-            return 'no listing'
+            return click.style('no listing', fg='yellow')
         else:
-            return 'no listing'  # shouldn't happen: _folder() is only reached when unmatched
+            return click.style('no listing', fg='yellow')  # shouldn't happen: only reached when unmatched
 
     def _folder(self, item: str, folder: gru.addon.InstalledAddon) -> None:
         """ Show addon info from a local folder that was not matched with the API endpoint """
@@ -189,7 +194,7 @@ class TermDisplay:
         parent = folder.parent
         tags = []
         if folder.locked:
-            tags.append('version locked')
+            tags.append(click.style('version locked', fg='cyan'))
         if parent and parent.id and parent.infos is not None:
             tags.append(f'bundled inside {parent.infos.title}')
         tags.append(self._unmatched_status(folder))
