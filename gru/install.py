@@ -601,25 +601,36 @@ class Folder:
         path = self.root.parent / 'SavedVariables' / f'{addon.dir}.lua'
         return [path] if path.exists() else []
 
+    def _bundled_children(self, addon: gru.addon.InstalledAddon) -> list[gru.addon.InstalledAddon]:
+        """ Installed addons nested inside `addon`'s own folder -- about to be swept away by its
+        removal (a single shutil.rmtree of the parent), whether or not they're separately
+        matched online (most bundled dependencies aren't). """
+        return [other for other in self.installed
+                if other is not addon and other.folder.is_relative_to(addon.folder)]
+
     def remove(self, addon: gru.addon.InstalledAddon | gru.addon.AddonInfo, deps: bool = False,
                opt: bool = True, remove_vars: RemoveVarsPolicy = False) -> int:
         """ Uninstall addon. `remove_vars` also applies to any dependency this cascades into
-        removing (deps=True): a fixed bool answers for all of them, a callable is asked again
-        for each -- e.g. cli.py prompting once per addon that actually has SavedVariables. """
+        removing (deps=True) and to any bundled addon nested inside it, swept away by the same
+        rmtree: a fixed bool answers for all of them, a callable is asked again for each -- e.g.
+        cli.py prompting once per addon that actually has SavedVariables. """
         if isinstance(addon, AddonInfo):
             if not addon.folders:
                 raise ValueError(f'Addon {addon.title} is not installed')
             addon = list(addon.folders.values())[0]
 
-        if remove_vars(addon) if callable(remove_vars) else remove_vars:
-            for path in self.saved_variable_files(addon):
-                path.unlink()
+        bundled = self._bundled_children(addon)
+        for target in (addon, *bundled):
+            if remove_vars(target) if callable(remove_vars) else remove_vars:
+                for path in self.saved_variable_files(target):
+                    path.unlink()
 
         if addon.folder.exists():
             shutil.rmtree(addon.folder)
-        del self._installed[addon.folder]
-        if addon.id and addon.infos is not None:
-            addon.infos.deregister(addon)
+        for gone in (addon, *bundled):
+            self._installed.pop(gone.folder, None)
+            if gone.id and gone.infos is not None:
+                gone.infos.deregister(gone)
 
         if not deps:
             return 0

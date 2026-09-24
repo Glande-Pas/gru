@@ -281,6 +281,66 @@ class TestRemove:
         folder.remove(addon, remove_vars=False)
         assert saved.exists()
 
+    def test_remove_also_deletes_saved_variables_of_unmatched_bundled_child(self, addon_root, folder):
+        """The reported gap: a bundled lib not matched online never got its own SavedVariables
+        offered/removed, since rmtree()-ing the parent doesn't touch <root>/../SavedVariables/
+        and remove() only ever checked the one addon passed to it."""
+        make_installed(addon_root, 'Parent')
+        make_installed(addon_root / 'Parent', 'LibFoo', SavedVariables='LibFooVars')
+        folder.scan()  # no api -- LibFoo stays unmatched, like most bundled deps
+
+        [parent] = list(folder.dir('Parent'))
+        [child] = list(folder.dir('LibFoo'))
+        assert child.infos is None  # unmatched, the case this is about
+
+        saved_dir = addon_root.parent / 'SavedVariables'
+        saved_dir.mkdir(parents=True)
+        (saved_dir / 'LibFoo.lua').write_text('-- vars --')
+
+        folder.remove(parent, remove_vars=True)
+
+        assert not (saved_dir / 'LibFoo.lua').exists()
+        assert not parent.folder.exists()
+        assert list(folder.dir('LibFoo')) == []  # stale entry also cleaned up, not just the file
+
+    def test_remove_bundled_child_saved_variables_respects_remove_vars_false(self, addon_root, folder):
+        make_installed(addon_root, 'Parent')
+        make_installed(addon_root / 'Parent', 'LibFoo', SavedVariables='LibFooVars')
+        folder.scan()
+        [parent] = list(folder.dir('Parent'))
+
+        saved_dir = addon_root.parent / 'SavedVariables'
+        saved_dir.mkdir(parents=True)
+        (saved_dir / 'LibFoo.lua').write_text('-- vars --')
+
+        folder.remove(parent, remove_vars=False)
+        assert (saved_dir / 'LibFoo.lua').exists()
+
+    def test_remove_bundled_child_saved_variables_policy_asked_per_child(self, addon_root, folder):
+        """remove_vars as a callable is asked separately for the parent and each bundled child,
+        same as it already is for cascaded dependency removals."""
+        make_installed(addon_root, 'Parent', SavedVariables='ParentVars')
+        make_installed(addon_root / 'Parent', 'LibFoo', SavedVariables='LibFooVars')
+        folder.scan()
+        [parent] = list(folder.dir('Parent'))
+
+        saved_dir = addon_root.parent / 'SavedVariables'
+        saved_dir.mkdir(parents=True)
+        (saved_dir / 'Parent.lua').write_text('-- vars --')
+        (saved_dir / 'LibFoo.lua').write_text('-- vars --')
+
+        asked = []
+
+        def policy(candidate):
+            asked.append(candidate.dir)
+            return candidate.dir == 'LibFoo'  # only agree to remove the child's vars
+
+        folder.remove(parent, remove_vars=policy)
+
+        assert set(asked) == {'Parent', 'LibFoo'}
+        assert (saved_dir / 'Parent.lua').exists()
+        assert not (saved_dir / 'LibFoo.lua').exists()
+
     def test_remove_deregisters_from_linked_addoninfo(self, addon_root, folder):
         make_installed(addon_root, 'MyAddon')
         folder.scan()
