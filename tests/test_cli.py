@@ -1473,6 +1473,27 @@ class TestGetCommand:
         assert rows[1][:2] == ['MyAddon', '1.0']
         assert rows[1][4] == app_mod.NOT_INSTALLED
 
+    def test_install_easter_egg_forwards_to_get(self, monkeypatch, cli_app):
+        """'install' is a hidden joke command (GRU: Get, Remove, Update) that still forwards
+        its args/options through to the real get() -- no network needed to prove that: a
+        locally-matched-but-uncataloged addon short-circuits before any download is attempted."""
+        installed = make_installed(cli_app['addons_root'], 'LocalOnly')
+
+        class LocalOnlyApi(StubAPI):
+            def find(self, val, local):
+                return [installed]
+
+        self._wire_build_app(monkeypatch, cli_app['addons_root'], LocalOnlyApi())
+        result = invoke(cli_app['config_file'], ['install', 'LocalOnly', '--yes'])
+        assert result.exit_code == 0
+        assert "Ze command is 'get'" in result.output
+        assert 'already installed locally and not found online' in result.output
+
+    def test_install_hidden_from_help(self, cli_app):
+        result = invoke(cli_app['config_file'], ['--help'])
+        assert result.exit_code == 0
+        assert 'install' not in result.output
+
 
 class TestFolderSearchTiebreak:
     def test_exactly_tied_candidates_do_not_crash_sorting(self, addon_root, folder):

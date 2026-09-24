@@ -43,7 +43,8 @@ class SectionedHelpGroup(click.Group):
     """ Sections commands into help groups """
 
     _cmd_shortcuts = {'rm': 'remove', 'up': 'update', 'ls': 'list', 's': 'search', 'cc': 'clear-caches', 'df': 'diff',
-                      'al': 'add-lock', 'rl': 'remove-lock', 'll': 'list-locks', 'rv': 'review', 'm': 'match'}
+                      'al': 'add-lock', 'rl': 'remove-lock', 'll': 'list-locks', 'rv': 'review', 'm': 'match',
+                      'in': 'install'}
 
     @classmethod
     def _cmd_group(cls, cmd: click.Command) -> str:
@@ -63,7 +64,7 @@ class SectionedHelpGroup(click.Group):
             rows = []
             for subcommand in self.list_commands(ctx):
                 cmd = self.get_command(ctx, subcommand)
-                if cmd is None or group != self._cmd_group(cmd):
+                if cmd is None or cmd.hidden or group != self._cmd_group(cmd):
                     continue
                 short = shortcuts.get(subcommand)
                 rows.append((f'{subcommand} [{short}]' if short else subcommand, cmd.short_help or ''))
@@ -515,6 +516,23 @@ def get(ctx: click.Context, addon: list[str], auto_deps: bool = True, opt: bool 
         local.export_state()
         gru_app.log_changes(local, ctx.obj['config'], before)
         show_warnings(ctx)
+
+
+@main.command(hidden=True)
+@click.argument('addon', required=False, nargs=-1)
+@click.option('--auto-deps/--no-auto-deps', default=True)
+@click.option('--yes', '-y', 'batch', is_flag=True, default=False)
+@click.option('--opt/--no-opt', default=None)
+@click.pass_context
+def install(ctx: click.Context, addon: list[str], auto_deps: bool = True, opt: bool | None = None,
+            batch: bool = False) -> None:
+    """ Light bulb! """
+    click.echo()
+    click.echo('Light bulb! But zis is not ze word, keed.')
+    click.echo("Ze command is 'get' -- G, R, U: Get, Remove, Update. Zat is ze whole joke, you see?")
+    click.echo('Is okay, is okay. I feex it for you. Zis is what I do now, I am a hero.')
+    click.echo()
+    ctx.invoke(get, addon=addon, auto_deps=auto_deps, opt=opt, batch=batch)
 
 
 def _remove_vars_policy(ctx: click.Context, local: gru.install.Folder, remove_vars: bool | None
