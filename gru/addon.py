@@ -229,6 +229,25 @@ class InstalledAddon(Dependency, DisplayAddonProtocol):
         return datetime.datetime.fromtimestamp(max(stat.st_mtime, stat.st_ctime) + 2) <= self.infos.metadata['date']
 
     @property
+    def version_rank(self) -> str:
+        """ 'active'/'superseded' by version among folders sharing `infos`, or '' if unknown
+        (no other folder, or a version ESO can't compare). ESO always loads the highest one. """
+        if self.infos is None:
+            return ''
+        others = list(self.infos.folders.values())
+        versions = [v for other in others if (v := _parse_version(other.version)) is not None]
+        if len(versions) != len(others):
+            return ''
+        this = _parse_version(self.version)
+        if this is None:
+            return ''
+        return 'active' if this == max(versions) else 'superseded'
+
+    @property
+    def is_superseded(self) -> bool:
+        return self.version_rank == 'superseded'
+
+    @property
     def files(self) -> list[pathlib.Path]:
         return [
             path for path in (path.relative_to(self.folder) for path in self.folder.rglob('*') if path.is_file())

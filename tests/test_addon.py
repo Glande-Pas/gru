@@ -206,6 +206,50 @@ class TestInstalledAddonCanUpdate:
         assert installed.can_update is True
 
 
+class TestInstalledAddonVersionRank:
+    def test_no_other_folder_is_trivially_active(self, tmp_path):
+        addon = make_installed(tmp_path, 'MyAddon', Version='1.0')
+        addon.link(make_addon_info(title='MyAddon', version='1.0'))
+        assert addon.version_rank == 'active'
+        assert addon.is_superseded is False
+
+    def test_higher_version_is_active(self, tmp_path):
+        a = make_installed(tmp_path, 'CopyA', Version='2.0')
+        b = make_installed(tmp_path, 'CopyB', Version='1.0')
+        upstream = make_addon_info(title='LibShared')
+        a.link(upstream)
+        b.link(upstream)
+        assert a.version_rank == 'active'
+        assert a.is_superseded is False
+
+    def test_lower_version_is_superseded(self, tmp_path):
+        a = make_installed(tmp_path, 'CopyA', Version='2.0')
+        b = make_installed(tmp_path, 'CopyB', Version='1.0')
+        upstream = make_addon_info(title='LibShared')
+        a.link(upstream)
+        b.link(upstream)
+        assert b.version_rank == 'superseded'
+        assert b.is_superseded is True
+
+    def test_tie_is_active_for_both(self, tmp_path):
+        a = make_installed(tmp_path, 'CopyA', Version='1.0')
+        b = make_installed(tmp_path, 'CopyB', Version='1.0')
+        upstream = make_addon_info(title='LibShared')
+        a.link(upstream)
+        b.link(upstream)
+        assert a.version_rank == 'active'
+        assert b.version_rank == 'active'
+
+    def test_unparseable_sibling_version_is_unknown(self, tmp_path):
+        a = make_installed(tmp_path, 'CopyA', Version='2.0')
+        b = make_installed(tmp_path, 'CopyB', Version='unknown')
+        upstream = make_addon_info(title='LibShared')
+        a.link(upstream)
+        b.link(upstream)
+        assert a.version_rank == ''
+        assert a.is_superseded is False
+
+
 class TestInstalledAddonFiles:
     def test_files_lists_relative_paths(self, tmp_path):
         addon_dir = write_manifest(tmp_path, 'MyAddon')

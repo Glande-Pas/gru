@@ -21,7 +21,7 @@ from collections.abc import Iterable
 
 from .config import load_config, save_config, user_cache, user_config, display_config, update_config
 from .api import API, AmbiguousDirectory
-from .addon import AddonInfo, InstalledAddon, _parse_version
+from .addon import AddonInfo, InstalledAddon
 from .install import Folder
 from .patch import addon_diff, addon_patch_file
 from . import app as gru_app
@@ -109,22 +109,12 @@ class TermDisplay:
         text = self._render_eso_text(text)
         return text + ' ' * max(0, width - len(click.unstyle(text)))
 
-    @staticmethod
-    def _version_precedence(addon: gru.addon.InstalledAddon, infos: gru.addon.AddonInfo) -> str:
-        """ 'active copy'/'superseded copy' by version rank among all folders sharing `infos`,
-        or '' if any of them has a version ESO can't compare (not all-numeric/dotted). """
-        others = list(infos.folders.values())
-        versions = [v for other in others if (v := _parse_version(other.version)) is not None]
-        if len(versions) != len(others):
-            return ''
-        this = versions[others.index(addon)]
-        return 'active copy' if this == max(versions) else 'superseded copy'
-
     def _installed(self, item: str, addon: gru.addon.InstalledAddon) -> None:
         """ Show addon info from the API endpoint """
         click.echo()
         assert addon.infos is not None  # guaranteed by the is_local/id dispatch in __init__
-        if addon.can_update and not addon.locked:
+        moot = addon.parent is not None and addon.is_superseded  # 'superseded copy' tag says enough
+        if addon.can_update and not addon.locked and not moot:
             status = click.style('update available', fg='yellow', bold=True)
         else:
             status = click.style('up to date', fg='green')
@@ -135,9 +125,9 @@ class TermDisplay:
         if addon.parent is not None:
             tags.append(f'bundled inside {addon.parent.title}')
         if len(infos.folders) > 1:
-            precedence = self._version_precedence(addon, infos)
-            fg = {'active copy': 'green', 'superseded copy': 'yellow'}.get(precedence)
-            tags.append(click.style(precedence, fg=fg) if precedence else 'copy')
+            rank = addon.version_rank
+            fg = {'active': 'green', 'superseded': 'yellow'}.get(rank)
+            tags.append(click.style(f'{rank} copy', fg=fg) if rank else 'copy')
         elif addon.title.strip() != infos.title.strip():
             tags.append(f'listed online as {infos.title}')
         suffix = ''.join(f', {tag}' for tag in tags)

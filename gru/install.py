@@ -529,11 +529,14 @@ class Folder:
     def update(self, api: gru.api.API, progress: ProgressFactory | None = None, opt: bool = False, deps: bool = False,
                patch: bool = False) -> tuple[int, int]:
         updates = []
-        for addon in self.installed:
+        for addon in list(self.installed):  # snapshot: a bundled update adds a new key below
             if not addon.can_update or addon.infos is None or addon.locked:
                 continue
+            if addon.parent is not None and addon.is_superseded:
+                continue  # a newer copy already exists elsewhere; nothing to do here
+            path = addon.folder if addon.parent is None else None  # bundled updates go top-level
             try:
-                updates.extend(self.unpack(addon.infos, api, progress=progress, path=addon.folder))
+                updates.extend(self.unpack(addon.infos, api, progress=progress, path=path))
             except Exception as err:
                 warnings.warn(f'Failed to install addon dependence {addon.dir!r}: {err}\n'
                               f'{"".join(traceback.format_exc())}')

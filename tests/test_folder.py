@@ -612,6 +612,44 @@ class TestFolderUpdate:
         updates, added = folder.update(as_api(StubAPI()))
         assert (updates, added) == (0, 0)
 
+    def test_update_bundled_addon_installs_at_top_level_not_in_place(self, addon_root, folder, monkeypatch, tmp_path):
+        make_installed(addon_root, 'Parent', Title='Parent')
+        make_installed(addon_root / 'Parent', 'LibFoo', Title='LibFoo', IsLibrary='true', Version='1.0')
+        (addon_root / 'Parent' / 'LibFoo' / 'Data.lua').write_text('old = 1\n')
+        folder.scan()
+        [bundled] = list(folder.dir('LibFoo'))
+        upstream = make_addon_info(id_=1, title='LibFoo', version='2.0', directories=['LibFoo'])
+        bundled.link(upstream)
+
+        zip_bytes = _zip_bytes({
+            'LibFoo/LibFoo.txt': '## Title: LibFoo\n## APIVersion: 100035\n## Version: 2.0\n## Author: Test\n',
+            'LibFoo/Data.lua': 'new = 2\n',
+        })
+        _mock_download(monkeypatch, tmp_path, zip_bytes)
+
+        updates, added = folder.update(as_api(StubAPI()))
+
+        assert (updates, added) == (1, 0)
+        assert (addon_root / 'Parent' / 'LibFoo' / 'Data.lua').read_text() == 'old = 1\n'  # untouched
+        assert (addon_root / 'LibFoo' / 'Data.lua').read_text() == 'new = 2\n'  # fresh top-level copy
+
+    def test_update_skips_bundled_addon_already_superseded(self, addon_root, folder, monkeypatch, tmp_path):
+        make_installed(addon_root, 'Parent', Title='Parent')
+        make_installed(addon_root / 'Parent', 'LibFoo', Title='LibFoo', IsLibrary='true', Version='1.0')
+        make_installed(addon_root, 'LibFoo', Title='LibFoo', IsLibrary='true', Version='2.0')
+        folder.scan()
+        upstream = make_addon_info(id_=1, title='LibFoo', version='2.0', directories=['LibFoo'])
+        for addon in folder.installed:
+            if addon.dir == 'LibFoo':
+                addon.link(upstream)
+
+        def boom(*a, **kw):
+            raise AssertionError('should not be called: bundled copy is superseded')
+        monkeypatch.setattr(install_mod.requests, 'head', boom)
+
+        updates, added = folder.update(as_api(StubAPI()))
+        assert (updates, added) == (0, 0)
+
 
 class TestFolderInstallDeps:
     def test_install_deps_downloads_missing_dependency(self, addon_root, folder, monkeypatch, tmp_path):
