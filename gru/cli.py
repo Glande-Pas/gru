@@ -352,12 +352,15 @@ def main(ctx: click.Context, game: str = 'ESO', config_file: pathlib.Path | None
     ctx.ensure_object(dict)
     ctx.obj['warnings'] = ctx.with_resource(warnings.catch_warnings(record=True))
 
-    if ctx.invoked_subcommand == 'config':
-        # skip network fetch/filesystem scan as we may be trying to set those up
-        config = load_config(config_file)
-        api = local = None
-    else:
-        config, api, local = build_app(game, config_file)
+    try:
+        if ctx.invoked_subcommand == 'config':
+            # skip network fetch/filesystem scan as we may be trying to set those up
+            config = load_config(config_file)
+            api = local = None
+        else:
+            config, api, local = build_app(game, config_file)
+    except (OSError, configparser.Error) as exc:
+        raise click.ClickException(str(exc))
     ctx.obj['config'] = config
     ctx.obj['game'] = game
     ctx.obj['config_file'] = config_file
@@ -423,7 +426,10 @@ def config_set(ctx: click.Context, entry: str, value: str) -> None:
     except ValueError:
         click.echo('Error: value must be "on" or "off" for boolean values only')
     else:
-        save_config(ctx.obj['config'], ctx.obj['config_file'])
+        try:
+            save_config(ctx.obj['config'], ctx.obj['config_file'])
+        except OSError as exc:
+            raise click.ClickException(str(exc))
 
 
 def show_warnings(ctx: click.Context) -> None:
