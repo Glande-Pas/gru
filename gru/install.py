@@ -445,6 +445,7 @@ class Folder:
         url = url_override or self.url_template.format(id=addon.id) + urllib_quote(fname)
 
         with requests.head(url, allow_redirects=True) as check:
+            check.raise_for_status()
             headers = {key.lower(): value for key, value in check.headers.items()}
 
         fname = self._suggested_filename(headers, fname)
@@ -490,8 +491,9 @@ class Folder:
         return installed_addons.values()
 
     def install(self, addon: gru.addon.AddonInfo, api: gru.api.API, progress: ProgressFactory | None = None,
-                path: pathlib.Path | None = None, deps: bool = True, opt: bool = False) -> int | None:
-        installed = self.unpack(addon, api, path=path, progress=progress)
+                path: pathlib.Path | None = None, deps: bool = True, opt: bool = False,
+                url_override: str | None = None) -> int | None:
+        installed = self.unpack(addon, api, path=path, progress=progress, url_override=url_override)
 
         if deps:
             return self.install_deps(installed, api, progress=progress, opt=opt)

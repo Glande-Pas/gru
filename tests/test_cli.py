@@ -1023,6 +1023,9 @@ class TestDiffCommand:
             def iter_content(self, chunk_size=1024):
                 yield self.content
 
+            def raise_for_status(self):
+                pass
+
         import gru.install as install_mod
         headers = {'content-length': str(len(zip_bytes))}
         monkeypatch.setattr(install_mod.requests, 'head',
@@ -1111,6 +1114,9 @@ class TestUpdateCommand:
 
             def iter_content(self, chunk_size=1024):
                 yield self.content
+
+            def raise_for_status(self):
+                pass
 
         import gru.install as install_mod
         headers = {'content-length': str(len(zip_bytes))}
@@ -1451,6 +1457,9 @@ class TestGetCommand:
             def iter_content(self, chunk_size=1024):
                 yield self.content
 
+            def raise_for_status(self):
+                pass
+
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, 'w') as zf:
             manifest = '## Title: MyAddon\n## APIVersion: 100035\n## Version: 1.0\n## Author: Test\n'
@@ -1472,6 +1481,329 @@ class TestGetCommand:
         rows = list(csv.reader((cli_app['config_dir'] / 'ESO' / 'changes.csv').open()))
         assert rows[1][:2] == ['MyAddon', '1.0']
         assert rows[1][4] == app_mod.NOT_INSTALLED
+
+    def test_get_refuses_locked_addon(self, monkeypatch, cli_app):
+        make_installed(cli_app['addons_root'], 'MyAddon', Version='1.0')
+        upstream = make_addon_info(id_=1, title='MyAddon', directories=['MyAddon'])
+
+        class FindableApi(StubAPI):
+            def find(self, val, local):
+                return [upstream]
+
+            def dir(self, name, link=None):
+                return upstream
+
+        setup_local = make_folder(cli_app['addons_root'])
+        setup_local.scan(FindableApi())  # pyright: ignore[reportArgumentType] -- stub API
+        [addon] = list(setup_local.dir('MyAddon'))
+        addon.locked = True
+        setup_local.export_state()
+
+        self._wire_build_app(monkeypatch, cli_app['addons_root'], FindableApi())
+        result = invoke(cli_app['config_file'], ['get', 'MyAddon', '--yes'])
+        assert result.exit_code == 0
+        assert 'MyAddon is version locked' in result.output
+        assert 'gru remove-lock MyAddon' in result.output
+
+    def test_get_with_version_installs_archived_version_and_suggests_lock(self, monkeypatch, cli_app):
+        from gru.api import PreviousVersion
+        import zipfile
+        import gru.install as install_mod
+
+        upstream = make_addon_info(id_=1, title='MyAddon', version='2.0', directories=['MyAddon'])
+        archived = PreviousVersion(version='1.0', size='1kB', uploader='x', date='d',
+                                   download_url='/downloads/getfile.php?id=1&aid=999', aid=999)
+
+        class VersionedApi(StubAPI):
+            info_url_template = 'https://www.esoui.com/downloads/info{id}.html'
+
+            def find(self, val, local):
+                return [upstream]
+
+            def previous_versions(self, id_):
+                return [archived]
+
+        self._wire_build_app(monkeypatch, cli_app['addons_root'], VersionedApi())
+
+        class FakeResponse:
+            content: bytes
+
+            def __init__(self, **attrs):
+                self.__dict__.update(attrs)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def iter_content(self, chunk_size=1024):
+                yield self.content
+
+            def raise_for_status(self):
+                pass
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w') as zf:
+            zf.writestr('MyAddon/MyAddon.txt', '## Title: MyAddon\n## APIVersion: 100035\n## Version: 1.0\n')
+        zip_bytes = buf.getvalue()
+
+        headers = {'content-length': str(len(zip_bytes))}
+        monkeypatch.setattr(install_mod.requests, 'head',
+                            lambda url, allow_redirects=True: FakeResponse(headers=headers))
+        monkeypatch.setattr(install_mod.requests, 'get',
+                            lambda url, stream=True, allow_redirects=True: FakeResponse(content=zip_bytes))
+        cache_base = cli_app['addons_root'].parent
+        monkeypatch.setattr(install_mod, 'user_cache', lambda *parts: _touch_cache_path(cache_base, *parts))
+
+        result = invoke(cli_app['config_file'], ['get', 'MyAddon', '--version', '1.0', '--yes'])
+        assert result.exit_code == 0
+        assert 'Done installing' in result.output
+        assert 'gru add-lock MyAddon' in result.output
+
+    def test_get_with_unknown_version_skips(self, monkeypatch, cli_app):
+        upstream = make_addon_info(id_=1, title='MyAddon', version='2.0', directories=['MyAddon'])
+
+        class VersionedApi(StubAPI):
+            info_url_template = 'https://www.esoui.com/downloads/info{id}.html'
+
+            def find(self, val, local):
+                return [upstream]
+
+            def previous_versions(self, id_):
+                return []
+
+        self._wire_build_app(monkeypatch, cli_app['addons_root'], VersionedApi())
+        result = invoke(cli_app['config_file'], ['get', 'MyAddon', '--version', '9.9', '--yes'])
+        assert result.exit_code == 0
+        assert 'not found in the archive' in result.output
+
+    def test_get_version_disallowed_for_multiple_addons(self, monkeypatch, cli_app):
+        make_installed(cli_app['addons_root'], 'Unrelated')  # never touched -- rejected before the loop
+        self._wire_build_app(monkeypatch, cli_app['addons_root'], StubAPI())
+        result = invoke(cli_app['config_file'], ['get', 'AddonA', 'AddonB', '--version', '1.0'])
+        assert result.exit_code == 0
+        assert '--version only makes sense for a single addon at a time.' in result.output
+
+    def test_get_bare_version_flag_rejected_in_batch_mode(self, monkeypatch, cli_app):
+        upstream = make_addon_info(id_=1, title='MyAddon', directories=['MyAddon'])
+
+        class FindableApi(StubAPI):
+            def find(self, val, local):
+                return [upstream]
+
+        self._wire_build_app(monkeypatch, cli_app['addons_root'], FindableApi())
+        result = invoke(cli_app['config_file'], ['get', 'MyAddon', '--version', '--yes'])
+        assert result.exit_code == 0
+        assert 'Cannot prompt for a version in batch mode' in result.output
+
+    def test_get_bare_version_flag_with_no_archive(self, monkeypatch, cli_app):
+        upstream = make_addon_info(id_=1, title='MyAddon', directories=['MyAddon'])
+
+        class VersionedApi(StubAPI):
+            info_url_template = 'https://www.esoui.com/downloads/info{id}.html'
+
+            def find(self, val, local):
+                return [upstream]
+
+            def previous_versions(self, id_):
+                return []
+
+        self._wire_build_app(monkeypatch, cli_app['addons_root'], VersionedApi())
+        result = invoke(cli_app['config_file'], ['get', 'MyAddon', '--version'], input='y\n')
+        assert result.exit_code == 0
+        assert 'No archived versions found' in result.output
+
+    def test_get_bare_version_flag_lists_and_installs_the_picked_one(self, monkeypatch, cli_app):
+        from gru.api import PreviousVersion
+        import zipfile
+        import gru.install as install_mod
+
+        upstream = make_addon_info(id_=1, title='MyAddon', version='3.0', directories=['MyAddon'])
+        older = PreviousVersion(version='1.0', size='1kB', uploader='a', date='d1',
+                                download_url='/downloads/getfile.php?id=1&aid=111', aid=111)
+        newer = PreviousVersion(version='2.0', size='2kB', uploader='b', date='d2',
+                                download_url='/downloads/getfile.php?id=1&aid=222', aid=222)
+
+        class VersionedApi(StubAPI):
+            info_url_template = 'https://www.esoui.com/downloads/info{id}.html'
+
+            def find(self, val, local):
+                return [upstream]
+
+            def previous_versions(self, id_):
+                return [older, newer]
+
+        self._wire_build_app(monkeypatch, cli_app['addons_root'], VersionedApi())
+
+        class FakeResponse:
+            content: bytes
+
+            def __init__(self, **attrs):
+                self.__dict__.update(attrs)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def iter_content(self, chunk_size=1024):
+                yield self.content
+
+            def raise_for_status(self):
+                pass
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w') as zf:
+            zf.writestr('MyAddon/MyAddon.txt', '## Title: MyAddon\n## APIVersion: 100035\n## Version: 2.0\n')
+        zip_bytes = buf.getvalue()
+        headers = {'content-length': str(len(zip_bytes))}
+
+        called_urls = []
+
+        def fake_head(url, allow_redirects=True):
+            called_urls.append(url)
+            return FakeResponse(headers=headers)
+
+        monkeypatch.setattr(install_mod.requests, 'head', fake_head)
+        monkeypatch.setattr(install_mod.requests, 'get',
+                            lambda url, stream=True, allow_redirects=True: FakeResponse(content=zip_bytes))
+        cache_base = cli_app['addons_root'].parent
+        monkeypatch.setattr(install_mod, 'user_cache', lambda *parts: _touch_cache_path(cache_base, *parts))
+
+        # 'y' confirms the single-match installation prompt, '2' picks the second (newer) entry.
+        result = invoke(cli_app['config_file'], ['get', 'MyAddon', '--version'], input='y\n2\n')
+        assert result.exit_code == 0
+        assert 'Archived versions of MyAddon' in result.output
+        assert '1.0' in result.output and '2.0' in result.output
+        assert 'Done installing' in result.output
+        assert 'gru add-lock MyAddon' in result.output
+        assert 'aid=222' in called_urls[0]
+
+    def test_get_warns_about_unapplied_saved_patch(self, monkeypatch, cli_app):
+        make_installed(cli_app['addons_root'], 'MyAddon', Version='1.0')
+        upstream = make_addon_info(id_=1, title='MyAddon', version='2.0', directories=['MyAddon'])
+
+        class FindableApi(StubAPI):
+            def find(self, val, local):
+                return [upstream]
+
+        self._wire_build_app(monkeypatch, cli_app['addons_root'], FindableApi())
+
+        patch_path = cli_app['config_dir'] / 'ESO' / 'MyAddon.patch'
+        patch_path.parent.mkdir(parents=True, exist_ok=True)
+        patch_path.write_text('--- fake patch ---\n')
+
+        import zipfile
+        import gru.install as install_mod
+
+        class FakeResponse:
+            content: bytes
+
+            def __init__(self, **attrs):
+                self.__dict__.update(attrs)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def iter_content(self, chunk_size=1024):
+                yield self.content
+
+            def raise_for_status(self):
+                pass
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w') as zf:
+            zf.writestr('MyAddon/MyAddon.txt', '## Title: MyAddon\n## APIVersion: 100035\n## Version: 2.0\n')
+        zip_bytes = buf.getvalue()
+
+        headers = {'content-length': str(len(zip_bytes))}
+        monkeypatch.setattr(install_mod.requests, 'head',
+                            lambda url, allow_redirects=True: FakeResponse(headers=headers))
+        monkeypatch.setattr(install_mod.requests, 'get',
+                            lambda url, stream=True, allow_redirects=True: FakeResponse(content=zip_bytes))
+        cache_base = cli_app['addons_root'].parent
+        monkeypatch.setattr(install_mod, 'user_cache', lambda *parts: _touch_cache_path(cache_base, *parts))
+
+        result = invoke(cli_app['config_file'], ['get', 'MyAddon', '--yes'])
+        assert result.exit_code == 0
+        assert 'Done installing' in result.output
+        assert 'saved patch exists for MyAddon' in result.output
+        assert 'gru patch MyAddon' in result.output
+
+    def test_get_404_download_errors_cleanly(self, monkeypatch, cli_app):
+        """Regression: unpack()'s HEAD request never checked its status, so a dead/removed
+        download link (e.g. an expired archived --version) limped through a full GET and
+        crashed later with an uncaught zipfile.BadZipFile instead of a clean message."""
+        import requests
+        import gru.install as install_mod
+
+        upstream = make_addon_info(id_=1, title='MyAddon', directories=['MyAddon'])
+
+        class FindableApi(StubAPI):
+            def find(self, val, local):
+                return [upstream]
+
+        self._wire_build_app(monkeypatch, cli_app['addons_root'], FindableApi())
+
+        class NotFoundResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def raise_for_status(self):
+                raise requests.HTTPError('404 Client Error')
+
+        monkeypatch.setattr(install_mod.requests, 'head', lambda url, allow_redirects=True: NotFoundResponse())
+
+        result = invoke(cli_app['config_file'], ['get', 'MyAddon', '--yes'])
+        assert result.exit_code == 0
+        assert 'Failed installing MyAddon' in result.output
+        assert 'Traceback' not in result.output
+
+    def test_get_bad_zip_errors_cleanly(self, monkeypatch, cli_app):
+        import gru.install as install_mod
+
+        upstream = make_addon_info(id_=1, title='MyAddon', directories=['MyAddon'])
+
+        class FindableApi(StubAPI):
+            def find(self, val, local):
+                return [upstream]
+
+        self._wire_build_app(monkeypatch, cli_app['addons_root'], FindableApi())
+
+        class NotAZipResponse:
+            headers: dict = {}
+            content = b'<html>not a zip</html>'
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def raise_for_status(self):
+                pass
+
+            def iter_content(self, chunk_size=1024):
+                yield self.content
+
+        monkeypatch.setattr(install_mod.requests, 'head', lambda url, allow_redirects=True: NotAZipResponse())
+        monkeypatch.setattr(install_mod.requests, 'get',
+                            lambda url, stream=True, allow_redirects=True: NotAZipResponse())
+        cache_base = cli_app['addons_root'].parent
+        monkeypatch.setattr(install_mod, 'user_cache', lambda *parts: _touch_cache_path(cache_base, *parts))
+
+        result = invoke(cli_app['config_file'], ['get', 'MyAddon', '--yes'])
+        assert result.exit_code == 0
+        assert 'Failed installing MyAddon' in result.output
+        assert 'Traceback' not in result.output
 
     def test_install_easter_egg_forwards_to_get(self, monkeypatch, cli_app):
         """'install' is a hidden joke command (GRU: Get, Remove, Update) that still forwards

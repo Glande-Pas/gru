@@ -17,6 +17,8 @@ import sys
 import click_repl
 import prompt_toolkit.history as prompt_history
 import urllib.parse
+import requests
+import zipfile
 from collections.abc import Iterable
 
 from .config import load_config, save_config, user_cache, user_config, display_config, update_config
@@ -444,9 +446,11 @@ def process_result(ctx: click.Context, result: typing.Any, game: str, config_fil
 @click.option('--auto-deps/--no-auto-deps', default=True)
 @click.option('--yes', '-y', 'batch', is_flag=True, default=False)
 @click.option('--opt/--no-opt', default=None, help='Include optional dependences')
+@click.option('--version', 'version', is_flag=False, flag_value='', default=None,
+              help='Install a specific previous version instead of latest (bare flag to pick from a list)')
 @click.pass_context
 def get(ctx: click.Context, addon: list[str], auto_deps: bool = True, opt: bool | None = None,
-        batch: bool = False) -> None:
+        batch: bool = False, version: str | None = None) -> None:
     """ Find, download, and install an addon """
     api = ctx.obj['api']
     local = ctx.obj['local']
@@ -456,6 +460,11 @@ def get(ctx: click.Context, addon: list[str], auto_deps: bool = True, opt: bool 
         opt = get_config_bool(ctx, '{game}.addons.optional')
 
     addon_list = addon or [click.prompt('Addon to install', prompt_suffix=':\n>> ')]
+
+    if version is not None and len(addon_list) > 1:
+        click.echo('--version only makes sense for a single addon at a time.')
+        show_warnings(ctx)
+        return
 
     try:
         for addon_spec in addon_list:
@@ -492,6 +501,10 @@ def get(ctx: click.Context, addon: list[str], auto_deps: bool = True, opt: bool 
             install_path = None
             try:
                 installed_addon = next(ad for ad in local.id(found.id) if ad.parent is None)
+                if installed_addon.locked:
+                    click.echo(f'{found.title} is version locked; run `gru remove-lock {installed_addon.dir}` '
+                               'first if you want to replace it.')
+                    continue
                 if batch or _confirm(f'Addon found at {installed_addon.folder}, update?'):
                     install_path = installed_addon.folder
                 else:
@@ -500,9 +513,35 @@ def get(ctx: click.Context, addon: list[str], auto_deps: bool = True, opt: bool 
             except StopIteration:
                 pass
 
+            url_override = None
+            if version == '' and batch:
+                click.echo(f'Cannot prompt for a version in batch mode, skipping {addon_spec}')
+                continue
+            elif version == '':
+                versions = api.previous_versions(found.id)
+                if not versions:
+                    click.echo(f'No archived versions found for {found.title}, skipping')
+                    continue
+                click.echo(f'Archived versions of {found.title}:')
+                for n, v in enumerate(versions, 1):
+                    click.echo(f'{n:3}: {v.version:15} {v.date:20} {v.size:8} {v.uploader or "unknown"}')
+                answer = click.prompt('Select version (0 cancels)', prompt_suffix=':\n>> ',
+                                      type=click.IntRange(0, len(versions)))
+                if answer == 0:
+                    click.echo('Nothing to do.')
+                    continue
+                url_override = urllib.parse.urljoin(api.info_url_template, versions[answer - 1].download_url)
+            elif version is not None:
+                archived = next((v for v in api.previous_versions(found.id) if v.version == version), None)
+                if archived is None:
+                    click.echo(f'Version {version} not found in the archive for {found.title}, skipping')
+                    continue
+                url_override = urllib.parse.urljoin(api.info_url_template, archived.download_url)
+
             try:
-                result = local.install(found, api, _progress, path=install_path, deps=auto_deps, opt=opt)
-            except KeyError as exc:
+                result = local.install(found, api, _progress, path=install_path, deps=auto_deps, opt=opt,
+                                       url_override=url_override)
+            except (KeyError, requests.RequestException, zipfile.BadZipFile) as exc:
                 click.echo(f'Failed installing {addon_spec}: {type(exc).__name__} {exc}')
                 if not batch:
                     break
@@ -512,6 +551,12 @@ def get(ctx: click.Context, addon: list[str], auto_deps: bool = True, opt: bool 
                 click.echo(f'Done installing {TermDisplay._render_eso_text(found.title)}')
             else:
                 click.echo(f'Done installing {TermDisplay._render_eso_text(found.title)} and {result} dependence(s)')
+
+            if version is not None:
+                click.echo(f'Consider `gru add-lock {found.dir}` to keep update from overwriting this version.')
+            if user_config(local.game, f'{found.dir}.patch').exists():
+                click.echo(f'Note: a saved patch exists for {found.dir} but was not applied -- '
+                           f'run `gru patch {found.dir}` to apply it.')
     finally:
         local.export_state()
         gru_app.log_changes(local, ctx.obj['config'], before)

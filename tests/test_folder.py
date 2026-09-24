@@ -38,6 +38,9 @@ class _FakeResponse:
     def iter_content(self, chunk_size=1024):
         yield self.content
 
+    def raise_for_status(self):
+        pass
+
 
 def _touch_cache_path(base, *parts):
     path = base / 'cache'
