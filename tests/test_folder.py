@@ -3,6 +3,7 @@ and (via faked requests.head/get + user_cache) update()/install_deps()."""
 
 import inspect
 import io
+import warnings
 import zipfile
 
 import pytest
@@ -461,18 +462,22 @@ class TestScan:
         [addon] = list(folder.installed)
         assert addon.id == 2996
 
-    def test_scan_without_addons_csv_falls_back_to_unresolved_tie(self, addon_root, folder, tmp_path):
-        """No prior addons.csv (e.g. first-ever scan) -- _read_addon_links() finds nothing, and
-        API.dir() behaves exactly as it always did: whichever candidate is reached first wins."""
+    def test_scan_without_addons_csv_leaves_unresolved_tie_unmatched(self, addon_root, folder, tmp_path):
+        """No prior addons.csv (e.g. first-ever scan) -- _read_csv_hints() finds nothing, so
+        API.dir() has no link to resolve the tie with. It must not guess: the addon stays
+        unmatched (not silently linked to whichever candidate happens to come first), and no
+        warning fires -- it *was* found, just ambiguously, unlike a genuine no-match."""
         make_installed(addon_root, 'BRHelper')
         base = make_addon_info(id_=2181, title='Blackrose Prison Helper', directories=['BRHelper'])
         jp_version = make_addon_info(id_=2996, title='Blackrose Prison Helper JP', directories=['BRHelper'])
         api = make_api(addons={2181: base, 2996: jp_version})
         install_mod.user_config = lambda *parts: tmp_path.joinpath(*parts)  # no addons.csv written
 
-        folder.scan(api)
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')  # any warning here would be a regression
+            folder.scan(api)
         [addon] = list(folder.installed)
-        assert addon.id == 2181
+        assert addon.id is None
 
     def test_scan_warns_for_toplevel_addon_missing_from_api(self, addon_root, folder):
         make_installed(addon_root, 'MyAddon')

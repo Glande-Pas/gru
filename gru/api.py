@@ -205,6 +205,16 @@ class _ArchivedFilesParser(html.parser.HTMLParser):
                 self.rows[-1][-1] = text
 
 
+class AmbiguousDirectory(FileNotFoundError):
+    """ Several online addons share a directory and no `link` resolves which one. Subclass of
+    FileNotFoundError so existing handling still catches it. """
+
+    def __init__(self, dir_: str, candidates: list[AddonInfo]) -> None:
+        super().__init__(f'Directory {dir_!r} matches {len(candidates)} different online addons')
+        self.dir = dir_
+        self.candidates = candidates
+
+
 class API:
     # Provided by subclasses (ESOUIv3/ESOUIv4): game/version as class attributes,
     # addons/categories as cached_property. TYPE_CHECKING-only so it documents the type for
@@ -302,11 +312,8 @@ class API:
         return self.categories[id_]
 
     def dir(self, dir_: str, link: str | None = None) -> AddonInfo:
-        """ Lookup an addon by directory. Several unrelated addons can declare the same directory
-        (e.g. BRHelper -- a base addon, a JP translation and a third-party patch all use it); without
-        `link`, whichever is reached first wins, same as always. `link` -- a previously recorded
-        download-page link for this exact install, e.g. from addons.csv -- disambiguates the tie
-        via the addon id encoded in its URL, when it resolves to exactly one of the candidates. """
+        """ Lookup an addon by directory. `link` (from addons.csv) disambiguates via the id in its
+        URL when several addons share a dir; an unresolved tie raises AmbiguousDirectory. """
         exact = []
         partial = []
         for addon in self.addons.values():
@@ -321,8 +328,10 @@ class API:
             matches = [addon for addon in exact if addon.id == id_]
             if len(matches) == 1:
                 return matches[0]
+        if len(exact) == 1:
+            return exact[0]
         if exact:
-            return exact[0]  # unresolved tie: whichever was reached first, same as always
+            raise AmbiguousDirectory(dir_, exact)
 
         if len(partial) > 1 and id_ is not None:
             matches = [addon for addon in partial if addon.id == id_]
@@ -330,6 +339,8 @@ class API:
                 return matches[0]
         if len(partial) == 1:
             return partial[0]
+        if partial:
+            raise AmbiguousDirectory(dir_, partial)
 
         raise FileNotFoundError(f'Directory {dir_!r} not found in list')
 

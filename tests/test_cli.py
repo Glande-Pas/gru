@@ -14,6 +14,7 @@ from click.testing import CliRunner
 
 import gru.cli as cli_mod
 import gru.app as app_mod
+from gru.api import AmbiguousDirectory
 from gru.cli import main, TermDisplay
 from gru.config import load_config
 
@@ -815,6 +816,40 @@ class TestParentSuffixWording:
         output = self._list_output(monkeypatch, addons_root, config_file, LinkableApi())
         assert ', bundled inside Loot Log, part of LibExtendedJournal' in output
         assert output.count(', part of LibExtendedJournal') == 2
+
+    def test_unmatched_addon_shows_no_listing(self, monkeypatch, tmp_path):
+        addons_root = tmp_path / 'AddOns'
+        addons_root.mkdir()
+        config_file = tmp_path / 'gru.ini'
+        config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
+
+        make_installed(addons_root, 'MyAddon')
+        output = self._list_output(monkeypatch, addons_root, config_file, StubAPI())  # empty: no listing anywhere
+        assert ', no listing' in output
+        assert 'ambiguous' not in output
+
+    def test_ambiguous_addon_shows_see_gru_match(self, monkeypatch, tmp_path):
+        """The BRHelper case: several online addons share this dir, and no addons.csv link
+        resolves which one -- API.dir() raises AmbiguousDirectory rather than guessing, and
+        the list display must say so distinctly from a plain unmatched addon."""
+        addons_root = tmp_path / 'AddOns'
+        addons_root.mkdir()
+        config_file = tmp_path / 'gru.ini'
+        config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
+
+        make_installed(addons_root, 'BRHelper')
+        base = make_addon_info(id_=2181, title='Blackrose Prison Helper', directories=['BRHelper'])
+        jp_version = make_addon_info(id_=2996, title='Blackrose Prison Helper JP', directories=['BRHelper'])
+
+        class AmbiguousApi(StubAPI):
+            def dir(self, name, link=None):
+                if name == 'BRHelper':
+                    raise AmbiguousDirectory(name, [base, jp_version])
+                raise FileNotFoundError(name)
+
+        output = self._list_output(monkeypatch, addons_root, config_file, AmbiguousApi())
+        assert ', ambiguous - see gru match' in output
+        assert 'no listing' not in output
 
 
 class TestNoColor:

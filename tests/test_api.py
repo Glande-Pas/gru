@@ -8,7 +8,7 @@ import pytest
 import requests
 
 from gru.api import (to_list, case_insensitive, epoch_ms, _exception_root_cause, _fuzz, _filter, _lookup,
-                     _extract_info_id, ESOUIv3)
+                     _extract_info_id, AmbiguousDirectory, ESOUIv3)
 from gru.addon import AddonInfo
 
 from .conftest import as_folder, make_addon_info, make_api
@@ -230,20 +230,23 @@ class TestApiLookups:
         b = make_addon_info(id_=2, title='B')
         b.metadata['directories'] = ['B', 'Shared']
         api = make_api(addons={1: a, 2: b})
-        with pytest.raises(FileNotFoundError):
+        with pytest.raises(AmbiguousDirectory) as excinfo:
             api.dir('Shared')
+        assert set(excinfo.value.candidates) == {a, b}
 
     def test_name_case_insensitive(self):
         addon = make_addon_info(title='LibAddonMenu-2.0')
         api = make_api(addons={1: addon})
         assert api.name('libaddonmenu-2.0') is addon
 
-    def test_dir_picks_first_when_several_listings_claim_the_same_dir(self):
+    def test_dir_raises_ambiguous_when_several_listings_claim_the_same_dir_and_no_link(self):
         """Real esoui.com data: three separate listings (base addon, a JP translation, and
         a third-party patch) all declare UIDir == ["BRHelper"], from
-        `jq -c '.[] | select(.UIDir[0] == "BRHelper")' filelist.json`. Since each has a
-        single directory, AddonInfo.dir is 'BRHelper' for all three, and API.dir() has no
-        tie-break beyond dict/JSON order -- it just returns whichever it reaches first."""
+        `jq -c '.[] | select(.UIDir[0] == "BRHelper")' filelist.json`. Since each has a single
+        directory, AddonInfo.dir is 'BRHelper' for all three. Without a `link` that resolves the
+        tie, API.dir() must not guess -- a wrong guess would get silently linked, then
+        self-confirmed via addons.csv on the next scan. It raises AmbiguousDirectory instead,
+        carrying every candidate so a caller (`gru match`) can ask the user to pick one."""
         base = make_addon_info(id_=2181, title='Blackrose Prison Helper', author='andy.s',
                                directories=['BRHelper'], downloads=163801, favorites=99)
         jp_version = make_addon_info(id_=2996, title='Blackrose Prison Helper JP Version', author='tdenc',
@@ -251,13 +254,11 @@ class TestApiLookups:
         patch = make_addon_info(id_=4252, title='Blackrose Prison Helper (Patch)', author='sshogrin',
                                 directories=['BRHelper'], downloads=941, favorites=4)
 
-        # Same order filelist.json lists them in (ascending UID / release order)
         api = make_api(addons={2181: base, 2996: jp_version, 4252: patch})
-        assert api.dir('BRHelper') is base
-
-        # Confirm it's genuinely iteration-order-dependent, not id- or popularity-based
-        api_reordered = make_api(addons={4252: patch, 2181: base, 2996: jp_version})
-        assert api_reordered.dir('BRHelper') is patch
+        with pytest.raises(AmbiguousDirectory) as excinfo:
+            api.dir('BRHelper')
+        assert set(excinfo.value.candidates) == {base, jp_version, patch}
+        assert excinfo.value.dir == 'BRHelper'
 
     def test_dir_disambiguates_tie_via_link_id(self):
         """A `link` (e.g. addons.csv's own record of which listing this install came from)
@@ -270,20 +271,22 @@ class TestApiLookups:
         link = 'https://www.esoui.com/downloads/info2996-BlackrosePrisonHelperJPVersion.html'
         assert api.dir('BRHelper', link=link) is jp_version
 
-    def test_dir_link_id_with_no_matching_candidate_falls_back_to_first(self):
+    def test_dir_link_id_with_no_matching_candidate_still_raises_ambiguous(self):
         base = make_addon_info(id_=2181, title='Blackrose Prison Helper', directories=['BRHelper'])
         patch = make_addon_info(id_=4252, title='Blackrose Prison Helper (Patch)', directories=['BRHelper'])
         api = make_api(addons={2181: base, 4252: patch})
 
         link = 'https://www.esoui.com/downloads/info9999-SomeUnrelatedAddon.html'
-        assert api.dir('BRHelper', link=link) is base
+        with pytest.raises(AmbiguousDirectory):
+            api.dir('BRHelper', link=link)
 
-    def test_dir_malformed_link_falls_back_to_first(self):
+    def test_dir_malformed_link_still_raises_ambiguous(self):
         base = make_addon_info(id_=2181, title='Blackrose Prison Helper', directories=['BRHelper'])
         patch = make_addon_info(id_=4252, title='Blackrose Prison Helper (Patch)', directories=['BRHelper'])
         api = make_api(addons={2181: base, 4252: patch})
 
-        assert api.dir('BRHelper', link='not a url at all') is base
+        with pytest.raises(AmbiguousDirectory):
+            api.dir('BRHelper', link='not a url at all')
 
     def test_dir_link_disambiguates_ambiguous_secondary_directory(self):
         a = make_addon_info(id_=1, title='A')

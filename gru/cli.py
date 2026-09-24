@@ -20,7 +20,7 @@ import urllib.parse
 from collections.abc import Iterable
 
 from .config import load_config, save_config, user_cache, user_config, display_config, update_config
-from .api import API
+from .api import API, AmbiguousDirectory
 from .addon import AddonInfo, InstalledAddon, _parse_version
 from .install import Folder
 from .patch import addon_diff, addon_patch_file
@@ -171,6 +171,17 @@ class TermDisplay:
         ])
         click.echo(' ' * self.gutter + addon.metadata['link'])
 
+    def _unmatched_status(self, folder: gru.addon.InstalledAddon) -> str:
+        """ Why this folder has no online match, re-derived fresh from the API. """
+        try:
+            self.api.dir(folder.dir)
+        except AmbiguousDirectory:
+            return 'ambiguous - see gru match'
+        except FileNotFoundError:
+            return 'no listing'
+        else:
+            return 'no listing'  # shouldn't happen: _folder() is only reached when unmatched
+
     def _folder(self, item: str, folder: gru.addon.InstalledAddon) -> None:
         """ Show addon info from a local folder that was not matched with the API endpoint """
         click.echo()
@@ -181,6 +192,7 @@ class TermDisplay:
             tags.append('version locked')
         if parent and parent.id and parent.infos is not None:
             tags.append(f'bundled inside {parent.infos.title}')
+        tags.append(self._unmatched_status(folder))
         suffix = ''.join(f', {tag}' for tag in tags)
         click.echo(f'{item:{self.gutter}}{self._render_eso_text(folder.title)}  [installed{suffix}]')
         infos = [[
@@ -192,13 +204,12 @@ class TermDisplay:
         if 'description' in folder.metadata:
             infos.append([f'Description: {folder.metadata["description"]}'])
         self._wrapped(*infos)
-        if folder.parent is not None:
-            click.echo(' ' * self.gutter + 'NB: this add-on could not be matched online and may be deprecated')
 
     def __init__(self, results: list[gru.addon.AddonInfo | gru.addon.InstalledAddon], num_from: int = 0) -> None:
         """ Show a list of addons """
         self.gutter = 2 + math.ceil(math.log(num_from + len(results), 10))
         ctx = click.get_current_context()
+        self.api = ctx.obj['api']
         self.cat_name_hierarchy = ctx.obj['api'].cat_name_hierarchy
         self.rel_path = lambda path, root=ctx.obj['local'].root: path.relative_to(root)
 
