@@ -6,7 +6,9 @@ import pathlib
 import pytest
 
 import gru.patch as patch_mod
-from gru.patch import format_file_mtime, line_diff, parse_diff, addon_diff, addon_patch, addon_patch_file, PatchError
+from gru.patch import (
+    format_file_mtime, line_diff, parse_diff, addon_diff, addon_patch, addon_patch_file, is_patch_applied, PatchError,
+)
 
 from .conftest import make_installed
 
@@ -51,6 +53,74 @@ class TestLineDiffNoTrailingNewline:
 
     def test_identical_text_without_trailing_newline_gives_empty_diff(self):
         assert line_diff('same\ntext', 'same\ntext') == ''
+
+
+def _changes_for(orig: str, changed: str):
+    """ The FilePatch (hunks) diffing orig -> changed, as is_patch_applied() consumes it. """
+    text = f'--- a/file\tdate\n+++ b/file\tdate\n{line_diff(orig, changed)}'
+    [(_, changes)] = parse_diff(io.StringIO(text)).items()
+    return changes
+
+
+class TestIsPatchApplied:
+    """No fuzzing: a hunk's ' '/'+' lines must appear verbatim at its header's exact +start
+    line number, not just somewhere plausible nearby."""
+
+    def test_unapplied_original_content_reports_false(self):
+        changes = _changes_for('a\nold\nc', 'a\nnew\nc')
+        assert is_patch_applied('a\nold\nc', changes) is False
+
+    def test_applied_content_reports_true(self):
+        changes = _changes_for('a\nold\nc', 'a\nnew\nc')
+        assert is_patch_applied('a\nnew\nc', changes) is True
+
+    def test_unrelated_content_reports_false(self):
+        changes = _changes_for('a\nold\nc', 'a\nnew\nc')
+        assert is_patch_applied('a\nother\nc', changes) is False
+
+    def test_created_file_missing_reports_false(self):
+        changes = _changes_for('', 'x\ny\n')
+        assert is_patch_applied('', changes) is False
+
+    def test_created_file_present_reports_true(self):
+        changes = _changes_for('', 'x\ny\n')
+        assert is_patch_applied('x\ny\n', changes) is True
+
+    def test_only_some_of_several_hunks_applied_reports_false(self):
+        orig = '1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n'
+        changed = '1\nA\n3\n4\n5\n6\n7\n8\n9\nB\n'
+        changes = _changes_for(orig, changed)
+        partially_applied = '1\nA\n3\n4\n5\n6\n7\n8\n9\n10\n'  # first hunk applied, second isn't
+        assert is_patch_applied(partially_applied, changes) is False
+
+    def test_all_hunks_applied_reports_true(self):
+        orig = '1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n'
+        changed = '1\nA\n3\n4\n5\n6\n7\n8\n9\nB\n'
+        changes = _changes_for(orig, changed)
+        assert is_patch_applied(changed, changes) is True
+
+    def test_shifted_within_drift_still_counts(self):
+        """Position may drift (earlier edits can shift later hunks down) as long as the exact
+        line sequence is still found somewhere within max_drift."""
+        changes = _changes_for('a\nold\nc', 'a\nnew\nc')
+        assert is_patch_applied('X\na\nnew\nc', changes) is True
+
+    def test_shifted_beyond_drift_reports_false(self):
+        changes = _changes_for('a\nold\nc', 'a\nnew\nc')
+        padding = '\n'.join(f'pad{i}' for i in range(25))
+        assert is_patch_applied(f'{padding}\na\nnew\nc', changes, max_drift=20) is False
+
+    def test_content_never_present_within_drift_reports_false(self):
+        """Drift tolerance must not degenerate into a plain 'is this text anywhere in the
+        file' search -- content that plain doesn't exist still reports not-applied."""
+        changes = _changes_for('a\nold\nc', 'a\nnew\nc')
+        assert is_patch_applied('a\nold\nc', changes) is False
+
+    def test_pure_removal_hunk_has_nothing_to_confirm(self):
+        """A hunk with only '-' lines has no post-image to check -- neither confirms nor
+        denies the patch is applied, so a file with that content removed still reports True."""
+        changes = _changes_for('a\nold\nc', 'a\nc')
+        assert is_patch_applied('a\nc', changes) is True
 
 
 # ---------------------------------------------------------------------------

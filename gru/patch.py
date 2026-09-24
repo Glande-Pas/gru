@@ -174,6 +174,37 @@ def addon_diff(addon: gru.addon.InstalledAddon, orig_addon: gru.addon.InstalledA
     return n_diff_files
 
 
+def _post_image_at_offset(lines: Lines, expected: int, post_image: Lines, max_drift: int) -> bool:
+    """ Whether `post_image` appears, line for line, at `expected` (0-indexed) or up to
+    `max_drift` lines either side of it -- position may drift, but the sequence itself must
+    still match exactly; no fuzzy content matching. """
+    for drift in range(max_drift + 1):
+        for pos in {expected - drift, expected + drift}:
+            if pos >= 0 and lines[pos:pos + len(post_image)] == post_image:
+                return True
+    return False
+
+
+def is_patch_applied(content: str, changes: FilePatch, *, max_drift: int = 20) -> bool:
+    """ Whether `changes` (one file's hunks) already matches `content` -- i.e. every hunk's
+    post-image (its ' ' and '+' lines, in order) appears verbatim within `max_drift` lines of
+    the line number its header's +start declares. Some drift in position is tolerated (earlier
+    hunks, or unrelated edits elsewhere, can shift later ones), but the sequence of lines itself
+    is still matched exactly -- no fuzzy content matching.
+
+    A hunk with no post-image at all (pure removal: only '-' lines) is skipped -- there's
+    nothing here to verify was written, so it neither confirms nor denies the patch is applied. """
+    current_lines = content.splitlines()
+    for header, block in changes:
+        start2 = int(header.split('+', 1)[1].split(',', 1)[0])
+        post_image = [line for op, lines, _ in block if op in (' ', '+') for line in lines]
+        if not post_image:
+            continue
+        if not _post_image_at_offset(current_lines, start2 - 1, post_image, max_drift):
+            return False
+    return True
+
+
 def apply_patch(orig: str, patch: FilePatch) -> tuple[str, list[bool]]:
     dmp = diff_match_patch.diff_match_patch()
 
