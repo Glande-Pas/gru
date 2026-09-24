@@ -26,7 +26,7 @@ from urllib.parse import quote as urllib_quote
 from .config import user_cache, user_config
 from .addon import InstalledAddon, AddonInfo, GARBAGE, MANIFEST_EXTS, _parse_version
 from .api import _fuzz, _filter
-from .patch import addon_patch_file
+from .patch import addon_patch_file, PatchError
 
 from typing import Protocol
 from collections.abc import Iterator, Iterable, Callable
@@ -545,7 +545,7 @@ class Folder:
 
         for addon in updates:
             if patch and (patch_file := user_config(self.game, f'{addon.dir}.patch')).exists():
-                addon_patch_file(addon, patch_file)
+                self._reapply_patch(addon, patch_file)
 
         if deps:
             return (len(updates), self.install_deps(updates, api, progress=progress, opt=opt, patch=patch))
@@ -573,11 +573,23 @@ class Folder:
                     continue
                 for addon in addons:
                     if patch and (patch_file := user_config(self.game, f'{addon.dir}.patch')).exists():
-                        addon_patch_file(addon, patch_file)
+                        self._reapply_patch(addon, patch_file)
                 added += 1
                 deps.extend(addons)
 
         return added
+
+    def _reapply_patch(self, addon: gru.addon.InstalledAddon, patch_file: pathlib.Path) -> None:
+        """ Always normal (non-partial) mode: a silently half-patched file during an unattended
+        update is worse than skipping it -- --partial stays a deliberate `gru patch` action. """
+        try:
+            result = addon_patch_file(addon, patch_file)
+        except PatchError as err:
+            warnings.warn(f'Saved patch for {addon.dir!r} is invalid, skipped: {err}')
+            return
+        if result.backed_out:
+            warnings.warn(f'Saved patch for {addon.dir!r} failed to reapply cleanly; run '
+                          f'`gru patch {addon.dir} --partial` to apply what you can and fix the rest.')
 
     def saved_variable_files(self, addon: gru.addon.InstalledAddon) -> list[pathlib.Path]:
         """ This addon's SavedVariables file, if it declares any (## SavedVariables: Name ...) and

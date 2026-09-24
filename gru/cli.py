@@ -25,7 +25,7 @@ from .config import load_config, save_config, user_cache, user_config, display_c
 from .api import API, AmbiguousDirectory
 from .addon import AddonInfo, InstalledAddon
 from .install import Folder
-from .patch import addon_diff, addon_patch_file
+from .patch import addon_diff, addon_patch_file, PatchError
 from . import app as gru_app
 
 if typing.TYPE_CHECKING:
@@ -1020,8 +1020,10 @@ def diff(ctx: click.Context, addon: str | None, url: str | None = None) -> None:
 @main.command(help='Import a patch of changes for an addon')
 @click.argument('addon', required=False)
 @click.argument('patch', type=click.Path(dir_okay=False, path_type=pathlib.Path), required=False)
+@click.option('--partial/--no-partial', default=False,
+              help='Apply every hunk that succeeds; save the rest to <file>.rej')
 @click.pass_context
-def patch(ctx: click.Context, addon: str | None, patch: pathlib.Path) -> None:
+def patch(ctx: click.Context, addon: str | None, patch: pathlib.Path | None, partial: bool = False) -> None:
     api = ctx.obj['api']
     local = ctx.obj['local']
 
@@ -1036,13 +1038,48 @@ def patch(ctx: click.Context, addon: str | None, patch: pathlib.Path) -> None:
             click.echo('No saved changes to be re-applied.')
             return
 
-    done, total = addon_patch_file(installed_addon, patch)
-    if not total:
-        click.echo('No changes to be apply in patch.')
-    elif done == total:
+    try:
+        result = addon_patch_file(installed_addon, patch, partial=partial)
+    except PatchError as exc:
+        click.echo(f'Patch is invalid: {exc}')
+        show_warnings(ctx)
+        return
+
+    if not result.files:
+        click.echo('No changes to apply in patch.')
+    elif result.backed_out:
+        click.echo(f"{click.style('Patch failed to apply cleanly!', fg='red', bold=True)} No changes were made.")
+        click.echo('Failing hunks:')
+        for f in result.files:
+            if f.failed:
+                click.echo(f'  {f.path}: {", ".join(f.failed)}')
+        click.echo()
+        click.echo(f'Run `gru patch {installed_addon.dir} --partial{f" {patch}" if patch else ""}` '
+                   'to apply what can be applied and fix the rest manually.')
+        click.echo()
+    elif result.clean:
         click.echo('Applied patch successfully.')
     else:
-        click.echo(f'Applied {done} / {total} hunks in patch.')
+        applied = [f for f in result.files if f.applied]
+        rejects = [f for f in result.files if f.reject]
+        if applied:
+            click.echo(f'Some changes were applied ({len(applied)} / {len(result.files)} file(s)).')
+        else:
+            click.echo('No changes could be applied.')
+        click.echo()
+        click.echo(f'{click.style("Some changes failed to apply!", fg='red', bold=True)} '
+                   'Saved to the following, apply them manually:')
+        for f in rejects:
+            click.echo(f'  {f.reject}')
+        click.echo()
+        click.echo('The saved patch itself is unchanged: ')
+        click.echo(f'- `gru get {installed_addon.dir}` will roll back all changes done by this patch command')
+        click.echo(f'- `gru patch {installed_addon.dir}{f" {patch}" if patch else ""}`'
+                   ' will try to apply the same patch again')
+        click.echo()
+        click.echo('After fixing the addon changes manually, save that state as the new patch, replacing this one, '
+                   f'using: `gru diff {installed_addon.dir}`')
+        click.echo()
 
 
 @main.command()

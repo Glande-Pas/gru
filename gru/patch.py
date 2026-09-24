@@ -6,8 +6,8 @@ import sys
 import typing
 import pathlib
 import datetime
-import warnings
 import diff_match_patch
+from typing import NamedTuple
 
 from .config import encoding_open
 
@@ -170,82 +170,185 @@ def apply_patch(orig: str, patch: FilePatch) -> tuple[str, list[bool]]:
     return ''.join(line_array[ord(char)] for char in result), values
 
 
-def addon_patch(addon: gru.addon.InstalledAddon, patch: Patch) -> tuple[int, int]:
+class PatchError(Exception):
+    """ The patch itself is invalid -- a malformed hunk, or paths outside the addon folder --
+    as opposed to a hunk that just doesn't match current file content (see FileOutcome/PatchResult,
+    which is how *that* gets reported: routine, not exceptional). """
+
+
+class FileOutcome(NamedTuple):
+    """ What happened to one file targeted by a patch. `applied` is True if any of its content
+    (fully, or --partial-ly) was written, or it was cleanly removed. `failed` lists the hunk/op
+    headers that didn't apply -- empty means this file applied cleanly. `reject` is where those
+    were saved (--partial only; normal mode backs out instead of ever writing a .rej). """
+    path: pathlib.Path
+    applied: bool
+    failed: list[str]
+    reject: pathlib.Path | None
+
+
+class PatchResult(NamedTuple):
+    files: list[FileOutcome]
+    backed_out: bool  # normal (non-partial) mode only: a failure meant nothing was written at all
+
+    @property
+    def clean(self) -> bool:
+        return not self.backed_out and all(not f.failed for f in self.files)
+
+
+class _FileComputation(NamedTuple):
+    """ Internal: what one file's patch entry resolves to, computed before anything is written --
+    so normal mode can check every file succeeded before committing any of them. """
+    infile: File
+    outfile: File
+    write_path: pathlib.Path | None
+    content: str | None
+    remove_path: pathlib.Path | None
+    failed: FilePatch  # failed hunks/ops for this file, as (header, block) pairs -- () if none
+
+    @property
+    def rel_path(self) -> pathlib.Path:
+        """ Display name and .rej location, relative to the addon folder. """
+        prefixed = self.outfile if str(self.outfile) != '/dev/null' else self.infile
+        return pathlib.Path(*prefixed.parts[1:])
+
+
+def _compute_create(addon: gru.addon.InstalledAddon, infile: File, outfile: File,
+                    changes: FilePatch) -> _FileComputation:
+    outpath = addon.folder.joinpath(*outfile.parts[1:]).resolve()
+    header, block = changes[0] if changes else ('', [])
+    op, dat = block[0] if block else ('', [])
+    if len(changes) != 1 or header.split()[0] != '-0,0' or len(block) != 1 or op != '+':
+        raise PatchError(f'Malformed patch instructions on creating {outfile}')
+
+    if outpath.exists():
+        return _FileComputation(infile, outfile, None, None, None, changes)
+    return _FileComputation(infile, outfile, outpath, '\n'.join(dat) + '\n', None, [])
+
+
+def _compute_remove(addon: gru.addon.InstalledAddon, infile: File, outfile: File,
+                    changes: FilePatch) -> _FileComputation:
+    inpath = addon.folder.joinpath(*infile.parts[1:]).resolve()
+    header, block = changes[0] if changes else ('', [])
+    op, dat = block[0] if block else ('', [])
+    if len(changes) != 1 or header.split()[-1] != '+0,0' or len(block) != 1 or op != '-':
+        raise PatchError(f'Malformed patch instructions on removing {infile}')
+
+    try:
+        with encoding_open(inpath) as f:
+            contents = f.read()
+    except FileNotFoundError:
+        return _FileComputation(infile, outfile, None, None, None, changes)
+
+    if contents != '\n'.join(dat) + '\n':
+        return _FileComputation(infile, outfile, None, None, None, changes)
+    return _FileComputation(infile, outfile, None, None, inpath, [])
+
+
+def _compute_modify(addon: gru.addon.InstalledAddon, infile: File, outfile: File,
+                    changes: FilePatch) -> _FileComputation:
+    inpath = addon.folder.joinpath(*infile.parts[1:]).resolve()
+    outpath = addon.folder.joinpath(*outfile.parts[1:]).resolve()
+
+    try:
+        with encoding_open(inpath) as f:
+            orig = f.read()
+    except FileNotFoundError:
+        return _FileComputation(infile, outfile, None, None, None, changes)
+
+    try:
+        result, values = apply_patch(orig, changes)
+    except Exception:
+        return _FileComputation(infile, outfile, None, None, None, changes)  # dmp can raise, not just report
+    failed = [hunk for hunk, ok in zip(changes, values) if not ok]
+    if len(failed) == len(changes):
+        return _FileComputation(infile, outfile, None, None, None, failed)
+    return _FileComputation(infile, outfile, outpath, result, None, failed)  # some/all hunks applied
+
+
+def _compute(addon: gru.addon.InstalledAddon, infile: File, outfile: File, changes: FilePatch) -> _FileComputation:
+    if str(infile) == '/dev/null':
+        return _compute_create(addon, infile, outfile, changes)
+    if str(outfile) == '/dev/null':
+        return _compute_remove(addon, infile, outfile, changes)
+    return _compute_modify(addon, infile, outfile, changes)
+
+
+def _write_atomic(path: pathlib.Path, content: str) -> None:
+    """ Write to a temp sibling first, then atomically replace -- so a write failure (encoding
+    error, disk full, ...) partway through a multi-file patch never leaves a mix of old and new
+    content across files that may depend on each other. """
+    tmp = path.with_name(path.name + '.grutmp')
+    with tmp.open('w') as f:
+        print(content, file=f, end='')
+    tmp.replace(path)
+
+
+def _commit(computed: list[_FileComputation]) -> None:
+    """ Write every file's new content to a temp sibling first (so a mid-write failure touches no
+    real file), only then replace them all, and remove last. """
+    staged = [(c.write_path, c.content) for c in computed if c.write_path is not None]
+    staged_tmp = [(path.with_name(path.name + '.grutmp'), path, content) for path, content in staged]
+    for tmp, _, content in staged_tmp:
+        with tmp.open('w') as f:
+            print(content, file=f, end='')
+    for tmp, real, _ in staged_tmp:
+        tmp.replace(real)
+    for c in computed:
+        if c.remove_path is not None:
+            c.remove_path.unlink()
+
+
+def _write_reject(addon: gru.addon.InstalledAddon, c: _FileComputation) -> pathlib.Path:
+    """ Save failed hunks/ops as a small standalone patch, re-applicable on its own later
+    (`gru patch <addon> <file>.rej`) -- same format `parse_diff()` already reads. """
+    target = addon.folder / c.rel_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    reject_path = target.with_name(target.name + '.rej')
+    with reject_path.open('w') as f:
+        print(f'--- {c.infile}', file=f)
+        print(f'+++ {c.outfile}', file=f)
+        for header, block in c.failed:
+            print(f'@@ {header} @@', file=f)
+            for op, lines in block:
+                for line in lines:
+                    print(f'{op}{line}', file=f)
+    return reject_path
+
+
+def addon_patch(addon: gru.addon.InstalledAddon, patch: Patch, *, partial: bool = False) -> PatchResult:
+    """ Apply `patch` to `addon`'s files. Normal mode (partial=False) is all-or-nothing across
+    every file in the patch -- code in one file may depend on another, so a hunk mismatch in one
+    file backs out the whole patch rather than leaving files at inconsistent versions of each
+    other. --partial applies every hunk that succeeds regardless, and saves what didn't to
+    <file>.rej next to it, for manual reconciliation. """
     if not all(str(file) == '/dev/null' or file.parts[0] == addon.folder.name
                for inout_files in patch for file in inout_files):
-        raise ValueError('Patch specifies changes outside of addon folder')
+        raise PatchError('Patch specifies changes outside of addon folder')
 
-    n_changed_files = 0
-    for (infile, outfile), changes in patch.items():
-        inpath = addon.folder.joinpath(*infile.parts[1:]).resolve()
-        outpath = addon.folder.joinpath(*outfile.parts[1:]).resolve()
+    computed = [_compute(addon, infile, outfile, changes) for (infile, outfile), changes in patch.items()]
 
-        if str(infile) == '/dev/null':
-            header, block = changes[0] if changes else ('', [])
-            op, dat = block[0] if block else ('', [])
-            if len(changes) != 1 or header.split()[0] != '-0,0' or len(block) != 1 or op != '+':
-                raise ValueError(f'Malformed patch instructions on creating {outfile}')
+    if not partial and any(c.failed for c in computed):
+        outcomes = [FileOutcome(c.rel_path, False, [header for header, _ in c.failed], None) for c in computed]
+        return PatchResult(outcomes, backed_out=True)
 
-            if outpath.exists():
-                warnings.warn(f'Patch failed for {outfile}: file already exists')
-            else:
-                with outpath.open('w') as f:
-                    print(*dat, sep='\n', file=f)
-                n_changed_files += 1
-            continue
+    to_write = computed if not partial else [c for c in computed if c.write_path or c.remove_path]
+    _commit(to_write)
 
-        if str(outfile) == '/dev/null':
-            header, block = changes[0] if changes else ('', [])
-            op, dat = block[0] if block else ('', [])
-            if len(changes) != 1 or header.split()[-1] != '+0,0' or len(block) != 1 or op != '-':
-                raise ValueError(f'Malformed patch instructions on removing {infile}')
-
-            try:
-                with encoding_open(inpath) as f:
-                    contents = f.read()
-            except FileNotFoundError:
-                warnings.warn(f'Patch failed for {infile}: file does not exist')
-                continue
-
-            if contents != '\n'.join(dat) + '\n':
-                warnings.warn(f'Patch failed for {infile}: contents not matching removed lines')
-            else:
-                inpath.unlink()
-                n_changed_files += 1
-            continue
-
-        # Finally both files are the same
-        try:
-            with encoding_open(inpath) as f:
-                orig = f.read()
-        except FileNotFoundError:
-            warnings.warn(f'Patch failed for {infile}: file does not exist')
-            continue
-
-        result, values = apply_patch(orig, changes)
-        if not all(values):
-            failed = []
-            for n, ((head, _), ok) in enumerate(zip(changes, values), 1):
-                if not ok:
-                    failed.append(f'hunk #{n} at {head}')
-
-            warnings.warn(f'Patch failed for {len(values) - sum(values)} hunks in {infile}: {", ".join(failed)}')
-            # Don’t commit a patch that (partially) failed
-            continue
-
-        with outpath.open('w') as f:
-            print(result, file=f, end='')
-        n_changed_files += 1
-
-    return n_changed_files, len(patch)
+    outcomes = []
+    for c in computed:
+        applied = c.write_path is not None or c.remove_path is not None
+        reject = _write_reject(addon, c) if partial and c.failed else None
+        outcomes.append(FileOutcome(c.rel_path, applied, [header for header, _ in c.failed], reject))
+    return PatchResult(outcomes, backed_out=False)
 
 
-def addon_patch_file(addon: gru.addon.InstalledAddon, diff: pathlib.Path) -> tuple[int, int]:
+def addon_patch_file(addon: gru.addon.InstalledAddon, diff: pathlib.Path, *, partial: bool = False) -> PatchResult:
     try:
         with diff.open() as f:
             patch = parse_diff(f)
+    except PatchError:
+        raise
     except Exception as err:
-        warnings.warn(f'Patch {diff.name} failed: {err}')
-        return 0, 0
-    else:
-        return addon_patch(addon, patch)
+        raise PatchError(f'Patch {diff.name} could not be read: {err}') from err
+    return addon_patch(addon, patch, partial=partial)
