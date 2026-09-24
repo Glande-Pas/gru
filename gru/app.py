@@ -9,10 +9,12 @@ import collections
 import configparser
 import csv
 import datetime
+import difflib
 import pathlib
 from typing import NamedTuple
 
-from .api import API
+from .api import API, AmbiguousDirectory
+from .addon import AddonInfo, InstalledAddon
 from .config import user_config
 from .install import Folder
 
@@ -85,3 +87,41 @@ def log_changes(local: Folder, config: configparser.ConfigParser,
         if old_version == new_version:
             continue
         append_change_log(path, [new_dir or old_dir, new_version, new_link or old_link, now, old_version], max_lines)
+
+
+def find_ambiguous(local: Folder, api: API) -> list[tuple[InstalledAddon, list[AddonInfo]]]:
+    """ Installed addons left unmatched specifically because their dir is ambiguous online (not
+    just missing), paired with their candidate listings -- for `gru match` to resolve. """
+    found = []
+    for addon in local.installed:
+        if addon.infos is not None:
+            continue
+        try:
+            api.dir(addon.dir)
+        except AmbiguousDirectory as exc:
+            found.append((addon, exc.candidates))
+        except FileNotFoundError:
+            pass
+    return found
+
+
+def rank_candidates(installed: InstalledAddon, candidates: list[AddonInfo], api: API,
+                    sortkey: str) -> list[AddonInfo]:
+    """ Best-guess-first: 1) local manifest metadata match (author, version, title similarity),
+    2) filelist overlap with the local install, 3) `sortkey` (e.g. downloads), as a fallback. """
+    filelist = getattr(api, 'filelist', None)
+    local_files = {path.name.lower() for path in installed.files}
+
+    def score(candidate: AddonInfo) -> tuple[float, float, float]:
+        meta = difflib.SequenceMatcher(None, installed.title.lower(), candidate.title.lower()).ratio()
+        meta += installed.author.strip().lower() == candidate.author.strip().lower()
+        meta += installed.version == candidate.version
+
+        files = 0.0
+        if filelist is not None and local_files:
+            online_files = {pathlib.PurePosixPath(f).name.lower() for f in filelist(candidate.id)}
+            files = len(local_files & online_files) / len(local_files)
+
+        return (meta, files, candidate.metadata.get(sortkey) or 0)
+
+    return sorted(candidates, key=score, reverse=True)

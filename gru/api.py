@@ -448,7 +448,8 @@ class ESOUIv3(API):
         return self._load(self.pages['gameconf'], {})
 
     def filelist(self, id_: int) -> list[str]:
-        return self._load(self.pages['filelist'].format(id=id_), {}).get('FileList', [])
+        data = self._load(self.pages['filelist'].format(id=id_), [])
+        return data[0].get('FileList', []) if data else []
 
     def filedetails(self, id_: int) -> dict:
         return self._load(self.pages['filedetails'].format(id=id_), {})

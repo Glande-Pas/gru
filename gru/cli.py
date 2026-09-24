@@ -43,7 +43,7 @@ class SectionedHelpGroup(click.Group):
     """ Sections commands into help groups """
 
     _cmd_shortcuts = {'rm': 'remove', 'up': 'update', 'ls': 'list', 's': 'search', 'cc': 'clear-caches', 'df': 'diff',
-                      'al': 'add-lock', 'rl': 'remove-lock', 'll': 'list-locks', 'rv': 'review'}
+                      'al': 'add-lock', 'rl': 'remove-lock', 'll': 'list-locks', 'rv': 'review', 'm': 'match'}
 
     @classmethod
     def _cmd_group(cls, cmd: click.Command) -> str:
@@ -733,6 +733,40 @@ def list_locks(ctx: click.Context) -> None:
 
     click.echo(f'{len(locked)} version-locked addon(s):')
     TermDisplay(locked)
+    show_warnings(ctx)
+
+
+@main.command(help='Resolve addons whose directory matched several online listings')
+@click.argument('addon', required=False)
+@click.pass_context
+def match(ctx: click.Context, addon: str | None) -> None:
+    api = ctx.obj['api']
+    local = ctx.obj['local']
+    sortkey = ctx.obj['config'].get(f'{local.game}.addons', 'sortkey')
+
+    ambiguous = gru_app.find_ambiguous(local, api)
+    if addon:
+        term = addon.lower()
+        ambiguous = [(inst, c) for inst, c in ambiguous if term in inst.dir.lower() or term in inst.title.lower()]
+
+    if not ambiguous:
+        click.echo('No ambiguous addons to resolve.')
+        show_warnings(ctx)
+        return
+
+    resolved = 0
+    for installed, candidates in ambiguous:
+        ranked = gru_app.rank_candidates(installed, candidates, api, sortkey)
+        click.echo(f'\n{TermDisplay._render_eso_text(installed.title)} ({installed.dir}):')
+        picked = _prompt_addon(ranked, f'Confirm this is {installed.title}?')
+        if picked is None:
+            continue
+        installed.link(picked)
+        resolved += 1
+
+    if resolved:
+        local.export_state()
+    click.echo(f'Resolved {resolved} of {len(ambiguous)} ambiguous addon(s).')
     show_warnings(ctx)
 
 

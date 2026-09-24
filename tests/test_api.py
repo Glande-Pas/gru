@@ -425,3 +425,27 @@ class TestApiLoad:
         api = make_api(session=FakeSession(exc=requests.ConnectionError('refused')))
         with pytest.warns(UserWarning):
             assert api._load('http://x') is None
+
+
+class TestApiFilelist:
+    """Real shape (from listfiles/{id}.json): a one-element list wrapping {UID, FileList},
+    not a bare dict -- filelist() crashed on real data (AttributeError: 'list' has no 'get')."""
+
+    def _api(self, json_data):
+        api = ESOUIv3.__new__(ESOUIv3)  # filelist() is ESOUIv3-specific, not on base API
+        api.game, api.version, api.pages = 'ESO', 3, {'filelist': 'listfiles/{id}.json'}
+        session = FakeSession(response=FakeResponse(json_data=json_data))
+        api.session = session  # pyright: ignore[reportAttributeAccessIssue] -- test double
+        return api
+
+    def test_parses_real_response_shape(self):
+        api = self._api([{'UID': 2181, 'FileList': ['BRHelper/', 'BRHelper/BRHelper.txt']}])
+        assert api.filelist(2181) == ['BRHelper/', 'BRHelper/BRHelper.txt']
+
+    def test_empty_list_response_returns_empty(self):
+        api = self._api([])
+        assert api.filelist(999) == []
+
+    def test_missing_filelist_key_returns_empty(self):
+        api = self._api([{'UID': 2181}])
+        assert api.filelist(2181) == []

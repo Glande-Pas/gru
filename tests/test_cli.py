@@ -534,6 +534,79 @@ class TestLockCommands:
         assert 'Free Addon' not in result.output
 
 
+class TestMatchCommand:
+    """gru match: resolves an addon whose dir matched several online listings ambiguously,
+    ranking candidates best-guess-first and persisting the user's pick to addons.csv."""
+
+    @pytest.fixture
+    def cli_app(self, monkeypatch, tmp_path):
+        addons_root = tmp_path / 'AddOns'
+        addons_root.mkdir()
+        config_file = tmp_path / 'gru.ini'
+        config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
+        _patch_user_config(monkeypatch, tmp_path)
+
+        make_installed(addons_root, 'BRHelper', Title='Blackrose Prison Helper JP', Author='tdenc')
+        base = make_addon_info(id_=2181, title='Blackrose Prison Helper', author='andy.s',
+                               directories=['BRHelper'])
+        jp = make_addon_info(id_=2996, title='Blackrose Prison Helper JP Version', author='tdenc',
+                             directories=['BRHelper'])
+
+        class AmbiguousApi(StubAPI):
+            def dir(self, name, link=None):  # pyright: ignore[reportIncompatibleMethodOverride]
+                if name == 'BRHelper':
+                    raise AmbiguousDirectory(name, [base, jp])
+                raise FileNotFoundError(name)
+
+        def fake_build_app(game, cfg_file):
+            config = load_config(cfg_file)
+            api = AmbiguousApi()
+            local = make_folder(addons_root)
+            local.scan(api)  # pyright: ignore[reportArgumentType] -- stub API, not a real gru.api.API
+            return config, api, local
+
+        monkeypatch.setattr(cli_mod, 'build_app', fake_build_app)
+        return {'config_file': config_file, 'config_dir': tmp_path / 'config', 'base': base, 'jp': jp}
+
+    def test_match_ranks_author_match_first_and_persists_pick(self, cli_app):
+        result = invoke(cli_app['config_file'], ['match'], input='1\n')
+        assert result.exit_code == 0
+        assert 'Resolved 1 of 1 ambiguous addon(s).' in result.output
+
+        rows = list(csv.reader((cli_app['config_dir'] / 'ESO' / 'addons.csv').open()))
+        by_dir = {row[0]: row for row in rows[1:]}
+        assert by_dir['BRHelper'][2] == cli_app['jp'].metadata['link']  # author match ranks first
+
+    def test_match_declining_leaves_it_unresolved(self, cli_app):
+        result = invoke(cli_app['config_file'], ['match'], input='0\n')
+        assert result.exit_code == 0
+        assert 'Resolved 0 of 1 ambiguous addon(s).' in result.output
+
+    def test_match_no_ambiguous_addons(self, monkeypatch, tmp_path):
+        addons_root = tmp_path / 'AddOns'
+        addons_root.mkdir()
+        config_file = tmp_path / 'gru.ini'
+        config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
+        _patch_user_config(monkeypatch, tmp_path)
+
+        def fake_build_app(game, cfg_file):
+            config = load_config(cfg_file)
+            api = StubAPI()
+            local = make_folder(addons_root)
+            local.scan(api)  # pyright: ignore[reportArgumentType] -- stub API, not a real gru.api.API
+            return config, api, local
+        monkeypatch.setattr(cli_mod, 'build_app', fake_build_app)
+
+        result = invoke(config_file, ['match'])
+        assert result.exit_code == 0
+        assert 'No ambiguous addons to resolve.' in result.output
+
+    def test_match_shortcut(self, cli_app):
+        result = invoke(cli_app['config_file'], ['m'], input='1\n')
+        assert result.exit_code == 0
+        assert 'Resolved 1 of 1 ambiguous addon(s).' in result.output
+
+
 class TestExportCommand:
     """gru export: CSV to stdout by default, or to a file with --output/-o; includes the
     online info-page link as an extra column when the addon is matched, blank otherwise."""
