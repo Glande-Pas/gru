@@ -1159,6 +1159,35 @@ class TestUpdateCommand:
         assert result.exit_code == 0
         assert 'Nothing to do' in result.output
 
+    def test_update_warns_about_unmatched_addons(self, monkeypatch, tmp_path):
+        addons_root = tmp_path / 'AddOns'
+        addons_root.mkdir()
+        config_file = tmp_path / 'gru.ini'
+        config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
+        _patch_user_config(monkeypatch, tmp_path)
+
+        make_installed(addons_root, 'Mystery', Title='Mystery', Version='1.0')
+
+        def fake_build_app(game, cfg_file):
+            config = load_config(cfg_file)
+            api = StubAPI()
+            local = make_folder(addons_root)
+            local.scan(api)  # pyright: ignore[reportArgumentType] -- stub API, not a real gru.api.API
+            return config, api, local
+
+        monkeypatch.setattr(cli_mod, 'build_app', fake_build_app)
+
+        result = invoke(config_file, ['update'])
+        assert result.exit_code == 0
+        assert 'could not be matched online' in result.output
+        assert 'Mystery' in result.output
+        assert 'no online listing' in result.output
+
+    def test_update_with_all_addons_matched_has_no_unmatched_warning(self, cli_app):
+        result = invoke(cli_app['config_file'], ['update'])
+        assert result.exit_code == 0
+        assert 'could not be matched online' not in result.output
+
 
 class TestAddonStateSurvivesCrash:
     """addons.csv (and pending warnings) must still be written/shown even when get/remove/update

@@ -76,6 +76,19 @@ class SectionedHelpGroup(click.Group):
                     formatter.write_dl(rows)
 
 
+def _unmatched_reason(api: API, dir_: str) -> str:
+    """ Why a local addon folder has no online match, re-derived fresh from the API:
+    'ambiguous' (several online listings share this dir -- see `gru match`) or 'no listing'. """
+    try:
+        api.dir(dir_)
+    except AmbiguousDirectory:
+        return 'ambiguous'
+    except FileNotFoundError:
+        return 'no listing'
+    else:
+        return 'no listing'  # shouldn't happen: only reached when unmatched
+
+
 class TermDisplay:
     _eso_colored_text = re.compile(r'\|c(?P<color>[0-9a-fA-F]{6})(?P<text>[^|]+)(?:\|r)?')
 
@@ -171,14 +184,9 @@ class TermDisplay:
 
     def _unmatched_status(self, folder: gru.addon.InstalledAddon) -> str:
         """ Why this folder has no online match, re-derived fresh from the API. """
-        try:
-            self.api.dir(folder.dir)
-        except AmbiguousDirectory:
+        if _unmatched_reason(self.api, folder.dir) == 'ambiguous':
             return click.style('ambiguous - see gru match', fg='red', bold=True)
-        except FileNotFoundError:
-            return click.style('no listing', fg='yellow')
-        else:
-            return click.style('no listing', fg='yellow')  # shouldn't happen: only reached when unmatched
+        return click.style('no listing', fg='yellow')
 
     def _folder(self, item: str, folder: gru.addon.InstalledAddon) -> None:
         """ Show addon info from a local folder that was not matched with the API endpoint """
@@ -689,6 +697,17 @@ def update(ctx: click.Context, auto_deps: bool, opt: bool | None, patch: bool | 
             click.echo(f'Updated {updates} addon(s) and installed {added} dependence(s)')
         else:
             click.echo(f'Updated {updates} addon(s)')
+
+        unmatched = [addon for addon in local.installed if addon.id is None]
+        if unmatched:
+            click.echo()
+            click.echo(click.style(
+                f'WARNING: {len(unmatched)} addon(s) could not be matched online and were NOT checked '
+                'for updates:', fg='red', bold=True))
+            for addon in unmatched:
+                note = ('ambiguous - see `gru match`' if _unmatched_reason(api, addon.dir) == 'ambiguous'
+                        else 'no online listing')
+                click.echo(click.style(f'  - {TermDisplay._render_eso_text(addon.title)} ({note})', fg='red'))
     finally:
         local.export_state()
         gru_app.log_changes(local, ctx.obj['config'], before)
