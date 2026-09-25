@@ -18,7 +18,7 @@ from gru.api import AmbiguousDirectory
 from gru.cli import main, TermDisplay
 from gru.config import load_config
 
-from .conftest import StubAPI, make_folder, make_installed, make_addon_info
+from .conftest import StubAPI, make_folder, make_installed, make_addon_info, mock_remote_zip
 
 
 class TestRenderEsoText:
@@ -606,6 +606,50 @@ class TestMatchCommand:
         assert result.exit_code == 0
         assert 'Resolved 1 of 1 ambiguous addon(s).' in result.output
 
+    def test_match_auto_resolves_exact_match_without_prompting(self, monkeypatch, tmp_path):
+        """build_app() itself doesn't resolve exact matches (see TestBuildApp in test_app.py) --
+        `match` calls resolve_exact_matches() itself before falling back to ranked prompting."""
+        addons_root = tmp_path / 'AddOns'
+        addons_root.mkdir()
+        config_file = tmp_path / 'gru.ini'
+        config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
+        _patch_user_config(monkeypatch, tmp_path)
+
+        make_installed(addons_root, 'BRHelper', Title='Blackrose Prison Helper JP', Author='tdenc')
+        (addons_root / 'BRHelper' / 'lang.lua').write_text('-- lang')
+        manifest_bytes = (addons_root / 'BRHelper' / 'BRHelper.txt').read_bytes()
+        # base's metadata is implausible enough to be filtered before the CRC check, so it
+        # doesn't matter that mock_remote_zip() serves the same content regardless of candidate.
+        base = make_addon_info(id_=2181, title='Blackrose Prison Helper', author='andy.s', version='0.1',
+                               directories=['BRHelper'])
+        jp = make_addon_info(id_=2996, title='Blackrose Prison Helper JP Version', author='tdenc',
+                             directories=['BRHelper'])
+        mock_remote_zip(monkeypatch, {'BRHelper/BRHelper.txt': manifest_bytes, 'BRHelper/lang.lua': b'-- lang'})
+
+        class AmbiguousApi(StubAPI):
+            def dir(self, name, link=None):  # pyright: ignore[reportIncompatibleMethodOverride]
+                if name == 'BRHelper':
+                    raise AmbiguousDirectory(name, [base, jp])
+                raise FileNotFoundError(name)
+
+        def fake_build_app(game, cfg_file):
+            config = load_config(cfg_file)
+            api = AmbiguousApi()
+            local = make_folder(addons_root)
+            local.scan(api)  # pyright: ignore[reportArgumentType] -- stub API, not a real gru.api.API
+            return config, api, local
+
+        monkeypatch.setattr(cli_mod, 'build_app', fake_build_app)
+
+        result = invoke(config_file, ['match'])  # no input given -- must not prompt
+        assert result.exit_code == 0
+        assert 'Resolved 1 of 1 ambiguous addon(s).' in result.output
+        assert 'exact file match' in result.output  # surfaced via show_warnings()
+
+        rows = list(csv.reader((tmp_path / 'config' / 'ESO' / 'addons.csv').open()))
+        by_dir = {row[0]: row for row in rows[1:]}
+        assert by_dir['BRHelper'][2] == jp.metadata['link']
+
 
 class TestExportCommand:
     """gru export: CSV to stdout by default, or to a file with --output/-o; includes the
@@ -1187,6 +1231,48 @@ class TestUpdateCommand:
         result = invoke(cli_app['config_file'], ['update'])
         assert result.exit_code == 0
         assert 'could not be matched online' not in result.output
+
+    def test_update_auto_resolves_exact_match_before_checking_for_updates(self, monkeypatch, tmp_path):
+        """build_app() itself doesn't resolve exact matches (see TestBuildApp in test_app.py) --
+        `update` must do it itself, so a newly-ambiguous addon still gets checked this run
+        instead of being reported as unmatched."""
+        addons_root = tmp_path / 'AddOns'
+        addons_root.mkdir()
+        config_file = tmp_path / 'gru.ini'
+        config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
+        _patch_user_config(monkeypatch, tmp_path)
+
+        make_installed(addons_root, 'BRHelper', Title='BRHelper', Author='Test', Version='1.0')
+        (addons_root / 'BRHelper' / 'lang.lua').write_text('-- lang')
+        manifest_bytes = (addons_root / 'BRHelper' / 'BRHelper.txt').read_bytes()
+        # `other`'s metadata is implausible enough to be filtered before the CRC check, so it
+        # doesn't matter that mock_remote_zip() serves the same content regardless of candidate.
+        other = make_addon_info(id_=1, title='Other', author='Someone Else', version='0.1', directories=['BRHelper'])
+        exact = make_addon_info(id_=2, title='Exact', author='Test', version='1.0', directories=['BRHelper'])
+        mock_remote_zip(monkeypatch, {'BRHelper/BRHelper.txt': manifest_bytes, 'BRHelper/lang.lua': b'-- lang'})
+
+        class AmbiguousApi(StubAPI):
+            def dir(self, name, link=None):  # pyright: ignore[reportIncompatibleMethodOverride]
+                if name == 'BRHelper':
+                    raise AmbiguousDirectory(name, [other, exact])
+                raise FileNotFoundError(name)
+
+        def fake_build_app(game, cfg_file):
+            config = load_config(cfg_file)
+            api = AmbiguousApi()
+            local = make_folder(addons_root)
+            local.scan(api)  # pyright: ignore[reportArgumentType] -- stub API, not a real gru.api.API
+            return config, api, local
+
+        monkeypatch.setattr(cli_mod, 'build_app', fake_build_app)
+
+        result = invoke(config_file, ['update'])
+        assert result.exit_code == 0
+        assert 'could not be matched online' not in result.output
+
+        rows = list(csv.reader((tmp_path / 'config' / 'ESO' / 'addons.csv').open()))
+        by_dir = {row[0]: row for row in rows[1:]}
+        assert by_dir['BRHelper'][2] == exact.metadata['link']
 
 
 class TestAddonStateSurvivesCrash:

@@ -1,11 +1,14 @@
 """Tests for gru.addon: AddonInfo dir resolution, manifest parsing, update detection."""
 
+import io
+import zlib
+import zipfile
 import datetime
 import warnings
 
 import pytest
 
-from gru.addon import atol, _parse_version, AddonInfo, InstalledAddon
+from gru.addon import atol, _parse_version, strip_eso_text, file_crc32, AddonInfo, InstalledAddon
 
 from .conftest import make_addon_info, make_installed, write_manifest
 
@@ -39,6 +42,57 @@ class TestParseVersion:
 
     def test_mixed_digits_and_text_parses_leading_number(self):
         assert _parse_version('1.2beta') == (1, 2)
+
+
+class TestStripEsoText:
+    def test_closed_tag(self):
+        assert strip_eso_text('|cFF0000Red|r Text') == 'Red Text'
+
+    def test_missing_closing_tag_auto_closes_at_end_of_string(self):
+        assert strip_eso_text('|cFF0000Unterminated Red Text') == 'Unterminated Red Text'
+
+    def test_missing_closing_tag_auto_closes_before_next_color_code(self):
+        assert strip_eso_text('|cFF0000Red|c00FF00Green') == 'RedGreen'
+
+    def test_plain_text_unaffected(self):
+        assert strip_eso_text('Plain title, no markup') == 'Plain title, no markup'
+
+
+class TestFileCrc32:
+    def test_matches_zlib_crc32_directly(self, tmp_path):
+        content = b'hello world' * 100
+        path = tmp_path / 'a.txt'
+        path.write_bytes(content)
+
+        assert file_crc32(path) == zlib.crc32(content)
+
+    def test_matches_zipfile_own_crc_for_the_same_content(self, tmp_path):
+        """Must agree with what a zip archive itself records for the same bytes."""
+        content = b'## Title: MyAddon\n## Author: Test\n' * 50
+        path = tmp_path / 'MyAddon.txt'
+        path.write_bytes(content)
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w') as zf:
+            zf.writestr('MyAddon/MyAddon.txt', content)
+        with zipfile.ZipFile(io.BytesIO(buf.getvalue())) as zf:
+            [info] = zf.infolist()
+
+        assert file_crc32(path) == info.CRC
+
+    def test_empty_file(self, tmp_path):
+        path = tmp_path / 'empty.txt'
+        path.write_bytes(b'')
+
+        assert file_crc32(path) == 0
+
+    def test_content_spanning_multiple_read_chunks(self, tmp_path):
+        """The running CRC must accumulate across chunks, not just handle a single read()."""
+        content = bytes((i * 7) % 256 for i in range(65536 * 3 + 12345))  # several 64KB chunks
+        path = tmp_path / 'big.dat'
+        path.write_bytes(content)
+
+        assert file_crc32(path) == zlib.crc32(content)
 
 
 # ---------------------------------------------------------------------------

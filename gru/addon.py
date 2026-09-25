@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import zlib
 import datetime
 import pathlib
 import warnings
@@ -27,6 +28,24 @@ def _parse_version(value: str) -> tuple[int, ...] | None:
     if not isinstance(value, str) or not any(char.isdigit() for char in value):
         return None
     return tuple(atol(token) for token in value.split('.'))
+
+
+def file_crc32(path: pathlib.Path) -> int:
+    """ CRC-32 of a file's contents, comparable against gru.remotezip.RemoteZipEntry.crc32. """
+    crc = 0
+    with path.open('rb') as f:
+        for chunk in iter(lambda: f.read(65536), b''):
+            crc = zlib.crc32(chunk, crc)
+    return crc
+
+
+ESO_COLORED_TEXT = re.compile(r'\|c(?P<color>[0-9a-fA-F]{6})(?P<text>[^|]+)(?:\|r)?')
+
+
+def strip_eso_text(text: str) -> str:
+    """ Plain visible text with ESO |cRRGGBB...|r color markup removed, for comparisons (not
+    display -- see cli.TermDisplay._render_eso_text() for the rendering counterpart). """
+    return ESO_COLORED_TEXT.sub(lambda match: match.group('text'), text)
 
 
 # AddonInfo

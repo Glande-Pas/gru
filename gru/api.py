@@ -235,6 +235,10 @@ class API:
         self.info_url_template: str = config.get(f'{self.game}.links', 'info')
         self.session = requests_cache.CachedSession(gruconfig.user_cache('api'),
                                                     expire_after=datetime.timedelta(hours=1))
+        # Separate cache: needs match_headers (vary by Range) and allowable_codes (cache 206s).
+        self.zip_session = requests_cache.CachedSession(gruconfig.user_cache('zips'),
+                                                        expire_after=datetime.timedelta(hours=1),
+                                                        allowable_codes=(200, 206), match_headers=True)
 
     def _load(self, url: str, fallback: typing.Any = None) -> typing.Any:
         """ Load a page and return the JSON, ensure we use cached page if <1h old """
@@ -448,7 +452,7 @@ class ESOUIv3(API):
         return self._load(self.pages['gameconf'], {})
 
     def filelist(self, id_: int) -> list[str]:
-        data = self._load(self.pages['filelist'].format(id=id_), [])
+        data = self._load(self.pages['listfiles'].format(id=id_), [])
         return data[0].get('FileList', []) if data else []
 
     def filedetails(self, id_: int) -> dict:

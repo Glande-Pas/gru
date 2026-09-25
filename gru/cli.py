@@ -7,12 +7,12 @@ import warnings
 import datetime
 import pathlib
 import locale
+import logging
 import shutil
 import struct
 import click
 import math
 import typing
-import re
 import sys
 import click_repl
 import prompt_toolkit.history as prompt_history
@@ -23,7 +23,7 @@ from collections.abc import Iterable
 
 from .config import load_config, save_config, user_cache, user_config, display_config, update_config
 from .api import API, AmbiguousDirectory
-from .addon import AddonInfo, InstalledAddon
+from .addon import AddonInfo, InstalledAddon, ESO_COLORED_TEXT
 from .install import Folder
 from .patch import addon_diff, addon_patch_file, PatchError
 from . import app as gru_app
@@ -90,8 +90,6 @@ def _unmatched_reason(api: API, dir_: str) -> str:
 
 
 class TermDisplay:
-    _eso_colored_text = re.compile(r'\|c(?P<color>[0-9a-fA-F]{6})(?P<text>[^|]+)(?:\|r)?')
-
     def _wrapped(self, *infos: list[str]) -> None:
         pfx = ' ' * self.gutter
         width = shutil.get_terminal_size()[0] - self.gutter
@@ -111,15 +109,10 @@ class TermDisplay:
 
     @staticmethod
     def _render_eso_text(text: str) -> str:
-        return TermDisplay._eso_colored_text.sub(lambda match: click.style(
+        return ESO_COLORED_TEXT.sub(lambda match: click.style(
             match.group('text'),
             fg=struct.unpack('BBB', bytes.fromhex(match.group('color')))
         ), text)
-
-    @staticmethod
-    def _strip_eso_text(text: str) -> str:
-        """ Plain visible text with ESO color markup removed, for comparisons (not display) """
-        return TermDisplay._eso_colored_text.sub(lambda match: match.group('text'), text)
 
     def _styled_width(self, text: str, width: int) -> str:
         text = self._render_eso_text(text)
@@ -349,10 +342,17 @@ def build_app(game: str, config_file: pathlib.Path | None) -> tuple[configparser
 @click.option('--game', 'game', help='Choice of game', hidden=True,
               type=click.Choice(['ESO']), default='ESO')
 @click.option('--no-color', 'no_color', is_flag=True, default=False, help='Disable colored output')
+@click.option('--debug', 'debug', is_flag=True, default=False,
+              help='Print addon-matching scoring/decisions (rank_candidates, find_exact_match, ...) to stderr')
 @click.pass_context
 def main(ctx: click.Context, game: str = 'ESO', config_file: pathlib.Path | None = None,
-         no_color: bool = False) -> None:
+         no_color: bool = False, debug: bool = False) -> None:
     locale.setlocale(locale.LC_ALL, '')
+
+    if debug:
+        # Only gru.app, not root -- avoids unmuting chatty third-party loggers too.
+        logging.basicConfig(format='[debug] %(message)s')
+        logging.getLogger('gru.app').setLevel(logging.DEBUG)
 
     # Default to color even when piping
     ctx.color = not no_color
@@ -451,7 +451,8 @@ def show_warnings(ctx: click.Context) -> None:
 
 @main.result_callback()
 @click.pass_context
-def process_result(ctx: click.Context, result: typing.Any, game: str, config_file: str | None, no_color: bool) -> None:
+def process_result(ctx: click.Context, result: typing.Any, game: str, config_file: str | None, no_color: bool,
+                   debug: bool) -> None:
     show_warnings(ctx)
 
 
@@ -681,6 +682,7 @@ def update(ctx: click.Context, auto_deps: bool, opt: bool | None, patch: bool | 
     """ Find out-of-date and missing addons and install them """
     api = ctx.obj['api']
     local = ctx.obj['local']
+    gru_app.resolve_exact_matches(local, api)
     before = local.snapshot()
 
     if opt is None:
@@ -832,17 +834,23 @@ def match(ctx: click.Context, addon: str | None) -> None:
     local = ctx.obj['local']
     sortkey = ctx.obj['config'].get(f'{local.game}.addons', 'sortkey')
 
+    auto_resolved = gru_app.resolve_exact_matches(local, api)
+    if auto_resolved:
+        local.export_state()
+
     ambiguous = gru_app.find_ambiguous(local, api)
     if addon:
         term = addon.lower()
         ambiguous = [(inst, c) for inst, c in ambiguous if term in inst.dir.lower() or term in inst.title.lower()]
+        auto_resolved = [inst for inst in auto_resolved if term in inst.dir.lower() or term in inst.title.lower()]
 
-    if not ambiguous:
+    total = len(ambiguous) + len(auto_resolved)
+    if not total:
         click.echo('No ambiguous addons to resolve.')
         show_warnings(ctx)
         return
 
-    resolved = 0
+    resolved = len(auto_resolved)
     for installed, candidates in ambiguous:
         ranked = gru_app.rank_candidates(installed, candidates, api, sortkey)
         click.echo(f'\n{TermDisplay._render_eso_text(installed.title)} ({installed.dir}):')
@@ -852,9 +860,9 @@ def match(ctx: click.Context, addon: str | None) -> None:
         installed.link(picked)
         resolved += 1
 
-    if resolved:
+    if resolved > len(auto_resolved):
         local.export_state()
-    click.echo(f'Resolved {resolved} of {len(ambiguous)} ambiguous addon(s).')
+    click.echo(f'Resolved {resolved} of {total} ambiguous addon(s).')
     show_warnings(ctx)
 
 

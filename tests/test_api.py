@@ -429,14 +429,30 @@ class TestApiLoad:
 
 class TestApiFilelist:
     """Real shape (from listfiles/{id}.json): a one-element list wrapping {UID, FileList},
-    not a bare dict -- filelist() crashed on real data (AttributeError: 'list' has no 'get')."""
+    not a bare dict."""
 
     def _api(self, json_data):
         api = ESOUIv3.__new__(ESOUIv3)  # filelist() is ESOUIv3-specific, not on base API
-        api.game, api.version, api.pages = 'ESO', 3, {'filelist': 'listfiles/{id}.json'}
+        # 'filelist' (bulk) and 'listfiles' (id-templated) are genuinely different pages.json keys.
+        api.game, api.version, api.pages = 'ESO', 3, {'filelist': 'filelist.json', 'listfiles': 'listfiles/{id}.json'}
         session = FakeSession(response=FakeResponse(json_data=json_data))
         api.session = session  # pyright: ignore[reportAttributeAccessIssue] -- test double
         return api
+
+    def test_uses_the_id_templated_listfiles_page_not_the_bulk_filelist_page(self):
+        """filelist() must request 'listfiles' (id-templated), not the bulk 'filelist' page."""
+        api = self._api([{'UID': 2181, 'FileList': ['BRHelper/BRHelper.txt']}])
+        requested = []
+        real_load = api._load
+
+        def spy_load(url, fallback=None):
+            requested.append(url)
+            return real_load(url, fallback)
+        api._load = spy_load  # pyright: ignore[reportAttributeAccessIssue] -- test double
+
+        api.filelist(2181)
+
+        assert requested == ['listfiles/2181.json']
 
     def test_parses_real_response_shape(self):
         api = self._api([{'UID': 2181, 'FileList': ['BRHelper/', 'BRHelper/BRHelper.txt']}])

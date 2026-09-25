@@ -11,8 +11,10 @@ import typing
 import zipfile
 
 import pytest
+import requests
 
 import gru
+import gru.app as app_mod
 from gru.api import API
 from gru.install import Folder
 from gru.addon import AddonInfo, InstalledAddon
@@ -178,11 +180,13 @@ def make_installed(root: pathlib.Path, dir_name: str, **fields) -> InstalledAddo
 
 
 def make_api(addons: dict | None = None, categories: dict | None = None, session: typing.Any = None):
-    """Bare API instance, .addons/.categories set directly -- bypasses __init__/network."""
+    """Bare API instance, .addons/.categories set directly -- bypasses __init__/network.
+    previous_versions() defaults to no archived versions known; override it for tests that care."""
     api = API.__new__(API)
     api.game, api.version, api.pages = 'ESO', 3, {}
     api.addons = addons or {}
     api.categories = categories or {}
+    api.previous_versions = lambda id_: []  # pyright: ignore[reportAttributeAccessIssue]
     if session is not None:
         api.session = session  # pyright: ignore[reportAttributeAccessIssue] -- test double, not a real CachedSession
     return api
@@ -196,6 +200,85 @@ def as_api(stub: object) -> API:
 def as_folder(stub: object) -> Folder:
     """Pass a test double where the type checker expects a real gru.install.Folder."""
     return typing.cast('Folder', stub)
+
+
+class FakeCrcResponse:
+    """Test double for a HEAD response (content-length) or a Range-GET response (content)."""
+    def __init__(self, content: bytes = b'', headers: dict | None = None, status_code: int = 206):
+        self.content = content
+        self.headers = headers or {}
+        self.status_code = status_code
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(f'{self.status_code} error')
+
+
+def _build_zip(entries: dict[str, bytes]) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w') as zf:
+        for name, content in entries.items():
+            zf.writestr(name, content)
+    return buf.getvalue()
+
+
+def mock_remote_zip(monkeypatch, entries: dict[str, bytes]) -> bytes:
+    """ Serve `entries` as a real in-memory zip through gru.app's HEAD and gru.remotezip's
+    Range-GET calls. Returns the built zip's raw bytes. """
+    zip_bytes = _build_zip(entries)
+
+    monkeypatch.setattr(app_mod.requests, 'head',
+                        lambda url, allow_redirects=True: FakeCrcResponse(
+                            headers={'content-length': str(len(zip_bytes))}))
+
+    def fake_get(url, headers, allow_redirects=True):
+        start, end = (int(n) for n in headers['Range'].removeprefix('bytes=').split('-'))
+        return FakeCrcResponse(content=zip_bytes[start:end + 1])
+    monkeypatch.setattr('gru.remotezip.requests.get', fake_get)
+    return zip_bytes
+
+
+def mock_remote_zip_capturing_urls(monkeypatch, entries: dict[str, bytes]) -> tuple[bytes, list[str]]:
+    """ Same as mock_remote_zip(), but also records every URL fetched -- for asserting *which*
+    zip was reached. """
+    zip_bytes = _build_zip(entries)
+    requested: list[str] = []
+
+    def fake_head(url, allow_redirects=True):
+        requested.append(url)
+        return FakeCrcResponse(headers={'content-length': str(len(zip_bytes))})
+    monkeypatch.setattr(app_mod.requests, 'head', fake_head)
+
+    def fake_get(url, headers, allow_redirects=True):
+        requested.append(url)
+        start, end = (int(n) for n in headers['Range'].removeprefix('bytes=').split('-'))
+        return FakeCrcResponse(content=zip_bytes[start:end + 1])
+    monkeypatch.setattr('gru.remotezip.requests.get', fake_get)
+    return zip_bytes, requested
+
+
+class FakeSession:
+    """Test double for a requests(_cache).Session -- exposes .head()/.get() as bound methods, so
+    a test can prove code actually routes through *this* object (as API.zip_session would be
+    passed in production) rather than the module-level `requests` calls."""
+    def __init__(self, entries: dict[str, bytes]):
+        self.zip_bytes = _build_zip(entries)
+        self.calls: list[str] = []
+
+    def head(self, url, allow_redirects=True):
+        self.calls.append(f'HEAD {url}')
+        return FakeCrcResponse(headers={'content-length': str(len(self.zip_bytes))})
+
+    def get(self, url, headers, allow_redirects=True):
+        self.calls.append(f'GET {url} {headers["Range"]}')
+        start, end = (int(n) for n in headers['Range'].removeprefix('bytes=').split('-'))
+        return FakeCrcResponse(content=self.zip_bytes[start:end + 1])
 
 
 @pytest.fixture
