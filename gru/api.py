@@ -167,32 +167,30 @@ class _ArchivedFilesParser(html.parser.HTMLParser):
             return
         attrs_ = dict(attrs)
 
-        match tag:
-            case 'div' if 'title' in (attrs_.get('class') or '').split():
-                self._reading_heading = True
-            case 'table' if self._found_heading and not self._in_table:
-                self._in_table = True
-            case 'tr' if self._in_table:
-                self._in_row = True
-                self.rows.append([])
-            case 'td' if self._in_row:
-                self._in_cell = True
-                self.rows[-1].append(None)
-            case 'a' if self._in_cell and not self._in_link:
-                self._in_link = True
-                self.rows[-1][-1] = attrs_.get('href')
+        if tag == 'div' and 'title' in (attrs_.get('class') or '').split():
+            self._reading_heading = True
+        elif tag == 'table' and self._found_heading and not self._in_table:
+            self._in_table = True
+        elif tag == 'tr' and self._in_table:
+            self._in_row = True
+            self.rows.append([])
+        elif tag == 'td' and self._in_row:
+            self._in_cell = True
+            self.rows[-1].append(None)
+        elif tag == 'a' and self._in_cell and not self._in_link:
+            self._in_link = True
+            self.rows[-1][-1] = attrs_.get('href')
 
     def handle_endtag(self, tag: str) -> None:
-        match tag:
-            case 'table' if self._in_table:
-                self._in_table = False
-                self._done = self._found_heading  # got the table we wanted, ignore the rest
-            case 'tr':
-                self._in_row = False
-            case 'td':
-                self._in_cell = False
-            case 'a':
-                self._in_link = False
+        if tag == 'table' and self._in_table:
+            self._in_table = False
+            self._done = self._found_heading  # got the table we wanted, ignore the rest
+        elif tag == 'tr':
+            self._in_row = False
+        elif tag == 'td':
+            self._in_cell = False
+        elif tag == 'a':
+            self._in_link = False
 
     def handle_data(self, data: str) -> None:
         if self._reading_heading:

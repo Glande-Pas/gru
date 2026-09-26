@@ -1100,7 +1100,7 @@ def patch(ctx: click.Context, addon: str | None, patch: pathlib.Path | None, par
         else:
             click.echo('No changes could be applied.')
         click.echo()
-        click.echo(f'{click.style("Some changes failed to apply!", fg='red', bold=True)} '
+        click.echo(f'{click.style("Some changes failed to apply!", fg="red", bold=True)} '
                    'Saved to the following, apply them manually:')
         for f in rejects:
             click.echo(f'  {f.reject}')
