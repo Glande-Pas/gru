@@ -29,6 +29,16 @@ logger = logging.getLogger(__name__)
 
 NOT_INSTALLED = 'none'  # sentinel: version/NOT_INSTALLED means installed, NOT_INSTALLED/version means uninstalled
 
+ABOUT = """\
+Gru gets, removes, and updates Elder Scrolls Online (ESO) add-ons from ESOUI.com.
+
+Gru is an independent, unofficial tool. It is not affiliated with, endorsed by, or sponsored by \
+ZeniMax Online Studios, Bethesda Softworks, ESOUI, or Minion. \
+The Elder Scrolls Online and ESOUI are trademarks of their respective owners.
+
+Add-on hosting, organization, and moderation are handled entirely by ESOUI.com.
+"""
+
 
 class ChangeEntry(NamedTuple):
     """ One changes.csv row: `dir` went from `previous_state` to `version`. `version`/

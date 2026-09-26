@@ -1982,6 +1982,25 @@ class TestConfigLoadFailure:
         assert isinstance(result.exception, RuntimeError)
 
 
+class TestAboutCommand:
+    def test_prints_about_text_without_building_the_app(self, monkeypatch, tmp_path):
+        """about needs no config, API, or addons folder -- unlike every other command, it must
+        not even attempt build_app()."""
+        def boom(game, config_file):
+            raise AssertionError('about should not call build_app()')
+        monkeypatch.setattr(cli_mod, 'build_app', boom)
+
+        result = invoke(tmp_path / 'gru.ini', ['about'])
+
+        assert result.exit_code == 0
+        assert result.output.strip() == app_mod.ABOUT.strip()
+
+    def test_discloses_non_affiliation(self, tmp_path):
+        result = invoke(tmp_path / 'gru.ini', ['about'])
+        assert 'not affiliated' in result.output
+        assert 'ESOUI' in result.output
+
+
 class TestFolderSearchTiebreak:
     def test_exactly_tied_candidates_do_not_crash_sorting(self, addon_root, folder):
         """Regression: Folder.search()'s default tiebreakattr=None used to become the

@@ -361,9 +361,10 @@ def main(ctx: click.Context, game: str = 'ESO', config_file: pathlib.Path | None
     ctx.obj['warnings'] = ctx.with_resource(warnings.catch_warnings(record=True))
 
     try:
-        if ctx.invoked_subcommand == 'config':
-            # skip network fetch/filesystem scan as we may be trying to set those up
-            config = load_config(config_file)
+        if ctx.invoked_subcommand == 'about':
+            config = api = local = None  # needs neither config, network, nor filesystem access
+        elif ctx.invoked_subcommand == 'config':
+            config = load_config(config_file)  # skip network fetch/scan as we may be setting those up
             api = local = None
         else:
             config, api, local = build_app(game, config_file)
@@ -438,6 +439,11 @@ def config_set(ctx: click.Context, entry: str, value: str) -> None:
             save_config(ctx.obj['config'], ctx.obj['config_file'])
         except OSError as exc:
             raise click.ClickException(str(exc))
+
+
+@main.command(help='Show what gru is, and its ESO/ESOUI affiliation')
+def about() -> None:
+    click.echo(gru_app.ABOUT)
 
 
 def show_warnings(ctx: click.Context) -> None:
