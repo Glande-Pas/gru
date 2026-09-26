@@ -7,6 +7,7 @@ import configparser
 import csv
 import io
 import pathlib
+import re
 
 import click
 import pytest
@@ -1937,9 +1938,16 @@ class TestGetCommand:
         assert 'already installed locally and not found online' in result.output
 
     def test_install_hidden_from_help(self, cli_app):
+        """Checks for the 'install' command entry specifically, not just the word -- other
+        commands' own help text legitimately mentions "install" (e.g. get's)."""
         result = invoke(cli_app['config_file'], ['--help'])
         assert result.exit_code == 0
-        assert 'install' not in result.output
+        assert not re.search(r'^\s*install\b', result.output, re.MULTILINE)
+
+    def test_check_api_release_hidden_from_help(self, cli_app):
+        result = invoke(cli_app['config_file'], ['--help'])
+        assert result.exit_code == 0
+        assert 'check-api-release' not in result.output
 
 
 class TestConfigLoadFailure:
@@ -1999,6 +2007,21 @@ class TestAboutCommand:
         result = invoke(tmp_path / 'gru.ini', ['about'])
         assert 'not affiliated' in result.output
         assert 'ESOUI' in result.output
+
+
+class TestHelpCommand:
+    def test_prints_the_same_as_the_help_flag_without_building_the_app(self, monkeypatch, tmp_path):
+        """help needs no config, API, or addons folder, like about -- and must render byte-for-
+        byte the same text as --help, not just something similar."""
+        def boom(game, config_file):
+            raise AssertionError('help should not call build_app()')
+        monkeypatch.setattr(cli_mod, 'build_app', boom)
+
+        flag_result = invoke(tmp_path / 'gru.ini', ['--help'])
+        cmd_result = invoke(tmp_path / 'gru.ini', ['help'])
+
+        assert cmd_result.exit_code == 0
+        assert cmd_result.output == flag_result.output
 
 
 class TestFolderSearchTiebreak:

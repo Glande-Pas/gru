@@ -44,7 +44,7 @@ def get_config_bool(ctx: click.Context, string: str) -> bool:
 class SectionedHelpGroup(click.Group):
     """ Sections commands into help groups """
 
-    _cmd_shortcuts = {'rm': 'remove', 'up': 'update', 'ls': 'list', 's': 'search', 'cc': 'clear-caches', 'df': 'diff',
+    _cmd_shortcuts = {'rm': 'remove', 'up': 'update', 'ls': 'list', 'se': 'search', 'cc': 'clear-caches',
                       'al': 'add-lock', 'rl': 'remove-lock', 'll': 'list-locks', 'rv': 'review', 'm': 'match',
                       'in': 'install'}
 
@@ -52,8 +52,14 @@ class SectionedHelpGroup(click.Group):
     def _cmd_group(cls, cmd: click.Command) -> str:
         if cmd.name in {'get', 'remove', 'update'}:
             return 'main'
-        elif cmd.name in {'help', 'exit'}:
-            return 'command line'
+        elif cmd.name in {'add-lock', 'remove-lock', 'list-locks'}:
+            return 'version locking'
+        elif cmd.name in {'list', 'search', 'review', 'miss', 'export', 'check-api-release', 'cleanup', 'match'}:
+            return 'more addon'
+        elif cmd.name in {'diff', 'patch'}:
+            return 'patches'
+        elif cmd.name in {'clear-caches', 'config', 'help', 'exit', 'about'}:
+            return 'utility'
         else:
             return 'extra'
 
@@ -62,14 +68,14 @@ class SectionedHelpGroup(click.Group):
 
     def format_commands(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
         shortcuts = {long: short for short, long in self._cmd_shortcuts.items()}
-        for group in ['main', 'extra', 'command line']:
+        for group in ['main', 'more addon', 'version locking', 'patches', 'utility', 'extra']:
             rows = []
             for subcommand in self.list_commands(ctx):
                 cmd = self.get_command(ctx, subcommand)
                 if cmd is None or cmd.hidden or group != self._cmd_group(cmd):
                     continue
                 short = shortcuts.get(subcommand)
-                rows.append((f'{subcommand} [{short}]' if short else subcommand, cmd.short_help or ''))
+                rows.append((f'{subcommand} [{short}]' if short else subcommand, cmd.get_short_help_str()))
 
             if rows:
                 with formatter.section(f'{group.title()} commands'):
@@ -300,12 +306,8 @@ def _progress(size: int, message: str) -> gru.install.ProgressProtocol:
 
 
 def add_repl_commands(group: click.Group) -> None:
-    """ Adds commands that are only useful in REPL mode to a click group """
-    @group.command('help', help='Print CLI help')
-    def print_help() -> None:
-        with click.Context(group) as ctx:
-            click.echo(group.get_help(ctx))
-
+    """ Adds commands that are only useful in REPL mode to a click group -- 'help' is a real,
+    always-registered command (see print_help()), not added here. """
     @group.command('exit', help='Exit CLI')
     def exit_repl() -> typing.NoReturn:
         raise click_repl.ExitReplException()
@@ -335,14 +337,14 @@ def build_app(game: str, config_file: pathlib.Path | None) -> tuple[configparser
     return config, api, local
 
 
-@click.group(cls=SectionedHelpGroup, invoke_without_command=True,
+@click.group(cls=SectionedHelpGroup, invoke_without_command=True, help=gru_app.ABOUT.splitlines()[0],
              context_settings=dict(help_option_names=['-h', '--help']))
 @click.option('--config', 'config_file', help='path to config file',
               type=click.Path(dir_okay=False, writable=True, path_type=pathlib.Path), default=None)
 @click.option('--game', 'game', help='Choice of game', hidden=True,
               type=click.Choice(['ESO']), default='ESO')
 @click.option('--no-color', 'no_color', is_flag=True, default=False, help='Disable colored output')
-@click.option('--debug', 'debug', is_flag=True, default=False,
+@click.option('--debug', 'debug', is_flag=True, default=False, hidden=True,
               help='Print addon-matching scoring/decisions (rank_candidates, find_exact_match, ...) to stderr')
 @click.pass_context
 def main(ctx: click.Context, game: str = 'ESO', config_file: pathlib.Path | None = None,
@@ -361,7 +363,7 @@ def main(ctx: click.Context, game: str = 'ESO', config_file: pathlib.Path | None
     ctx.obj['warnings'] = ctx.with_resource(warnings.catch_warnings(record=True))
 
     try:
-        if ctx.invoked_subcommand == 'about':
+        if ctx.invoked_subcommand in ('about', 'help'):
             config = api = local = None  # needs neither config, network, nor filesystem access
         elif ctx.invoked_subcommand == 'config':
             config = load_config(config_file)  # skip network fetch/scan as we may be setting those up
@@ -386,6 +388,7 @@ def main(ctx: click.Context, game: str = 'ESO', config_file: pathlib.Path | None
 @main.group()
 @click.pass_context
 def config(ctx: click.Context) -> None:
+    """ Access persistent configuration parameters """
     pass
 
 
@@ -441,9 +444,18 @@ def config_set(ctx: click.Context, entry: str, value: str) -> None:
             raise click.ClickException(str(exc))
 
 
-@main.command(help='Show what gru is, and its ESO/ESOUI affiliation')
+@main.command
 def about() -> None:
+    """ About this app """
     click.echo(gru_app.ABOUT)
+
+
+@main.command
+@click.pass_context
+def help(ctx: click.Context) -> None:
+    """ Show this help message """
+    assert ctx.parent is not None  # always invoked as a subcommand of `main`
+    click.echo(main.get_help(ctx.parent))
 
 
 def show_warnings(ctx: click.Context) -> None:
@@ -634,7 +646,7 @@ def _remove_vars_policy(ctx: click.Context, local: gru.install.Folder, remove_va
     return resolve, removed
 
 
-@main.command()
+@main.command(short_help='Identify and uninstall a locally installed addon')
 @click.argument('addon', required=False)
 @click.option('--clean-deps/--no-clean-deps', default=False, help='Clean up unused dependences')
 @click.option('--opt/--no-opt', default=None, help='Keep optional dependences')
@@ -650,11 +662,6 @@ def remove(ctx: click.Context, addon: str | None, clean_deps: bool = False, opt:
     if opt is None:
         opt = get_config_bool(ctx, '{game}.addons.optional')
 
-    # TODO: remove one of several matches e.g. lib media provider?
-    # prefer
-    # - unmatched
-    # - top-level / non-subaddon ?
-    # TODO: handle removal of several linked local addons (same online addon)
     installed_addon = _find_installed(local, api, addon, 'Confirm removal?')
     if installed_addon is None:
         show_warnings(ctx)
@@ -679,7 +686,7 @@ def remove(ctx: click.Context, addon: str | None, clean_deps: bool = False, opt:
         show_warnings(ctx)
 
 
-@main.command()
+@main.command(short_help='Find out-of-date installed addons and install newer versions')
 @click.option('--auto-deps/--no-auto-deps', default=True, help='Automatically install new/missing dependences')
 @click.option('--opt/--no-opt', default=None, help='Include optional dependences')
 @click.option('--patch/--no-patch', default=None, help='Automatically re-apply patches')
@@ -722,7 +729,7 @@ def update(ctx: click.Context, auto_deps: bool, opt: bool | None, patch: bool | 
         show_warnings(ctx)
 
 
-@main.command(help='Remove unused dependences')
+@main.command
 @click.option('--opt/--no-opt', default=True, help='Keep optional dependences')
 @click.option('--dedupe/--no-dedupe', default=False,
               help='Also remove standalone libraries superseded by an equal-or-newer bundled copy')
@@ -730,7 +737,7 @@ def update(ctx: click.Context, auto_deps: bool, opt: bool | None, patch: bool | 
 @click.pass_context
 def cleanup(ctx: click.Context, opt: bool | None = None, dedupe: bool = False,
             remove_vars: bool | None = None) -> None:
-    """ Find and uninstall an addon """
+    """ Remove unused dependences """
     local = ctx.obj['local']
     before = local.snapshot()
 
@@ -759,10 +766,11 @@ def cleanup(ctx: click.Context, opt: bool | None = None, dedupe: bool = False,
         show_warnings(ctx)
 
 
-@main.command('add-lock', help='Pin an addon to its currently installed version')
+@main.command(short_help='Pin an addon to its currently installed version')
 @click.argument('addon', required=False)
 @click.pass_context
 def add_lock(ctx: click.Context, addon: str | None) -> None:
+    """ Pin an addon to its currently installed version """
     api = ctx.obj['api']
     local = ctx.obj['local']
 
@@ -788,10 +796,11 @@ def add_lock(ctx: click.Context, addon: str | None) -> None:
     show_warnings(ctx)
 
 
-@main.command('remove-lock', help='Unpin a previously version-locked addon')
+@main.command
 @click.argument('addon', required=False)
 @click.pass_context
 def remove_lock(ctx: click.Context, addon: str | None) -> None:
+    """ Unpin a previously version-locked addon """
     api = ctx.obj['api']
     local = ctx.obj['local']
 
@@ -817,9 +826,10 @@ def remove_lock(ctx: click.Context, addon: str | None) -> None:
     show_warnings(ctx)
 
 
-@main.command('list-locks', help='List version-locked addons')
+@main.command
 @click.pass_context
 def list_locks(ctx: click.Context) -> None:
+    """ List version-locked addons """
     local = ctx.obj['local']
     locked = [addon for addon in local.installed if addon.locked]
 
@@ -832,10 +842,11 @@ def list_locks(ctx: click.Context) -> None:
     show_warnings(ctx)
 
 
-@main.command(help='Resolve addons whose directory matched several online listings')
+@main.command(short_help='Resolve addons that ambiguously match several online listings')
 @click.argument('addon', required=False)
 @click.pass_context
 def match(ctx: click.Context, addon: str | None) -> None:
+    """ Resolve addons that ambiguously match several online listings """
     api = ctx.obj['api']
     local = ctx.obj['local']
     sortkey = ctx.obj['config'].get(f'{local.game}.addons', 'sortkey')
@@ -872,7 +883,7 @@ def match(ctx: click.Context, addon: str | None) -> None:
     show_warnings(ctx)
 
 
-@main.command()
+@main.command(hidden=True)
 @click.pass_context
 def check_api_release(ctx: click.Context, hidden: bool = True) -> None:
     alpha_ok, live_ok = False, False
@@ -898,11 +909,12 @@ def check_api_release(ctx: click.Context, hidden: bool = True) -> None:
         click.echo('Status of stable and alpha APIs as expected.')
 
 
-@main.command()
+@main.command
 @click.argument('term', required=False)
 @click.option('-m', '--max', 'max_', help='max number of matches', default=10)
 @click.pass_context
 def search(ctx: click.Context, term: str | None, max_: int = 10) -> None:
+    """ Search online listings for an addon """
     if term is None:
         term = click.prompt('Term to search for', prompt_suffix=':\n>> ')
 
@@ -915,9 +927,10 @@ def search(ctx: click.Context, term: str | None, max_: int = 10) -> None:
         click.echo('No matches.')
 
 
-@main.command('list', help='list installed add-ons')
+@main.command('list')
 @click.pass_context
 def list_(ctx: click.Context) -> None:
+    """ List installed add-ons """
     local = ctx.obj['local']
 
     if not local.installed:
@@ -929,12 +942,13 @@ def list_(ctx: click.Context) -> None:
     show_warnings(ctx)
 
 
-@main.command(help='export installed add-ons')
+@main.command
 @click.option('--recurse', '-r', help='Recurse into subdirectories (will show private libraries)', default=False)
 @click.option('--output', '-o', 'output_path', type=click.Path(dir_okay=False, path_type=pathlib.Path),
               help='Write to a file instead of stdout')
 @click.pass_context
 def export(ctx: click.Context, recurse: bool = False, output_path: pathlib.Path | None = None) -> None:
+    """ Export installed add-ons """
     local = ctx.obj['local']
 
     if not local.installed:
@@ -1016,11 +1030,12 @@ def miss(ctx: click.Context, opt: bool) -> None:
     show_warnings(ctx)
 
 
-@main.command(help='Save the diff between current addon and upstream as a patch')
+@main.command(short_help='Save the diff between current addon and upstream as a patch')
 @click.argument('addon', required=False)
 @click.option('--url', help='Download url for installed version', required=False)
 @click.pass_context
 def diff(ctx: click.Context, addon: str | None, url: str | None = None) -> None:
+    """ Save the diff between current addon and upstream as a patch """
     api = ctx.obj['api']
     local = ctx.obj['local']
 
@@ -1121,9 +1136,10 @@ def patch(ctx: click.Context, addon: str | None, patch: pathlib.Path | None, par
         click.echo()
 
 
-@main.command()
+@main.command
 @click.pass_context
 def clear_caches(ctx: click.Context) -> None:
+    """ Remove any cached data this app may keep """
     api = ctx.obj['api']
     local = ctx.obj['local']
     api.reset()
