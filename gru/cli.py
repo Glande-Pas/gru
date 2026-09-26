@@ -392,30 +392,41 @@ def config(ctx: click.Context) -> None:
     pass
 
 
-@config.command('get')
+@config.command('list')
 @click.pass_context
-@click.argument('entry', required=False)
-def config_get(ctx: click.Context, entry: str | None = None) -> None:
+@click.argument('section', required=False)
+def config_list(ctx: click.Context, section: str | None = None) -> None:
+    """ List all current configuration parameters """
     config = display_config(ctx.obj['config'], ctx.obj['game'])
-    if not entry:
+    if not section:
         for key, value in config.items():
             click.echo(f'{key} = {value!r}')
-
-    elif '.' not in entry:
-        items = [(key, value) for key, value in config.items() if key.split('.', 1)[0] == entry]
+    else:
+        items = [(key, value) for key, value in config.items() if key.split('.', 1)[0] == section]
         if not items:
-            click.echo(f'Error: section {entry} not understood')
+            click.echo(f'Error: section {section} not understood')
             return
         for key, value in items:
             click.echo(f'{key} = {value!r}')
 
+
+@config.command('get')
+@click.pass_context
+@click.argument('entry')
+def config_get(ctx: click.Context, entry: str) -> None:
+    """ Get the value of a configuration parameter """
+    config = display_config(ctx.obj['config'], ctx.obj['game'])
+
+    if '.' not in entry:
+        click.echo('Entry must be formatted as <section>.<key>')
+        return
+
+    try:
+        value = config[entry]
+    except KeyError:
+        click.echo('Error: entry {0[1]} not found in {0[0]}'.format(entry.split('.', 1)))
     else:
-        try:
-            value = config[entry]
-        except KeyError:
-            click.echo('Error: entry {0[1]} not found in {0[0]}'.format(entry.split('.', 1)))
-        else:
-            click.echo(value)
+        click.echo(value)
 
 
 @config.command('set')
@@ -423,6 +434,7 @@ def config_get(ctx: click.Context, entry: str | None = None) -> None:
 @click.argument('entry')
 @click.argument('value')
 def config_set(ctx: click.Context, entry: str, value: str) -> None:
+    """ Define the value of a configuration parameter """
     try:
         section_name, key = entry.split('.', 1)
     except ValueError:
