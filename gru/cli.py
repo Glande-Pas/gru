@@ -1073,7 +1073,7 @@ def diff(ctx: click.Context, addon: str | None, url: str | None = None) -> None:
 
     result_path = user_config(local.game, f'{found.dir}.patch')
 
-    with local.unmodified_addon(found.infos, api, url=url) as ref_addon, result_path.open('w') as out:
+    with local.unmodified_addon(found.infos, found.dir, api, url=url) as ref_addon, result_path.open('w') as out:
         nfiles = addon_diff(ref_addon, found, out=out)
 
     if nfiles > 0:

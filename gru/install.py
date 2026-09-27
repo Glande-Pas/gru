@@ -99,13 +99,16 @@ class Folder:
             yield Folder('game', config)
 
     @contextlib.contextmanager
-    def unmodified_addon(self, addon: gru.addon.AddonInfo, api: gru.api.API,
+    def unmodified_addon(self, addon: gru.addon.AddonInfo, dir_: str, api: gru.api.API,
                          url: str | None = None) -> Iterator[gru.addon.InstalledAddon]:
         with self.temp_root() as temp_root:
             temp_location = temp_root.root / addon.dir
             # unpack() returns a collection (possibly several addons for a multi-dir bundle);
-            # this context manager's contract is a single InstalledAddon to diff against.
-            temp_addon = next(iter(temp_root.unpack(addon, api, url_override=url)))
+            # this context manager's contract is a single InstalledAddon to diff against --
+            # specifically the one matching `dir_` (e.g. one bundle member among many), not
+            # just whichever happens to be first in unpack()'s result.
+            installed_addons = list(temp_root.unpack(addon, api, url_override=url))
+            temp_addon = next((a for a in installed_addons if a.dir == dir_), installed_addons[0])
             yield temp_addon
             shutil.rmtree(temp_location)
 

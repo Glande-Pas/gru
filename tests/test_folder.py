@@ -965,6 +965,32 @@ class TestFolderUpdate:
         assert (addon_root / 'Bundle' / 'BundleExtra' / 'BundleExtra.txt').exists()
 
 
+class TestUnmodifiedAddon:
+    def test_picks_the_member_matching_dir_not_just_the_first(self, folder, monkeypatch, tmp_path):
+        """diffing one member of a bundle must yield THAT member, not whichever one happens to
+        be first in unpack()'s result -- the bug found while diffing was left aside earlier."""
+        upstream = make_addon_info(id_=1, title='Bundle', version='1.0', directories=['Bundle'])
+        zip_bytes = _zip_bytes({
+            'Bundle/Bundle/Bundle.txt': '## Title: Bundle\n## APIVersion: 100035\n## Version: 1.0\n## Author: Test\n',
+            'Bundle/BundleExtra/BundleExtra.txt': ('## Title: BundleExtra\n## APIVersion: 100035\n'
+                                                   '## Version: 1.0\n## Author: Test\n'),
+        })
+        _mock_download(monkeypatch, tmp_path, zip_bytes)
+
+        with folder.unmodified_addon(upstream, 'BundleExtra', StubAPI()) as ref_addon:
+            assert ref_addon.dir == 'BundleExtra'
+
+    def test_falls_back_to_first_member_when_dir_not_found(self, folder, monkeypatch, tmp_path):
+        upstream = make_addon_info(id_=1, title='MyAddon', version='1.0', directories=['MyAddon'])
+        zip_bytes = _zip_bytes({
+            'MyAddon/MyAddon.txt': '## Title: MyAddon\n## APIVersion: 100035\n## Version: 1.0\n## Author: Test\n',
+        })
+        _mock_download(monkeypatch, tmp_path, zip_bytes)
+
+        with folder.unmodified_addon(upstream, 'NoSuchMember', StubAPI()) as ref_addon:
+            assert ref_addon.dir == 'MyAddon'
+
+
 class TestFolderInstallDeps:
     def test_install_deps_downloads_missing_dependency(self, addon_root, folder, monkeypatch, tmp_path):
         installed = make_installed(addon_root, 'MyAddon', DependsOn='LibFoo>=1')
