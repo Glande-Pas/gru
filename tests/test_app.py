@@ -331,8 +331,8 @@ class TestResolveAmbiguousBundles:
 
         assert resolved == [bundle]
         assert bundle.infos is one
-        assert member1.infos is one
-        assert member2.infos is one
+        assert member1.infos is None  # members no longer inherit the bundle's .infos
+        assert member2.infos is None
 
     def test_leaves_bundle_ambiguous_when_both_candidates_zips_contain_all_members(self, addon_root, monkeypatch):
         member1 = make_installed(addon_root / 'Bundle', 'BundleExtra1')

@@ -413,7 +413,10 @@ class TestAddonBundle:
         bundle = AddonBundle('Bundle', tmp_path / 'Bundle', [a, b])
         assert {dep.dir for dep in bundle.optdeps} == {'SharedOpt', 'OnlyAOpt', 'OnlyBOpt'}
 
-    def test_link_cascades_to_every_member(self, tmp_path):
+    def test_link_only_sets_infos_on_the_bundle_itself(self, tmp_path):
+        """Members no longer inherit .infos from the bundle -- each looks up (or doesn't)
+        independently, so an embedded third-party library with its own version numbering never
+        gets compared against the bundle's own upstream version (the NodeDetection bug)."""
         main = make_installed(tmp_path / 'Bundle', 'Bundle')
         extra = make_installed(tmp_path / 'Bundle', 'BundleExtra')
         bundle = AddonBundle('Bundle', tmp_path / 'Bundle', [main, extra])
@@ -422,21 +425,51 @@ class TestAddonBundle:
         bundle.link(upstream)
 
         assert bundle.infos is upstream
-        assert main.infos is upstream
-        assert extra.infos is upstream
+        assert bundle.id == 1
+        assert upstream.folders[bundle.folder] is bundle
+        assert main.infos is None
+        assert extra.infos is None
 
-    def test_can_update_true_if_any_member_can(self, tmp_path):
-        stale = make_installed(tmp_path / 'Bundle', 'Bundle', Version='1.0')
-        current = make_installed(tmp_path / 'Bundle', 'BundleExtra', Version='2.0')
-        bundle = AddonBundle('Bundle', tmp_path / 'Bundle', [stale, current])
+    def test_version_prefers_a_member_named_like_the_bundle(self, tmp_path):
+        main = make_installed(tmp_path / 'Bundle', 'Bundle', Version='2.0')
+        extra1 = make_installed(tmp_path / 'Bundle', 'BundleExtra1', Version='1.0')
+        extra2 = make_installed(tmp_path / 'Bundle', 'BundleExtra2', Version='1.0')
+        bundle = AddonBundle('Bundle', tmp_path / 'Bundle', [extra1, extra2, main])
+        assert bundle.version == '2.0'
+
+    def test_version_falls_back_to_majority_vote_without_a_named_main(self, tmp_path):
+        a = make_installed(tmp_path / 'Bundle', 'A', Version='1.0')
+        b = make_installed(tmp_path / 'Bundle', 'B', Version='1.0')
+        c = make_installed(tmp_path / 'Bundle', 'C', Version='0.9')
+        bundle = AddonBundle('Bundle', tmp_path / 'Bundle', [a, b, c])
+        assert bundle.version == '1.0'
+
+    def test_version_falls_back_to_arbitrary_member_on_a_tied_vote(self, tmp_path):
+        a = make_installed(tmp_path / 'Bundle', 'A', Version='1.0')
+        b = make_installed(tmp_path / 'Bundle', 'B', Version='0.9')
+        bundle = AddonBundle('Bundle', tmp_path / 'Bundle', [a, b])
+        assert bundle.version == a.version  # arbitrary: whichever is members[0]
+
+    def test_can_update_compares_bundles_own_version_not_members(self, tmp_path):
+        main = make_installed(tmp_path / 'Bundle', 'Bundle', Version='1.0')
+        extra = make_installed(tmp_path / 'Bundle', 'BundleExtra', Version='9.9')  # irrelevant now
+        bundle = AddonBundle('Bundle', tmp_path / 'Bundle', [extra, main])
         upstream = make_addon_info(id_=1, title='Bundle', version='2.0')
         bundle.link(upstream)
-        assert bundle.can_update is True
+        assert bundle.can_update is True  # named-main's 1.0 < upstream's 2.0
 
-    def test_can_update_false_if_no_member_can(self, tmp_path):
-        current1 = make_installed(tmp_path / 'Bundle', 'Bundle', Version='2.0')
-        current2 = make_installed(tmp_path / 'Bundle', 'BundleExtra', Version='2.0')
-        bundle = AddonBundle('Bundle', tmp_path / 'Bundle', [current1, current2])
+    def test_can_update_false_when_bundles_own_version_matches_upstream(self, tmp_path):
+        main = make_installed(tmp_path / 'Bundle', 'Bundle', Version='2.0')
+        extra = make_installed(tmp_path / 'Bundle', 'BundleExtra', Version='0.1')  # irrelevant now
+        bundle = AddonBundle('Bundle', tmp_path / 'Bundle', [extra, main])
+        upstream = make_addon_info(id_=1, title='Bundle', version='2.0')
+        bundle.link(upstream)
+        assert bundle.can_update is False
+
+    def test_can_update_false_without_crashing_when_version_unparseable(self, tmp_path):
+        """No per-file mtime fallback for a bundle (no manifest of its own to stat)."""
+        main = make_installed(tmp_path / 'Bundle', 'Bundle', Version='unknown')
+        bundle = AddonBundle('Bundle', tmp_path / 'Bundle', [main])
         upstream = make_addon_info(id_=1, title='Bundle', version='2.0')
         bundle.link(upstream)
         assert bundle.can_update is False

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 import zlib
+import collections
 import datetime
 import pathlib
 import warnings
@@ -256,24 +257,15 @@ class InstalledAddon(Dependency, DisplayAddonProtocol):
 
     @property
     def comparable_copies(self) -> list[InstalledAddon]:
-        """ Folders sharing `infos` that are genuinely comparable copies of this one -- either
-        the same dir, or not a differently-named member of the same bundle. A bundle's members
-        all share one `infos` despite being different addons (e.g. Arkadius Trade Tools'
-        SalesData01..16), so a fellow member only counts if it's also the same dir -- checked
-        both ways (a member looking at its bundle, and the bundle itself looking at a member),
-        whereas one addon distributed under several accepted directory names (no bundling
-        involved) still compares across all of them, same as before bundles existed. """
+        """ Folders sharing `infos` that are genuinely comparable copies of this one. """
         if self.infos is None:
             return []
-        my_bundle = self if isinstance(self, AddonBundle) else self.parent
         return [other for other in self.infos.folders.values()
-               if other.dir == self.dir or my_bundle is None
-               or my_bundle is not (other if isinstance(other, AddonBundle) else other.parent)]
+               if other is self or (other.parent is not self and self.parent is not other)]
 
     @property
     def version_rank(self) -> str:
-        """ 'active'/'superseded' by version among comparable_copies, or '' if unknown (no other
-        folder, or a version ESO can't compare). ESO always loads the highest one. """
+        """ 'active'/'superseded' by version among comparable_copies, or '' if unknown """
         if self.infos is None:
             return ''
         others = self.comparable_copies
@@ -298,11 +290,10 @@ class InstalledAddon(Dependency, DisplayAddonProtocol):
 
 
 class AddonBundle(InstalledAddon):
-    """ A wrapper directory with no manifest of its own, holding several addons installed
-    together as one bundle -- install/update/lock happen at the bundle's own granularity, not
-    per member (see Folder.update()/remove()), so it's a real InstalledAddon in its own right
-    rather than just a display stand-in. Does not call InstalledAddon.__init__: there's no
-    manifest of its own to parse, every field is derived from its members instead. """
+    """ A wrapper directory with no manifest of its own, holding several addons installed together as one bundle.
+    install/update/lock happen at the bundle's own granularity, not per member (see Folder.update()/remove()),
+    so it's a real InstalledAddon in its own right rather than just a display stand-in.
+    Does not call InstalledAddon.__init__: there's no manifest to parse, every field is derived from its members. """
 
     def __init__(self, dir_: str, folder: pathlib.Path, members: list[InstalledAddon]) -> None:
         self.members = members
@@ -310,16 +301,26 @@ class AddonBundle(InstalledAddon):
         self.dir = dir_
         self.parent = None
         self.locked = False
+        self.id = None
         self.infos: AddonInfo | None = None
         main = members[0]
-        self.id = main.id
         self.title = dir_
         self.author = main.author
-        self.version = main.version
         self.api = main.api
         self.metadata = main.metadata
         for member in members:
             member.parent = self
+
+    @property
+    def version(self) -> str:
+        """ prefer member version whose own dir matches the bundle's, otherwise majority vote """
+        named_main = next((member for member in self.members if member.dir == self.dir), None)
+        if named_main is not None:
+            return named_main.version
+        counts = collections.Counter(member.version for member in self.members).most_common()
+        if len(counts) == 1 or counts[0][1] > counts[1][1]:
+            return counts[0][0]
+        return self.members[0].version
 
     @property
     def deps(self) -> list[Dependency]:
@@ -342,12 +343,13 @@ class AddonBundle(InstalledAddon):
     def is_lib(self) -> bool:
         return all(member.is_lib for member in self.members)
 
-    def link(self, infos: AddonInfo) -> None:
-        self.id = infos.id
-        self.infos = infos
-        for member in self.members:
-            member.link(infos)
-
     @property
     def can_update(self) -> bool:
-        return any(member.can_update for member in self.members)
+        """ Same comparison as InstalledAddon.can_update, minus its fallback (mtime check on manifest) """
+        if self.id is None or self.infos is None:
+            return False
+        is_local = _parse_version(self.version)
+        upstream = _parse_version(self.infos.version)
+        if is_local is not None and upstream is not None:
+            return is_local < upstream
+        return False

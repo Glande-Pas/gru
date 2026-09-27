@@ -642,8 +642,11 @@ class Folder:
                patch: bool = False) -> tuple[int, int]:
         updates = []
         for addon in list(self.installed):  # snapshot: a bundled update adds a new key below
-            if isinstance(addon.parent, AddonBundle):
-                continue  # the bundle itself, listed separately, covers its own members
+            # A bundle member only ever gets here with its own .infos if it independently
+            # resolved online (see AddonBundle: members no longer inherit the bundle's) -- that
+            # triggers its own standalone reinstall below (path=None, since .parent is not None),
+            # which never touches the bundle: the bundle's own can_update is self-determined and
+            # evaluated on its own loop iteration, not influenced by any member's update status.
             if not addon.can_update or addon.infos is None or addon.locked:
                 continue
             if addon.parent is not None and addon.is_superseded:

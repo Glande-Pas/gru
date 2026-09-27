@@ -619,11 +619,14 @@ class TestScan:
 
         folder.scan(api)
         by_dir = {a.dir: a for a in folder.installed}
-        assert by_dir['RegionAD'].id == 3034
-        assert by_dir['RegionDC'].id == 3034
+        # Members no longer inherit the bundle's .infos -- only the bundle itself is linked;
+        # each member would only get its own .infos from resolving independently online.
+        assert by_dir['RegionAD'].infos is None
+        assert by_dir['RegionDC'].infos is None
         assert by_dir['RegionAD'].parent is by_dir['RegionDC'].parent
         assert by_dir['RegionAD'].parent.dir == 'HarvestMapData'
         assert by_dir['RegionAD'].parent.title == 'HarvestMapData'
+        assert by_dir['RegionAD'].parent.id == 3034
 
     def test_scan_sets_parent_on_members_even_when_bundle_stays_unmatched(self, addon_root, folder):
         """The structural fact (these are bundled together) is independent of whether an online
@@ -650,8 +653,9 @@ class TestScan:
 
         folder.scan(api)
         by_dir = {a.dir: a for a in folder.installed}
-        assert by_dir['BundleExtra1'].id == 1
-        assert by_dir['BundleExtra2'].id == 1
+        assert by_dir['BundleExtra1'].infos is None
+        assert by_dir['BundleExtra2'].infos is None
+        assert by_dir['BundleExtra1'].parent.id == 1
 
     def test_scan_leaves_bundle_unmatched_when_nothing_resolves_up_to_root(self, addon_root, folder):
         make_installed(addon_root / 'Bundle', 'BundleExtra1')
@@ -984,8 +988,10 @@ class TestFolderUpdate:
 
     def test_update_skips_bundle_members_the_bundle_itself_covers_them(
             self, addon_root, folder, monkeypatch, tmp_path):
-        """Members must never trigger their own reinstall attempt -- only the bundle (also in
-        self.installed) does, in one shared call."""
+        """Members with no .infos of their own (the common case: private/library-only names)
+        simply can't update -- only the bundle (also in self.installed, self-linked) does,
+        in one shared call. See test_update_member_own_standalone_status_updates_only_itself_
+        not_the_bundle for a member that *does* have its own .infos."""
         main = make_installed(addon_root / 'Bundle', 'Bundle', Title='Bundle', Version='1.0')
         sibling = make_installed(addon_root / 'Bundle', 'BundleExtra', Title='BundleExtra', Version='1.0')
         upstream = make_addon_info(id_=1, title='Bundle', version='2.0', directories=['Bundle'])
@@ -1010,6 +1016,30 @@ class TestFolderUpdate:
         folder.update(as_api(StubAPI()))
 
         assert len(calls) == 1
+
+    def test_update_member_own_standalone_status_updates_only_itself_not_the_bundle(
+            self, addon_root, folder, monkeypatch, tmp_path):
+        """A member that's independently listed online (its own AddonInfo, distinct from the
+        bundle's) and has its own update available must trigger only its own standalone
+        reinstall -- never the bundle's, which is unlinked here and must stay untouched."""
+        main = make_installed(addon_root / 'Bundle', 'Bundle', Title='Bundle', Version='1.0')
+        sibling = make_installed(addon_root / 'Bundle', 'BundleExtra', Title='BundleExtra', Version='1.0')
+        bundle = AddonBundle('Bundle', addon_root / 'Bundle', [main, sibling])
+        # Bundle itself is never linked -- its can_update must stay False regardless of members.
+        sibling_upstream = make_addon_info(id_=2, title='BundleExtra', version='2.0', directories=['BundleExtra'])
+        sibling.link(sibling_upstream)
+        folder._installed = {bundle.folder: bundle, main.folder: main, sibling.folder: sibling}
+
+        zip_bytes = _zip_bytes({
+            'BundleExtra/BundleExtra.txt': '## Title: BundleExtra\n## APIVersion: 100035\n## Version: 2.0\n## Author: Test\n',
+        })
+        _mock_download(monkeypatch, tmp_path, zip_bytes)
+
+        folder.update(as_api(StubAPI()))
+
+        assert bundle.infos is None  # untouched -- its own can_update was never True
+        assert (addon_root / 'BundleExtra' / 'BundleExtra.txt').exists()  # standalone, own dir
+        assert '## Version: 1.0' in (addon_root / 'Bundle' / 'BundleExtra' / 'BundleExtra.txt').read_text()
 
 
 class TestUnmodifiedAddon:
