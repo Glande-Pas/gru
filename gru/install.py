@@ -430,8 +430,15 @@ class Folder:
                     continue
 
                 file_dest.parent.mkdir(exist_ok=True, parents=True)
-                with zf.open(file.as_posix(), 'r') as zfreader, open(file_dest, 'wb') as out:
-                    shutil.copyfileobj(zfreader, out)
+                try:
+                    with zf.open(file.as_posix(), 'r') as zfreader, open(file_dest, 'wb') as out:
+                        shutil.copyfileobj(zfreader, out)
+                except KeyError as exc:
+                    # zf.infolist() drove `files`, so this shouldn't happen -- but a zip entry named
+                    # with the "wrong" separator for this OS, or one that's just plain malformed,
+                    # must not crash & traceback whatever command (install/update/diff) is unzipping.
+                    warnings.warn(f'Skipping {file} -- not found in archive: {exc}')
+                    continue
                 prog.update(size)
 
     def unpack(self, addon: gru.addon.AddonInfo, api: gru.api.API, progress: ProgressFactory | None = None,

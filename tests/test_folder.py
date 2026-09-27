@@ -774,3 +774,14 @@ class TestFolderInstallDeps:
         with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
             folder._unzip(zf, files, dest, install_mod.SilentProgress(6, 'test'))
         assert (dest / 'sub' / 'file.txt').read_text() == 'hello\n'
+
+    def test_unzip_missing_entry_warns_and_continues(self, folder, tmp_path):
+        """An entry that isn't actually in the archive must not crash & abort the whole extraction."""
+        zip_bytes = _zip_bytes({'present.txt': 'hello\n'})
+        dest = tmp_path / 'dest'
+        files = [(pathlib.Path('missing.txt'), False, 0), (pathlib.Path('present.txt'), False, 6)]
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            with pytest.warns(UserWarning, match='Skipping missing.txt.*not found in archive'):
+                folder._unzip(zf, files, dest, install_mod.SilentProgress(6, 'test'))
+        assert not (dest / 'missing.txt').exists()
+        assert (dest / 'present.txt').read_text() == 'hello\n'
