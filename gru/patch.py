@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright Glande-Pas and contributors
+# Licensed under the EUPL, see LICENSE.md
 
 from __future__ import annotations
 

@@ -1,3 +1,6 @@
+# Copyright Glande-Pas and contributors
+# Licensed under the EUPL, see LICENSE.md
+
 """ Module handling an install location
 
 AddOns are identified by their manifest matching the directory name: {dir}/{dir}.txt or {dir}/{dir}.txt.

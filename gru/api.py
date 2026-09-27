@@ -1,3 +1,6 @@
+# Copyright Glande-Pas and contributors
+# Licensed under the EUPL, see LICENSE.md
+
 """ Module handling fetching info from the API """
 
 from __future__ import annotations

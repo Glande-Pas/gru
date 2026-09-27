@@ -1,3 +1,6 @@
+# Copyright Glande-Pas and contributors
+# Licensed under the EUPL, see LICENSE.md
+
 """ Module holding classes of addon and dependency objects """
 
 from __future__ import annotations

@@ -1,3 +1,6 @@
+# Copyright Glande-Pas and contributors
+# Licensed under the EUPL, see LICENSE.md
+
 """ Fetch a remote zip archive's central directory via HTTP Range requests, without downloading
 the archive itself. The central directory is a small, fixed-format index consolidated at the end
 of any zip file (see the ZIP format spec's End Of Central Directory record and central directory

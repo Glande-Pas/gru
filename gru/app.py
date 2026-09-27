@@ -1,3 +1,6 @@
+# Copyright Glande-Pas and contributors
+# Licensed under the EUPL, see LICENSE.md
+
 """ Application layer: state persistence and orchestration that spans gru.api/gru.install/config
 but is independent of any particular front-end -- a CLI or a future GUI both hook in here.
 gru.cli (or a GUI module in its place) is expected to stay a thin layer of command dispatch,
