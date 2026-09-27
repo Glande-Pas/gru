@@ -258,24 +258,27 @@ class InstalledAddon(Dependency, DisplayAddonProtocol):
     @property
     def comparable_copies(self) -> list[InstalledAddon]:
         """ Folders sharing `infos` that are genuinely comparable copies of this one. """
-        if self.infos is None:
+        if self.infos is None or isinstance(self, AddonBundle):
             return []
-        return [other for other in self.infos.folders.values()
-               if other is self or (other.parent is not self and self.parent is not other)]
+        return [other for other in self.infos.folders.values() if not isinstance(other, AddonBundle)]
 
     @property
     def version_rank(self) -> str:
-        """ 'active'/'superseded' by version among comparable_copies, or '' if unknown """
+        """ 'active'/'superseded' by version among comparable_copies, or '' if unknown.
+
+        Can only compare addons, not bundles – see comparable_copies """
         if self.infos is None:
             return ''
-        others = self.comparable_copies
+        others = [other for other in self.comparable_copies if other.folder != self.folder]
+        if not others:
+            return ''
         versions = [v for other in others if (v := _parse_version(other.version)) is not None]
         if len(versions) != len(others):
             return ''
         this = _parse_version(self.version)
         if this is None:
             return ''
-        return 'active' if this == max(versions) else 'superseded'
+        return 'active' if this >= max(versions) else 'superseded'
 
     @property
     def is_superseded(self) -> bool:

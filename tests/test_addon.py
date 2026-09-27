@@ -473,3 +473,20 @@ class TestAddonBundle:
         upstream = make_addon_info(id_=1, title='Bundle', version='2.0')
         bundle.link(upstream)
         assert bundle.can_update is False
+
+    def test_bundle_never_shows_as_a_comparable_copy(self, tmp_path):
+        """Real bug: a bundle and its own "named main" member (dir matching the bundle's) can
+        both end up resolved to the same AddonInfo -- main independently, the bundle via
+        find_bundle_matches(). Neither may show 'active/superseded copy': a bundle isn't a real
+        addon and has no dep_version of its own to rank against anything."""
+        main = make_installed(tmp_path / 'Bundle', 'Bundle')
+        extra = make_installed(tmp_path / 'Bundle', 'BundleExtra')
+        bundle = AddonBundle('Bundle', tmp_path / 'Bundle', [main, extra])
+        upstream = make_addon_info(id_=1, title='Bundle', version='1.0')
+        main.link(upstream)  # main resolves on its own, same as the real HarvestMap placeholder
+        bundle.link(upstream)  # bundle also resolves, independently, to the same listing
+
+        assert bundle.comparable_copies == []
+        assert bundle.version_rank == ''
+        # main's only comparable copy is itself -- cli.py only shows the tag when len() > 1.
+        assert main.comparable_copies == [main]
