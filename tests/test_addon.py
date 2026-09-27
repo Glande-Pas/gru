@@ -8,7 +8,7 @@ import warnings
 
 import pytest
 
-from gru.addon import atol, _parse_version, strip_eso_text, file_crc32, AddonInfo, InstalledAddon
+from gru.addon import atol, _parse_version, strip_eso_text, file_crc32, AddonInfo, InstalledAddon, AddonBundle
 
 from .conftest import make_addon_info, make_installed, write_manifest
 
@@ -368,3 +368,75 @@ class TestAddonInfoRegistration:
         assert installed.id == 42
         assert installed.infos is addon
         assert addon.folders[installed.folder] is installed
+
+
+class TestAddonBundle:
+    def test_folder_is_the_wrapper_not_a_members_own_dir(self, tmp_path):
+        main = make_installed(tmp_path / 'Bundle', 'Bundle')
+        extra = make_installed(tmp_path / 'Bundle', 'BundleExtra')
+        bundle = AddonBundle('Bundle', tmp_path / 'Bundle', [main, extra])
+        assert bundle.folder == tmp_path / 'Bundle'
+
+    def test_parent_is_always_none(self, tmp_path):
+        main = make_installed(tmp_path / 'Bundle', 'Bundle')
+        bundle = AddonBundle('Bundle', tmp_path / 'Bundle', [main])
+        assert bundle.parent is None
+
+    def test_locked_is_its_own_flag_defaulting_false(self, tmp_path):
+        """Locking a bundle means 'don't update it', independent of any member's own state --
+        it's not derived from members at all."""
+        main = make_installed(tmp_path / 'Bundle', 'Bundle')
+        bundle = AddonBundle('Bundle', tmp_path / 'Bundle', [main])
+        assert bundle.locked is False
+        bundle.locked = True
+        assert bundle.locked is True
+
+    def test_is_lib_true_only_if_every_member_is(self, tmp_path):
+        lib1 = make_installed(tmp_path / 'Bundle', 'Lib1', IsLibrary='true')
+        lib2 = make_installed(tmp_path / 'Bundle', 'Lib2', IsLibrary='true')
+        assert AddonBundle('Bundle', tmp_path / 'Bundle', [lib1, lib2]).is_lib is True
+
+    def test_is_lib_false_if_any_member_is_not(self, tmp_path):
+        lib = make_installed(tmp_path / 'Bundle', 'Lib1', IsLibrary='true')
+        notlib = make_installed(tmp_path / 'Bundle', 'Main')
+        assert AddonBundle('Bundle', tmp_path / 'Bundle', [lib, notlib]).is_lib is False
+
+    def test_deps_is_unique_union_of_members_deps(self, tmp_path):
+        a = make_installed(tmp_path / 'Bundle', 'A', DependsOn='Shared>=1 OnlyA')
+        b = make_installed(tmp_path / 'Bundle', 'B', DependsOn='Shared>=1 OnlyB')
+        bundle = AddonBundle('Bundle', tmp_path / 'Bundle', [a, b])
+        assert {dep.dir for dep in bundle.deps} == {'Shared', 'OnlyA', 'OnlyB'}
+
+    def test_optdeps_is_unique_union_of_members_optdeps(self, tmp_path):
+        a = make_installed(tmp_path / 'Bundle', 'A', OptionalDependsOn='SharedOpt OnlyAOpt')
+        b = make_installed(tmp_path / 'Bundle', 'B', OptionalDependsOn='SharedOpt OnlyBOpt')
+        bundle = AddonBundle('Bundle', tmp_path / 'Bundle', [a, b])
+        assert {dep.dir for dep in bundle.optdeps} == {'SharedOpt', 'OnlyAOpt', 'OnlyBOpt'}
+
+    def test_link_cascades_to_every_member(self, tmp_path):
+        main = make_installed(tmp_path / 'Bundle', 'Bundle')
+        extra = make_installed(tmp_path / 'Bundle', 'BundleExtra')
+        bundle = AddonBundle('Bundle', tmp_path / 'Bundle', [main, extra])
+        upstream = make_addon_info(id_=1, title='Bundle')
+
+        bundle.link(upstream)
+
+        assert bundle.infos is upstream
+        assert main.infos is upstream
+        assert extra.infos is upstream
+
+    def test_can_update_true_if_any_member_can(self, tmp_path):
+        stale = make_installed(tmp_path / 'Bundle', 'Bundle', Version='1.0')
+        current = make_installed(tmp_path / 'Bundle', 'BundleExtra', Version='2.0')
+        bundle = AddonBundle('Bundle', tmp_path / 'Bundle', [stale, current])
+        upstream = make_addon_info(id_=1, title='Bundle', version='2.0')
+        bundle.link(upstream)
+        assert bundle.can_update is True
+
+    def test_can_update_false_if_no_member_can(self, tmp_path):
+        current1 = make_installed(tmp_path / 'Bundle', 'Bundle', Version='2.0')
+        current2 = make_installed(tmp_path / 'Bundle', 'BundleExtra', Version='2.0')
+        bundle = AddonBundle('Bundle', tmp_path / 'Bundle', [current1, current2])
+        upstream = make_addon_info(id_=1, title='Bundle', version='2.0')
+        bundle.link(upstream)
+        assert bundle.can_update is False

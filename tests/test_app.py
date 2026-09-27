@@ -320,7 +320,7 @@ class TestResolveAmbiguousBundles:
         two = make_addon_info(id_=2, title='Bundle Two', directories=['Bundle'])
         api = make_api(addons={1: one, 2: two})
         folder = make_folder(addon_root)
-        bundle = AddonBundle('Bundle', [member1, member2])
+        bundle = AddonBundle('Bundle', addon_root / 'Bundle', [member1, member2])
         monkeypatch.setattr(app_mod, 'find_ambiguous_bundles', lambda local, api: [(bundle, [one, two])])
         _mock_remote_zips_by_id(monkeypatch, {
             1: _build_zip({'Bundle/BundleExtra1/BundleExtra1.txt': b'1', 'Bundle/BundleExtra2/BundleExtra2.txt': b'2'}),
@@ -341,7 +341,7 @@ class TestResolveAmbiguousBundles:
         two = make_addon_info(id_=2, title='Bundle Two', directories=['Bundle'])
         api = make_api(addons={1: one, 2: two})
         folder = make_folder(addon_root)
-        bundle = AddonBundle('Bundle', [member1, member2])
+        bundle = AddonBundle('Bundle', addon_root / 'Bundle', [member1, member2])
         monkeypatch.setattr(app_mod, 'find_ambiguous_bundles', lambda local, api: [(bundle, [one, two])])
         same_zip = _build_zip({'Bundle/BundleExtra1/BundleExtra1.txt': b'1', 'Bundle/BundleExtra2/BundleExtra2.txt': b'2'})
         _mock_remote_zips_by_id(monkeypatch, {1: same_zip, 2: same_zip})

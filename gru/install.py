@@ -218,7 +218,7 @@ class Folder:
             results[path] = addon
 
         if api:
-            for bundle, infos, candidates in self.find_bundle_matches(results, api, links):
+            for bundle, infos, candidates in self.find_bundle_matches(results, api, links, locked):
                 if infos is not None:
                     bundle.link(infos)
                 # else: no confident match (not found at all, or ambiguous) -- left for
@@ -228,7 +228,7 @@ class Folder:
         return results
 
     def find_bundle_matches(self, results: dict[pathlib.Path, gru.addon.InstalledAddon], api: gru.api.API,
-                             links: dict[str, str]
+                             links: dict[str, str], locked: set[str] | None = None
                              ) -> Iterator[tuple[gru.addon.AddonBundle, gru.addon.AddonInfo | None,
                                                  list[gru.addon.AddonInfo]]]:
         """ Addons that couldn't resolve individually online (private/library-only names, e.g.
@@ -240,8 +240,25 @@ class Folder:
         candidate directory tried with >1 member: infos is set on a confident match, otherwise
         None with `candidates` holding whatever AmbiguousDirectory last raised (empty if the
         walk ran out before matching anything at all). """
-        unmatched = [addon for addon in results.values() if addon.infos is None]
+        locked = locked or set()
+        unmatched = [addon for addon in results.values()
+                    if addon.infos is None and not isinstance(addon, AddonBundle)]
         seen: set[pathlib.Path] = set()
+
+        def make_bundle(candidate_dir: pathlib.Path) -> gru.addon.AddonBundle:
+            # Reuse the existing bundle object, if this exact group was already found on a
+            # previous call (e.g. by _scan() itself, before gru match calls back in to resolve
+            # it) -- resolving it must mutate the very object sitting in Folder._installed, not
+            # a throwaway copy that .link() only appears to update.
+            existing = results.get(candidate_dir)
+            if isinstance(existing, AddonBundle):
+                return existing
+            members = [a for a in results.values()
+                      if not isinstance(a, AddonBundle) and a.folder.is_relative_to(candidate_dir)]
+            bundle = AddonBundle(candidate_dir.name, candidate_dir, members)
+            bundle.locked = candidate_dir.name in locked
+            results[bundle.folder] = bundle
+            return bundle
         for addon in unmatched:
             candidate_dir = addon.folder.parent
             if candidate_dir == self.root or candidate_dir in seen:
@@ -258,21 +275,18 @@ class Folder:
                     # Include every co-located addon, not just the unresolved ones -- the
                     # directly-resolving main sibling (its own dir happens to already match
                     # online) still belongs in the same group for display/version-rank purposes.
-                    members = [a for a in results.values() if a.folder.is_relative_to(candidate_dir)]
-                    yield AddonBundle(candidate_dir.name, members), None, exc.candidates
+                    yield make_bundle(candidate_dir), None, exc.candidates
                     break
                 except FileNotFoundError:
                     if candidate_dir.parent == self.root:
-                        members = [a for a in results.values() if a.folder.is_relative_to(candidate_dir)]
-                        yield AddonBundle(candidate_dir.name, members), None, []
+                        yield make_bundle(candidate_dir), None, []
                         break
                     candidate_dir = candidate_dir.parent
                     seen.add(candidate_dir)
                     unresolved = [a for a in unmatched if a.folder.is_relative_to(candidate_dir)]
                     continue
                 else:
-                    members = [a for a in results.values() if a.folder.is_relative_to(candidate_dir)]
-                    yield AddonBundle(candidate_dir.name, members), infos, []
+                    yield make_bundle(candidate_dir), infos, []
                     break
 
     def name(self, name: str) -> Iterator[gru.addon.InstalledAddon]:
@@ -315,6 +329,8 @@ class Folder:
 
     def find_installed(self, spec: gru.addon.Dependency) -> gru.addon.InstalledAddon | None:
         for folder in self.dir(spec.dir):
+            if isinstance(folder, AddonBundle):
+                continue
             if folder.dep_version >= spec.dep_version:
                 return folder
 
@@ -626,14 +642,13 @@ class Folder:
                patch: bool = False) -> tuple[int, int]:
         updates = []
         for addon in list(self.installed):  # snapshot: a bundled update adds a new key below
+            if isinstance(addon.parent, AddonBundle):
+                continue  # the bundle itself, listed separately, covers its own members
             if not addon.can_update or addon.infos is None or addon.locked:
                 continue
             if addon.parent is not None and addon.is_superseded:
                 continue  # a newer copy already exists elsewhere; nothing to do here
-            # A flat bundle's main entry also needs path=None: addon.folder is its own nested
-            # dir, not the wrapper, by an amount that varies with nesting depth.
-            heads_group = any(other.parent is addon for other in self.installed)
-            path = addon.folder if addon.parent is None and not heads_group else None
+            path = addon.folder if addon.parent is None else None
             try:
                 updates.extend(self.unpack(addon.infos, api, progress=progress, path=path))
             except Exception as err:
@@ -718,6 +733,10 @@ class Folder:
 
         bundled = self._bundled_children(addon)
         for target in (addon, *bundled):
+            # A bundle never has SavedVariables of its own -- .metadata is borrowed from one
+            # member for display, so acting on it here would double-unlink that member's file.
+            if isinstance(target, AddonBundle):
+                continue
             if remove_vars(target) if callable(remove_vars) else remove_vars:
                 for path in self.saved_variable_files(target):
                     path.unlink()

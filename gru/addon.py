@@ -257,15 +257,18 @@ class InstalledAddon(Dependency, DisplayAddonProtocol):
     @property
     def comparable_copies(self) -> list[InstalledAddon]:
         """ Folders sharing `infos` that are genuinely comparable copies of this one -- either
-        the same dir, or not a differently-named sibling in the same bundle. A bundle's siblings
+        the same dir, or not a differently-named member of the same bundle. A bundle's members
         all share one `infos` despite being different addons (e.g. Arkadius Trade Tools'
-        SalesData01..16), so a same-bundle folder only counts if it's also the same dir --
+        SalesData01..16), so a fellow member only counts if it's also the same dir -- checked
+        both ways (a member looking at its bundle, and the bundle itself looking at a member),
         whereas one addon distributed under several accepted directory names (no bundling
         involved) still compares across all of them, same as before bundles existed. """
         if self.infos is None:
             return []
+        my_bundle = self if isinstance(self, AddonBundle) else self.parent
         return [other for other in self.infos.folders.values()
-               if other.dir == self.dir or not (self.parent is not None and other.parent is self.parent)]
+               if other.dir == self.dir or my_bundle is None
+               or my_bundle is not (other if isinstance(other, AddonBundle) else other.parent)]
 
     @property
     def version_rank(self) -> str:
@@ -294,18 +297,20 @@ class InstalledAddon(Dependency, DisplayAddonProtocol):
         ]
 
 
-class AddonBundle(DisplayAddonProtocol):
+class AddonBundle(InstalledAddon):
     """ A wrapper directory with no manifest of its own, holding several addons installed
-    together as one bundle. Not a Dependency: it has a dir but no dep_version, it's never
-    itself a DependsOn target. """
-    is_local = True
+    together as one bundle -- install/update/lock happen at the bundle's own granularity, not
+    per member (see Folder.update()/remove()), so it's a real InstalledAddon in its own right
+    rather than just a display stand-in. Does not call InstalledAddon.__init__: there's no
+    manifest of its own to parse, every field is derived from its members instead. """
 
-    def __init__(self, dir_: str, members: list[InstalledAddon]) -> None:
-        self.dir = dir_
+    def __init__(self, dir_: str, folder: pathlib.Path, members: list[InstalledAddon]) -> None:
         self.members = members
+        self.folder = folder
+        self.dir = dir_
+        self.parent = None
+        self.locked = False
         self.infos: AddonInfo | None = None
-        for member in members:
-            member.parent = self
         main = members[0]
         self.id = main.id
         self.title = dir_
@@ -313,6 +318,29 @@ class AddonBundle(DisplayAddonProtocol):
         self.version = main.version
         self.api = main.api
         self.metadata = main.metadata
+        for member in members:
+            member.parent = self
+
+    @property
+    def deps(self) -> list[Dependency]:
+        """ Unique (by dir) union of every member's own DependsOn/PCDependsOn. """
+        seen: dict[str, Dependency] = {}
+        for member in self.members:
+            for dep in member.deps:
+                seen.setdefault(dep.dir, dep)
+        return list(seen.values())
+
+    @property
+    def optdeps(self) -> list[Dependency]:
+        seen: dict[str, Dependency] = {}
+        for member in self.members:
+            for dep in member.optdeps:
+                seen.setdefault(dep.dir, dep)
+        return list(seen.values())
+
+    @property
+    def is_lib(self) -> bool:
+        return all(member.is_lib for member in self.members)
 
     def link(self, infos: AddonInfo) -> None:
         self.id = infos.id
