@@ -195,8 +195,12 @@ class InstalledAddon(Dependency, DisplayAddonProtocol):
             f'Unexpected API Version format {api_versions!r}'
         self.api = api_versions
 
-        is_lib_str = metadata.pop('IsLibrary', 'false').lower()
-        assert is_lib_str in {'true', 'false'}, f'Unexpected value for IsLibrary {is_lib_str!r}'
+        is_lib_tokens = metadata.pop('IsLibrary', 'false').lower().split()
+        is_lib_str = is_lib_tokens[-1] if is_lib_tokens else 'false'
+        if is_lib_str not in {'true', 'false'}:
+            warnings.warn(f'Unexpected value for IsLibrary {is_lib_str!r}'
+                          f' in {self.manifest.relative_to(self.folder.parent)}, treating as false')
+            is_lib_str = 'false'
         self.is_lib = is_lib_str == 'true'
 
         self.deps = [Dependency(name, atol(version[0]) if version else 0) for name, *version in (

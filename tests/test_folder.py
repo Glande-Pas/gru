@@ -565,7 +565,7 @@ class TestScan:
 
     def test_scan_skips_addon_with_malformed_manifest_and_warns(self, addon_root, folder):
         """A manifest that fails an assert in _parse_manifest (not FileNotFoundError) must not abort the scan."""
-        write_manifest(addon_root, 'BadAddon', IsLibrary='maybe')
+        write_manifest(addon_root, 'BadAddon', APIVersion='not-a-number')
         make_installed(addon_root, 'GoodAddon')
         with pytest.warns(UserWarning, match='Skipping addon.*BadAddon.*AssertionError'):
             folder.scan()
@@ -747,3 +747,19 @@ class TestFolderInstallDeps:
             added = folder.install_deps([installed], as_api(StubAPI()))
 
         assert added == 0
+
+    def test_unpack_malformed_manifest_warns_instead_of_crashing(self, addon_root, folder, monkeypatch, tmp_path):
+        """A manifest that fails an assert in _parse_manifest must not crash a fresh install/update."""
+        upstream = make_addon_info(id_=1, title='BadAddon', version='1.0', directories=['BadAddon'])
+        zip_bytes = _zip_bytes({
+            'BadAddon/BadAddon.txt': ('## Title: BadAddon\n## APIVersion: not-a-number\n'
+                                      '## Version: 1.0\n## Author: Test\n'),
+            'BadAddon/Data.lua': 'x = 1\n',
+        })
+        _mock_download(monkeypatch, tmp_path, zip_bytes)
+
+        with pytest.warns(UserWarning, match='Skipping addon.*AssertionError'):
+            installed_addons = folder.unpack(upstream, as_api(StubAPI()))
+
+        assert list(installed_addons) == []
+        assert (addon_root / 'BadAddon' / 'Data.lua').exists()

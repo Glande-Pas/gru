@@ -481,8 +481,9 @@ class Folder:
                            if not any(path.is_relative_to(erased) for erased in erase_dirs)}
         try:
             installed_addons = {install_folder: InstalledAddon(install_folder)}  # TODO: nesting?
-        except FileNotFoundError:  # Manifest not in expected location
-            # Not the simple case, maybe a multi-directory addon -- defer to our more complex logic handling
+        except (FileNotFoundError, AssertionError):
+            # No manifest in the expected location, or a malformed one -- defer to _scan(), which walks the
+            # extracted tree addon by addon and warns-and-skips whatever doesn't parse instead of raising.
             installed_addons = self._scan(install_folder, api)
 
         for inst in installed_addons.values():

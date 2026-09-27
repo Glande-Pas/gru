@@ -187,9 +187,36 @@ class TestManifestParsing:
         addon = make_installed(tmp_path, 'MyAddon')
         assert addon.is_lib is False
 
-    def test_invalid_islibrary_value_asserts(self, tmp_path):
-        with pytest.raises(AssertionError):
-            make_installed(tmp_path, 'MyAddon', IsLibrary='maybe')
+    def test_invalid_islibrary_value_warns_and_defaults_false(self, tmp_path):
+        with pytest.warns(UserWarning, match='Unexpected value for IsLibrary'):
+            addon = make_installed(tmp_path, 'MyAddon', IsLibrary='maybe')
+        assert addon.is_lib is False
+
+    def test_duplicate_islibrary_lines_tolerated(self, tmp_path):
+        addon_dir = tmp_path / 'MyAddon'
+        addon_dir.mkdir()
+        manifest = (
+            '## Title: MyAddon\n'
+            '## APIVersion: 100035\n'
+            '## IsLibrary: true\n'
+            '## IsLibrary: true\n'
+        )
+        (addon_dir / 'MyAddon.txt').write_text(manifest)
+        addon = InstalledAddon(addon_dir)
+        assert addon.is_lib is True
+
+    def test_conflicting_islibrary_lines_keeps_last(self, tmp_path):
+        addon_dir = tmp_path / 'MyAddon'
+        addon_dir.mkdir()
+        manifest = (
+            '## Title: MyAddon\n'
+            '## APIVersion: 100035\n'
+            '## IsLibrary: true\n'
+            '## IsLibrary: false\n'
+        )
+        (addon_dir / 'MyAddon.txt').write_text(manifest)
+        addon = InstalledAddon(addon_dir)
+        assert addon.is_lib is False
 
     def test_dependson_and_pcdependson_merged(self, tmp_path):
         addon = make_installed(tmp_path, 'MyAddon', DependsOn='LibA>=3 LibB', PCDependsOn='LibC>=1')
