@@ -1,12 +1,20 @@
 [project]
 name = "Gru"
-version = "0.0.0"
+dynamic = ["version"]
 authors = [{name="Cimbali", email="me@cimba.li" }]
 description = "Gru gets/removes/updates your ESO add-ons. Nothing to do with being minions’ boss."
 readme = "README.md"
 license = "MIT"
 dependencies = ["requests", "requests-cache", "click", "click-repl>=0.4.0", "unicodedata2", "charset-normalizer", "aiofiles", "aioshutil", "httpx", "diff-match-patch"]
 requires-python = ">=3.9"
+classifiers = [
+  "Environment :: Console",
+  "Intended Audience :: End Users/Desktop",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Topic :: Games/Entertainment",
+  "Topic :: Utilities",
+]
 
 [project.optional-dependencies]
 test = [
@@ -21,8 +29,14 @@ test = [
 [project.scripts]
 gru = "gru.cli:main"
 
-[options]
+[tool.setuptools]
 packages = ["gru"]
+
+[tool.setuptools.dynamic]
+version = {attr = "gru.__version__"}
+
+[tool.setuptools.package-data]
+gru = ["share/pixmaps/*"]
 
 [tool.flake8]
 max-line-length = 120
@@ -30,7 +44,7 @@ extend-exclude = ["build", "dist", "*.egg-info", "*.dist-info"]
 
 [build-system]
 requires = [
-  "setuptools >= 40.9.0",
+  "setuptools >= 61.0",
   "wheel",
 ]
 build-backend = "setuptools.build_meta"
