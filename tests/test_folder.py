@@ -975,7 +975,8 @@ class TestFolderUpdate:
         folder._installed = {bundle.folder: bundle, main.folder: main, sibling.folder: sibling}
 
         zip_bytes = _zip_bytes({
-            'Bundle/src/Bundle/Bundle.txt': '## Title: Bundle\n## APIVersion: 100035\n## Version: 2.0\n## Author: Test\n',
+            'Bundle/src/Bundle/Bundle.txt': ('## Title: Bundle\n## APIVersion: 100035\n## Version: 2.0\n'
+                                             '## Author: Test\n'),
             'Bundle/BundleExtra/BundleExtra.txt': ('## Title: BundleExtra\n## APIVersion: 100035\n'
                                                    '## Version: 2.0\n## Author: Test\n'),
         })
@@ -1030,9 +1031,8 @@ class TestFolderUpdate:
         sibling.link(sibling_upstream)
         folder._installed = {bundle.folder: bundle, main.folder: main, sibling.folder: sibling}
 
-        zip_bytes = _zip_bytes({
-            'BundleExtra/BundleExtra.txt': '## Title: BundleExtra\n## APIVersion: 100035\n## Version: 2.0\n## Author: Test\n',
-        })
+        zip_bytes = _zip_bytes({'BundleExtra/BundleExtra.txt': ('## Title: BundleExtra\n## APIVersion: 100035\n'
+                                                                '## Version: 2.0\n## Author: Test\n')})
         _mock_download(monkeypatch, tmp_path, zip_bytes)
 
         folder.update(as_api(StubAPI()))

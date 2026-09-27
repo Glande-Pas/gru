@@ -190,7 +190,7 @@ def _normalize(text: str) -> str:
     return strip_eso_text(text).strip().lower()
 
 
-def _meta_score(installed: DisplayAddonProtocol, candidate: AddonInfo, api: API) -> tuple[float, VersionMatch]:
+def _meta_score(installed: InstalledAddon, candidate: AddonInfo, api: API) -> tuple[float, VersionMatch]:
     """ Metadata score plus the underlying VersionMatch, so a caller that CRC-checks this
     candidate knows whether to fetch a specific archived release. """
     logger.debug(' meta score: %r vs candidate %r (id=%s)', installed.dir, candidate.title, candidate.id)
@@ -362,7 +362,7 @@ def resolve_ambiguous_bundles(local: Folder, api: API) -> list[AddonBundle]:
     return resolved
 
 
-def rank_candidates(installed: DisplayAddonProtocol, candidates: list[AddonInfo], api: API,
+def rank_candidates(installed: InstalledAddon, candidates: list[AddonInfo], api: API,
                     sortkey: str) -> list[AddonInfo]:
     """ Best-guess-first: metadata match (author, version -- current or archived --, title
     similarity), falling back to `sortkey` (e.g. downloads) for ties. """

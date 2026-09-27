@@ -228,33 +228,24 @@ class Folder:
         return results
 
     def find_bundle_matches(self, results: dict[pathlib.Path, gru.addon.InstalledAddon], api: gru.api.API,
-                             links: dict[str, str], locked: set[str] | None = None
-                             ) -> Iterator[tuple[gru.addon.AddonBundle, gru.addon.AddonInfo | None,
-                                                 list[gru.addon.AddonInfo]]]:
-        """ Addons that couldn't resolve individually online (private/library-only names, e.g.
-        HarvestMapData's per-region submodules) may still share a containing directory whose
-        OWN name is the bundle's real online listing -- not necessarily the immediate one (that
-        example bundles them under an extra HarvestMapData/Modules/ pass-through directory), so
-        walk up one level at a time, stopping short of the addons root, until the lookup
-        resolves, is ambiguous, or nothing higher up. Yields one (bundle, infos, candidates) per
-        candidate directory tried with >1 member: infos is set on a confident match, otherwise
-        None with `candidates` holding whatever AmbiguousDirectory last raised (empty if the
-        walk ran out before matching anything at all). """
+                            links: dict[str, str], locked: set[str] | None = None
+                            ) -> Iterator[tuple[gru.addon.AddonBundle, gru.addon.AddonInfo | None,
+                                                list[gru.addon.AddonInfo]]]:
+        """ Addons that don't resolve online may still share a containing directory whose name is the bundle's real
+        online listing """
         locked = locked or set()
         unmatched = [addon for addon in results.values()
-                    if addon.infos is None and not isinstance(addon, AddonBundle)]
+                     if addon.infos is None and not isinstance(addon, AddonBundle)]
         seen: set[pathlib.Path] = set()
 
         def make_bundle(candidate_dir: pathlib.Path) -> gru.addon.AddonBundle:
-            # Reuse the existing bundle object, if this exact group was already found on a
-            # previous call (e.g. by _scan() itself, before gru match calls back in to resolve
-            # it) -- resolving it must mutate the very object sitting in Folder._installed, not
-            # a throwaway copy that .link() only appears to update.
+            # Reuse the existing bundle object, if this exact group was already found on a previous call (e.g. _scan())
+            # as resolving it must mutate the object sitting in Folder._installed, not a throwaway copy
             existing = results.get(candidate_dir)
             if isinstance(existing, AddonBundle):
                 return existing
             members = [a for a in results.values()
-                      if not isinstance(a, AddonBundle) and a.folder.is_relative_to(candidate_dir)]
+                       if not isinstance(a, AddonBundle) and a.folder.is_relative_to(candidate_dir)]
             bundle = AddonBundle(candidate_dir.name, candidate_dir, members)
             bundle.locked = candidate_dir.name in locked
             results[bundle.folder] = bundle
@@ -272,9 +263,6 @@ class Folder:
                 try:
                     infos = api.dir(candidate_dir.name, link=links.get(candidate_dir.name))
                 except AmbiguousDirectory as exc:
-                    # Include every co-located addon, not just the unresolved ones -- the
-                    # directly-resolving main sibling (its own dir happens to already match
-                    # online) still belongs in the same group for display/version-rank purposes.
                     yield make_bundle(candidate_dir), None, exc.candidates
                     break
                 except FileNotFoundError:
@@ -427,7 +415,7 @@ class Folder:
                 # Only drop files under a pruned addon dir -- loose files (LICENSE, README) stay.
                 pruned_dirs = {d for d in nested_dirs if d.name in pruned}
                 files = [(fn, is_dir, sz) for fn, is_dir, sz in files
-                        if not any(fn == d or fn.is_relative_to(d) for d in pruned_dirs)]
+                         if not any(fn == d or fn.is_relative_to(d) for d in pruned_dirs)]
                 return path.parent, [path], files
 
             # In 1-dir case does not really matter
@@ -461,7 +449,7 @@ class Folder:
             return path, [path], files
 
         # So now we know we have several top-level *addons*
-        # install all directories that resolve:
+        # Install all directories that resolve:
         # - to this addon (bundle’s main addon), or
         # - to no other addon (not available standalone)
         try:

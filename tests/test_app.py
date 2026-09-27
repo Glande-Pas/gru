@@ -343,7 +343,10 @@ class TestResolveAmbiguousBundles:
         folder = make_folder(addon_root)
         bundle = AddonBundle('Bundle', addon_root / 'Bundle', [member1, member2])
         monkeypatch.setattr(app_mod, 'find_ambiguous_bundles', lambda local, api: [(bundle, [one, two])])
-        same_zip = _build_zip({'Bundle/BundleExtra1/BundleExtra1.txt': b'1', 'Bundle/BundleExtra2/BundleExtra2.txt': b'2'})
+        same_zip = _build_zip({
+            'Bundle/BundleExtra1/BundleExtra1.txt': b'1',
+            'Bundle/BundleExtra2/BundleExtra2.txt': b'2',
+        })
         _mock_remote_zips_by_id(monkeypatch, {1: same_zip, 2: same_zip})
 
         resolved = app_mod.resolve_ambiguous_bundles(folder, api)

@@ -52,20 +52,6 @@ def strip_eso_text(text: str) -> str:
     return ESO_COLORED_TEXT.sub(lambda match: match.group('text'), text)
 
 
-# AddonInfo
-# id api version title author
-# date link category directories
-# downloads monthly favorites
-# thumbnails images donate
-
-# InstalledAddon
-# api version author title
-# library
-# dep_version (numerical version for comparison)
-# description savedvariables contributors
-# optdeps deps pcdependson consoledependson
-
-
 class DisplayAddonProtocol(Protocol):
     id: int | None
     title: str
@@ -84,11 +70,6 @@ class Dependency:
         self.dir = dir_
         self.dep_version = version
 
-
-# id category directories
-# version date title author link api
-# downloads monthly favorites
-# thumbnails images donate
 
 class AddonInfo(DisplayAddonProtocol):
     """ Addon information from API """
@@ -135,20 +116,6 @@ class AddonInfo(DisplayAddonProtocol):
 
         # How stale is this info?
         return any(inst.can_update for inst in self.folders.values() if inst.folder.exists())
-
-
-# 122 api
-#  59 library
-# 121 version  # display version string
-# 121 author
-# 112 title
-#  94 dep_version  # numerical version for comparison
-#  90 description
-#  82 savedvariables
-#  68 optdeps
-#  65 deps
-#   6 contributors
-#   4 pcdependson, consoledependson
 
 
 class InstalledAddon(Dependency, DisplayAddonProtocol):
@@ -343,7 +310,7 @@ class AddonBundle(InstalledAddon):
         return list(seen.values())
 
     @property
-    def is_lib(self) -> bool:
+    def is_lib(self) -> bool:  # pyright: ignore[reportIncompatibleVariableOverride]
         return all(member.is_lib for member in self.members)
 
     @property

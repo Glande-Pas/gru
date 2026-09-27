@@ -288,10 +288,13 @@ class TestInstalledAddonCanUpdate:
 
 
 class TestInstalledAddonVersionRank:
-    def test_no_other_folder_is_trivially_active(self, tmp_path):
+    def test_no_other_folder_has_empty_rank_not_trivially_active(self, tmp_path):
+        """The only install of this addon anywhere -- there's no other copy to rank against, so
+        'active' would be a misleading answer to a question that doesn't apply (external callers
+        of version_rank don't know to also check comparable_copies' length themselves)."""
         addon = make_installed(tmp_path, 'MyAddon', Version='1.0')
         addon.link(make_addon_info(title='MyAddon', version='1.0'))
-        assert addon.version_rank == 'active'
+        assert addon.version_rank == ''
         assert addon.is_superseded is False
 
     def test_higher_version_is_active(self, tmp_path):
