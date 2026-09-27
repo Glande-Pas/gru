@@ -24,8 +24,8 @@ import csv
 from urllib.parse import quote as urllib_quote
 
 from .config import user_cache, user_config
-from .addon import InstalledAddon, AddonInfo, GARBAGE, MANIFEST_EXTS, _parse_version
-from .api import _fuzz, _filter
+from .addon import InstalledAddon, AddonInfo, AddonBundle, GARBAGE, MANIFEST_EXTS, _parse_version
+from .api import _fuzz, _filter, AmbiguousDirectory
 from .patch import addon_patch_file, PatchError
 
 from typing import Protocol
@@ -110,10 +110,10 @@ class Folder:
             shutil.rmtree(temp_location)
 
     def scan(self, api: gru.api.API | None = None) -> None:
-        links, locked = self._read_csv_hints()
+        links, locked = self.read_csv_hints()
         self._installed = self._scan(self.root, api, links=links, locked=locked)
 
-    def _read_csv_hints(self) -> tuple[dict[str, str], set[str]]:
+    def read_csv_hints(self) -> tuple[dict[str, str], set[str]]:
         """ dir -> link, and the set of locked dirs, from the last addons.csv snapshot -- the
         folder scan itself has no way to derive either: `links` only breaks a tie when a folder
         name matches several different online addons (see API.dir()), `locked` restores the
@@ -211,8 +211,57 @@ class Folder:
 
             results[path] = addon
 
-        # Now we may have several addons claiming ownership of the same directories
+        if api:
+            for bundle, infos, candidates in self.find_bundle_matches(results, api, links):
+                if infos is not None:
+                    bundle.link(infos)
+                # else: no confident match (not found at all, or ambiguous) -- left for
+                # gru_app.find_ambiguous_bundles()/`gru match` to resolve, same as individual
+                # unmatched addons.
+
         return results
+
+    def find_bundle_matches(self, results: dict[pathlib.Path, gru.addon.InstalledAddon], api: gru.api.API,
+                             links: dict[str, str]
+                             ) -> Iterator[tuple[gru.addon.AddonBundle, gru.addon.AddonInfo | None,
+                                                 list[gru.addon.AddonInfo]]]:
+        """ Addons that couldn't resolve individually online (private/library-only names, e.g.
+        HarvestMapData's per-region submodules) may still share a containing directory whose
+        OWN name is the bundle's real online listing -- not necessarily the immediate one (that
+        example bundles them under an extra HarvestMapData/Modules/ pass-through directory), so
+        walk up one level at a time, stopping short of the addons root, until the lookup
+        resolves, is ambiguous, or nothing higher up. Yields one (bundle, infos, candidates) per
+        candidate directory tried with >1 member: infos is set on a confident match, otherwise
+        None with `candidates` holding whatever AmbiguousDirectory last raised (empty if the
+        walk ran out before matching anything at all). """
+        unmatched = [addon for addon in results.values() if addon.infos is None]
+        seen: set[pathlib.Path] = set()
+        for addon in unmatched:
+            candidate_dir = addon.folder.parent
+            if candidate_dir == self.root or candidate_dir in seen:
+                continue
+            members = [a for a in unmatched if a.folder.is_relative_to(candidate_dir)]
+            if len(members) < 2:
+                continue
+            seen.add(candidate_dir)
+
+            while True:
+                try:
+                    infos = api.dir(candidate_dir.name, link=links.get(candidate_dir.name))
+                except AmbiguousDirectory as exc:
+                    yield AddonBundle(candidate_dir.name, members), None, exc.candidates
+                    break
+                except FileNotFoundError:
+                    if candidate_dir.parent == self.root:
+                        yield AddonBundle(candidate_dir.name, members), None, []
+                        break
+                    candidate_dir = candidate_dir.parent
+                    seen.add(candidate_dir)
+                    members = [a for a in unmatched if a.folder.is_relative_to(candidate_dir)]
+                    continue
+                else:
+                    yield AddonBundle(candidate_dir.name, members), infos, []
+                    break
 
     def name(self, name: str) -> Iterator[gru.addon.InstalledAddon]:
         """ Lookup addons by name (exact match) """
@@ -323,9 +372,37 @@ class Folder:
             raise ValueError(f'No addon manifest in bundle {zf.filename}')
 
         # No identified manifest, we have to guess what we’re really installing
-        # In 1-dir case does not really matter
         if len(toplevels) == 1:
             top_dir = next(iter(toplevels))
+
+            # A wrapper dir with no manifest of its own may still bundle several addons, each
+            # nested at whatever depth its own manifest sits at. Keep the nesting but prune
+            # any that's independently installable.
+            nested_dirs = {fn.parent for fn in manifest_depth1plus}
+            nested = {d.name for d in nested_dirs}
+            if len(nested) > 1:
+                try:
+                    main_id = api.dir(top_dir).id
+                except FileNotFoundError:
+                    main_id = top_dir
+                pruned: set[str] = set()
+                for dir_ in nested:
+                    try:
+                        dep = api.dir(dir_)
+                    except FileNotFoundError:
+                        pass  # not a standalone addon, keep it
+                    else:
+                        if dep.id != main_id:
+                            pruned.add(dir_)
+                nested -= pruned
+                warnings.warn(f'Installing {len(nested)} addons nested under {top_dir}/: {", ".join(sorted(nested))}')
+                # Only drop files under a pruned addon dir -- loose files (LICENSE, README) stay.
+                pruned_dirs = {d for d in nested_dirs if d.name in pruned}
+                files = [(fn, is_dir, sz) for fn, is_dir, sz in files
+                        if not any(fn == d or fn.is_relative_to(d) for d in pruned_dirs)]
+                return path.parent, [path], files
+
+            # In 1-dir case does not really matter
             if top_dir != path.name:
                 warnings.warn(f'Using {top_dir} as addon dir, installing under {top_dir}')
                 path = path.parent / top_dir
@@ -434,9 +511,7 @@ class Folder:
                     with zf.open(file.as_posix(), 'r') as zfreader, open(file_dest, 'wb') as out:
                         shutil.copyfileobj(zfreader, out)
                 except KeyError as exc:
-                    # zf.infolist() drove `files`, so this shouldn't happen -- but a zip entry named
-                    # with the "wrong" separator for this OS, or one that's just plain malformed,
-                    # must not crash & traceback whatever command (install/update/diff) is unzipping.
+                    # Shouldn't happen, but must not crash whatever command is unzipping.
                     warnings.warn(f'Skipping {file} -- not found in archive: {exc}')
                     continue
                 prog.update(size)
@@ -489,8 +564,7 @@ class Folder:
         try:
             installed_addons = {install_folder: InstalledAddon(install_folder)}  # TODO: nesting?
         except (FileNotFoundError, AssertionError):
-            # No manifest in the expected location, or a malformed one -- defer to _scan(), which walks the
-            # extracted tree addon by addon and warns-and-skips whatever doesn't parse instead of raising.
+            # Missing or malformed manifest -- defer to _scan(), which warns-and-skips instead of raising.
             installed_addons = self._scan(install_folder, api)
 
         for inst in installed_addons.values():
@@ -544,7 +618,10 @@ class Folder:
                 continue
             if addon.parent is not None and addon.is_superseded:
                 continue  # a newer copy already exists elsewhere; nothing to do here
-            path = addon.folder if addon.parent is None else None  # bundled updates go top-level
+            # A flat bundle's main entry also needs path=None: addon.folder is its own nested
+            # dir, not the wrapper, by an amount that varies with nesting depth.
+            heads_group = any(other.parent is addon for other in self.installed)
+            path = addon.folder if addon.parent is None and not heads_group else None
             try:
                 updates.extend(self.unpack(addon.infos, api, progress=progress, path=path))
             except Exception as err:

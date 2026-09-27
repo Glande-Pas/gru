@@ -20,7 +20,7 @@ from collections.abc import Iterable
 from urllib.parse import quote as urllib_quote
 
 from .api import API, AmbiguousDirectory, PreviousVersion
-from .addon import AddonInfo, InstalledAddon, GARBAGE, strip_eso_text, file_crc32
+from .addon import AddonInfo, InstalledAddon, AddonBundle, DisplayAddonProtocol, GARBAGE, strip_eso_text, file_crc32
 from .config import user_config
 from .install import Folder
 from .remotezip import fetch_remote_zip_directory
@@ -155,7 +155,7 @@ class VersionMatch(NamedTuple):
     archived: PreviousVersion | None = None
 
 
-def _version_matches(installed: InstalledAddon, candidate: AddonInfo, api: API) -> VersionMatch:
+def _version_matches(installed: DisplayAddonProtocol, candidate: AddonInfo, api: API) -> VersionMatch:
     """ Whether installed.version matches candidate's current or an archived release. A request
     failure while checking archived versions degrades to no match; other errors propagate. """
     if installed.version == candidate.version:
@@ -187,7 +187,7 @@ def _normalize(text: str) -> str:
     return strip_eso_text(text).strip().lower()
 
 
-def _meta_score(installed: InstalledAddon, candidate: AddonInfo, api: API) -> tuple[float, VersionMatch]:
+def _meta_score(installed: DisplayAddonProtocol, candidate: AddonInfo, api: API) -> tuple[float, VersionMatch]:
     """ Metadata score plus the underlying VersionMatch, so a caller that CRC-checks this
     candidate knows whether to fetch a specific archived release. """
     logger.debug(' meta score: %r vs candidate %r (id=%s)', installed.dir, candidate.title, candidate.id)
@@ -304,7 +304,62 @@ def resolve_exact_matches(local: Folder, api: API) -> list[InstalledAddon]:
     return resolved
 
 
-def rank_candidates(installed: InstalledAddon, candidates: list[AddonInfo], api: API,
+def find_ambiguous_bundles(local: Folder, api: API) -> list[tuple[AddonBundle, list[AddonInfo]]]:
+    """ Groups of individually-unmatched sibling addons (private/library-only names, e.g.
+    HarvestMapData's per-region submodules) whose containing directory is ambiguous online --
+    for `gru match` to resolve, same as find_ambiguous() does for a single addon. """
+    links, _ = local.read_csv_hints()
+    results = {addon.folder: addon for addon in local.installed}
+    return [(bundle, candidates) for bundle, infos, candidates
+            in local.find_bundle_matches(results, api, links) if infos is None and candidates]
+
+
+def _bundle_dirs_match(bundle: AddonBundle, candidate: AddonInfo, url_template: str,
+                       session: requests.Session | None = None) -> bool | None:
+    """ Whether candidate's zip actually contains a directory for every member of `bundle` --
+    confirms which listing an ambiguous bundle group really came from. Lighter than
+    _crc_match(): it only needs to place each member somewhere in the archive, not verify its
+    content byte-for-byte, since library-only submodules typically aren't separately listed to
+    CRC-check against in the first place.
+
+    Returns None if the check couldn't be performed, distinct from False (checked, some member
+    missing). """
+    if candidate.id is None:
+        return None
+    fname = f'{candidate.dir}-{candidate.version}.zip'
+    url = url_template.format(id=candidate.id) + urllib_quote(fname)
+    sess: typing.Any = session or requests
+    try:
+        with sess.head(url, allow_redirects=True) as head:
+            head.raise_for_status()
+            content_size = int(head.headers['content-length'])
+        remote_entries = fetch_remote_zip_directory(url, content_size, session=session)
+    except (requests.RequestException, KeyError, ValueError) as exc:
+        logger.debug(' bundle dir check: could not fetch %r (%s) -- skipping', url, exc)
+        return None
+
+    remote_parts = {part.lower() for entry in remote_entries
+                    for part in pathlib.PurePosixPath(entry.filename).parts}
+    return all(member.dir.lower() in remote_parts for member in bundle.members)
+
+
+def resolve_ambiguous_bundles(local: Folder, api: API) -> list[AddonBundle]:
+    """ Auto-link every ambiguous bundle group with exactly one candidate whose zip contains all
+    of its members. Returns the bundles resolved this way; each is also reported via
+    warnings.warn(). """
+    ambiguous = find_ambiguous_bundles(local, api)
+    resolved = []
+    for bundle, candidates in ambiguous:
+        confirmed = [c for c in candidates if _bundle_dirs_match(bundle, c, local.url_template) is True]
+        if len(confirmed) != 1:
+            continue
+        bundle.link(confirmed[0])
+        resolved.append(bundle)
+        warnings.warn(f'Resolved ambiguous bundle {bundle.dir!r} as {confirmed[0].title!r} (member dir match)')
+    return resolved
+
+
+def rank_candidates(installed: DisplayAddonProtocol, candidates: list[AddonInfo], api: API,
                     sortkey: str) -> list[AddonInfo]:
     """ Best-guess-first: metadata match (author, version -- current or archived --, title
     similarity), falling back to `sortkey` (e.g. downloads) for ties. """

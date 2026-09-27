@@ -166,3 +166,81 @@ class TestMultiDirBundle:
         top_dirs = {fn.parts[0] for fn, *_ in files}
         assert 'OtherAddon' not in top_dirs
         assert 'MyAddon' in top_dirs
+
+
+# ---------------------------------------------------------------------------
+# Flat bundles: one top-level wrapper dir, no manifest of its own, several
+# addons nested one level inside it (e.g. Arkadius' Trade Tools)
+# ---------------------------------------------------------------------------
+
+class TestNestedFlatBundle:
+    def test_kept_nested_and_warns(self, folder, stub_api, addon_root):
+        """Several addons nested under a manifest-less wrapper dir stay nested (the game
+        scans AddOns/ recursively) but are now recognised and reported, instead of being
+        silently treated as an opaque single addon."""
+        zf = make_zip({
+            'Bundle/Bundle/Bundle.txt': MANIFEST.format(title='Bundle'),
+            'Bundle/BundleExtra/BundleExtra.txt': MANIFEST.format(title='BundleExtra'),
+        })
+        path = addon_root / 'Bundle'
+        with pytest.warns(UserWarning, match='Installing 2 addons nested under Bundle/'):
+            dest, erase, files = folder._inspect_bundle(path, zf, stub_api)
+        assert dest == addon_root
+        assert erase == [path]
+        names = {str(fn) for fn, *_ in files}
+        assert names == {'Bundle/Bundle/Bundle.txt', 'Bundle/BundleExtra/BundleExtra.txt'}
+
+    def test_standalone_nested_addon_pruned(self, folder, addon_root):
+        """A nested dir that's also independently listed in the API gets excluded,
+        same as a sibling standalone addon would in the several-top-level-dirs case."""
+        api = StubAPI({
+            'Bundle': StubAddon(1, 'Bundle'),
+            'BundleExtra': StubAddon(2, 'BundleExtra'),
+        })
+        zf = make_zip({
+            'Bundle/Bundle/Bundle.txt': MANIFEST.format(title='Bundle'),
+            'Bundle/BundleExtra/BundleExtra.txt': MANIFEST.format(title='BundleExtra'),
+        })
+        path = addon_root / 'Bundle'
+        dest, erase, files = folder._inspect_bundle(path, zf, api)
+        names = {str(fn) for fn, *_ in files}
+        assert names == {'Bundle/Bundle/Bundle.txt'}
+
+    def test_loose_wrapper_files_kept(self, folder, stub_api, addon_root):
+        """LICENSE/README-style files sitting directly in the wrapper dir survive pruning."""
+        zf = make_zip({
+            'Bundle/LICENSE': 'MIT',
+            'Bundle/Bundle/Bundle.txt': MANIFEST.format(title='Bundle'),
+            'Bundle/BundleExtra/BundleExtra.txt': MANIFEST.format(title='BundleExtra'),
+        })
+        path = addon_root / 'Bundle'
+        dest, erase, files = folder._inspect_bundle(path, zf, stub_api)
+        names = {str(fn) for fn, *_ in files}
+        assert 'Bundle/LICENSE' in names
+
+    def test_single_nested_addon_unaffected(self, folder, stub_api, addon_root):
+        """Only one addon nested one level deep -- not the multi-addon flat-bundle case,
+        falls through to the existing 'use top_dir as install dir' handling unchanged."""
+        zf = make_zip({'Bundle/Bundle/Bundle.txt': MANIFEST.format(title='Bundle')})
+        path = addon_root / 'Bundle'
+        dest, erase, files = folder._inspect_bundle(path, zf, stub_api)
+        assert dest == addon_root
+        assert erase == [path]
+        names = {str(fn) for fn, *_ in files}
+        assert names == {'Bundle/Bundle/Bundle.txt'}
+
+    def test_mixed_depth_nesting_detected_by_manifest_location(self, folder, addon_root):
+        """One addon's manifest sits 2 levels below the wrapper (through a pass-through 'src'
+        dir, e.g. real-world 'AddOn/src/AddOn/AddOn.txt' layouts), the other only 1. Detection
+        must be driven by where each manifest actually is, not by assuming a fixed +1 depth --
+        otherwise the deeper one is neither recognised as nested nor eligible for pruning."""
+        api = StubAPI({'BundleExtra': StubAddon(2, 'BundleExtra')})  # independently listed -> prune it
+        zf = make_zip({
+            'Bundle/src/Bundle/Bundle.txt': MANIFEST.format(title='Bundle'),
+            'Bundle/BundleExtra/BundleExtra.txt': MANIFEST.format(title='BundleExtra'),
+        })
+        path = addon_root / 'Bundle'
+        with pytest.warns(UserWarning, match='Installing 1 addons nested under Bundle/: Bundle'):
+            dest, erase, files = folder._inspect_bundle(path, zf, api)
+        names = {str(fn) for fn, *_ in files}
+        assert names == {'Bundle/src/Bundle/Bundle.txt'}

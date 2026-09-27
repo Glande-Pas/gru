@@ -10,10 +10,11 @@ import requests
 
 import gru.app as app_mod
 from gru.api import AmbiguousDirectory, PreviousVersion
+from gru.addon import AddonBundle
 
 from .conftest import (
     make_installed, make_addon_info, make_api, make_folder, mock_remote_zip, mock_remote_zip_capturing_urls, StubAPI,
-    FakeSession,
+    FakeSession, FakeCrcResponse, _build_zip,
 )
 
 
@@ -271,6 +272,84 @@ class TestFindAmbiguous:
         api = make_api(addons={1: upstream})
         folder.scan(api)
         assert app_mod.find_ambiguous(folder, api) == []
+
+
+class TestFindAmbiguousBundles:
+    def test_finds_bundle_ambiguous_between_several_listings(self, addon_root, folder):
+        make_installed(addon_root / 'Bundle', 'BundleExtra1')
+        make_installed(addon_root / 'Bundle', 'BundleExtra2')
+        one = make_addon_info(id_=1, title='Bundle One', directories=['Bundle'])
+        two = make_addon_info(id_=2, title='Bundle Two', directories=['Bundle'])
+        api = make_api(addons={1: one, 2: two})
+        folder.scan(api)
+
+        [(bundle, candidates)] = app_mod.find_ambiguous_bundles(folder, api)
+        assert bundle.dir == 'Bundle'
+        assert {m.dir for m in bundle.members} == {'BundleExtra1', 'BundleExtra2'}
+        assert set(candidates) == {one, two}
+
+    def test_already_matched_bundle_is_not_ambiguous(self, addon_root, folder):
+        make_installed(addon_root / 'Bundle', 'BundleExtra1')
+        make_installed(addon_root / 'Bundle', 'BundleExtra2')
+        upstream = make_addon_info(id_=1, title='Bundle', directories=['Bundle'])
+        api = make_api(addons={1: upstream})
+        folder.scan(api)
+        assert app_mod.find_ambiguous_bundles(folder, api) == []
+
+
+def _mock_remote_zips_by_id(monkeypatch, zips_by_id: dict[int, bytes]) -> None:
+    """ Like mock_remote_zip(), but serves different zip content per candidate id -- needed to
+    tell candidates apart by what their own (fake) archive actually contains. """
+    def fake_head(url, allow_redirects=True):
+        id_ = next(id_ for id_ in zips_by_id if f'id={id_}/' in url)
+        return FakeCrcResponse(headers={'content-length': str(len(zips_by_id[id_]))})
+    monkeypatch.setattr(app_mod.requests, 'head', fake_head)
+
+    def fake_get(url, headers, allow_redirects=True):
+        id_ = next(id_ for id_ in zips_by_id if f'id={id_}/' in url)
+        start, end = (int(n) for n in headers['Range'].removeprefix('bytes=').split('-'))
+        return FakeCrcResponse(content=zips_by_id[id_][start:end + 1])
+    monkeypatch.setattr('gru.remotezip.requests.get', fake_get)
+
+
+class TestResolveAmbiguousBundles:
+    def test_resolves_bundle_whose_zip_uniquely_contains_all_members(self, addon_root, monkeypatch):
+        member1 = make_installed(addon_root / 'Bundle', 'BundleExtra1')
+        member2 = make_installed(addon_root / 'Bundle', 'BundleExtra2')
+        one = make_addon_info(id_=1, title='Bundle One', directories=['Bundle'])
+        two = make_addon_info(id_=2, title='Bundle Two', directories=['Bundle'])
+        api = make_api(addons={1: one, 2: two})
+        folder = make_folder(addon_root)
+        bundle = AddonBundle('Bundle', [member1, member2])
+        monkeypatch.setattr(app_mod, 'find_ambiguous_bundles', lambda local, api: [(bundle, [one, two])])
+        _mock_remote_zips_by_id(monkeypatch, {
+            1: _build_zip({'Bundle/BundleExtra1/BundleExtra1.txt': b'1', 'Bundle/BundleExtra2/BundleExtra2.txt': b'2'}),
+            2: _build_zip({'Bundle/BundleExtra1/BundleExtra1.txt': b'1'}),  # missing BundleExtra2
+        })
+
+        resolved = app_mod.resolve_ambiguous_bundles(folder, api)
+
+        assert resolved == [bundle]
+        assert bundle.infos is one
+        assert member1.infos is one
+        assert member2.infos is one
+
+    def test_leaves_bundle_ambiguous_when_both_candidates_zips_contain_all_members(self, addon_root, monkeypatch):
+        member1 = make_installed(addon_root / 'Bundle', 'BundleExtra1')
+        member2 = make_installed(addon_root / 'Bundle', 'BundleExtra2')
+        one = make_addon_info(id_=1, title='Bundle One', directories=['Bundle'])
+        two = make_addon_info(id_=2, title='Bundle Two', directories=['Bundle'])
+        api = make_api(addons={1: one, 2: two})
+        folder = make_folder(addon_root)
+        bundle = AddonBundle('Bundle', [member1, member2])
+        monkeypatch.setattr(app_mod, 'find_ambiguous_bundles', lambda local, api: [(bundle, [one, two])])
+        same_zip = _build_zip({'Bundle/BundleExtra1/BundleExtra1.txt': b'1', 'Bundle/BundleExtra2/BundleExtra2.txt': b'2'})
+        _mock_remote_zips_by_id(monkeypatch, {1: same_zip, 2: same_zip})
+
+        resolved = app_mod.resolve_ambiguous_bundles(folder, api)
+
+        assert resolved == []
+        assert bundle.infos is None
 
 
 class TestRankCandidates:

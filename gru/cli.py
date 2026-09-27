@@ -864,10 +864,11 @@ def match(ctx: click.Context, addon: str | None) -> None:
     sortkey = ctx.obj['config'].get(f'{local.game}.addons', 'sortkey')
 
     auto_resolved = gru_app.resolve_exact_matches(local, api)
+    auto_resolved += gru_app.resolve_ambiguous_bundles(local, api)
     if auto_resolved:
         local.export_state()
 
-    ambiguous = gru_app.find_ambiguous(local, api)
+    ambiguous = gru_app.find_ambiguous(local, api) + gru_app.find_ambiguous_bundles(local, api)
     if addon:
         term = addon.lower()
         ambiguous = [(inst, c) for inst, c in ambiguous if term in inst.dir.lower() or term in inst.title.lower()]

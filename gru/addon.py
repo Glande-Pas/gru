@@ -276,3 +276,32 @@ class InstalledAddon(Dependency, DisplayAddonProtocol):
             path for path in (path.relative_to(self.folder) for path in self.folder.rglob('*') if path.is_file())
             if not any(part.startswith('.') or part in GARBAGE for part in path.parts)
         ]
+
+
+class AddonBundle(DisplayAddonProtocol):
+    """ A wrapper directory with no manifest of its own, holding several addons installed
+    together as one bundle. Not a Dependency: it has a dir but no dep_version, it's never
+    itself a DependsOn target. """
+    is_local = True
+
+    def __init__(self, dir_: str, members: list[InstalledAddon]) -> None:
+        self.dir = dir_
+        self.members = members
+        self.infos: AddonInfo | None = None
+        main = members[0]
+        self.id = main.id
+        self.title = main.title
+        self.author = main.author
+        self.version = main.version
+        self.api = main.api
+        self.metadata = main.metadata
+
+    def link(self, infos: AddonInfo) -> None:
+        self.id = infos.id
+        self.infos = infos
+        for member in self.members:
+            member.link(infos)
+
+    @property
+    def can_update(self) -> bool:
+        return any(member.can_update for member in self.members)

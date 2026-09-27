@@ -527,7 +527,7 @@ class TestScan:
         assert addon.id == 2996
 
     def test_scan_without_addons_csv_leaves_unresolved_tie_unmatched(self, addon_root, folder, tmp_path):
-        """No prior addons.csv (e.g. first-ever scan) -- _read_csv_hints() finds nothing, so
+        """No prior addons.csv (e.g. first-ever scan) -- read_csv_hints() finds nothing, so
         API.dir() has no link to resolve the tie with. It must not guess: the addon stays
         unmatched (not silently linked to whichever candidate happens to come first), and no
         warning fires -- it *was* found, just ambiguously, unlike a genuine no-match."""
@@ -558,6 +558,84 @@ class TestScan:
         folder.scan()
         by_dir = {a.dir: a for a in folder.installed}
         assert by_dir['Child'].parent is by_dir['Parent']
+
+    def test_scan_ancestor_parenting_unaffected_by_bundle_lookup(self, addon_root, folder):
+        make_installed(addon_root, 'Parent')
+        make_installed(addon_root / 'Parent', 'Child')
+        folder.scan()
+        by_dir = {a.dir: a for a in folder.installed}
+        assert by_dir['Child'].parent is by_dir['Parent']
+
+    def test_scan_links_bundle_members_by_walking_up_past_a_pass_through_dir(self, addon_root, folder):
+        """HarvestMapData-shaped bundle: submodules sit under an extra Modules/ dir that isn't
+        itself an addon, so the direct containing-dir lookup ('Modules') must fail and retry one
+        level up ('HarvestMapData'), which is the bundle's real online listing."""
+        make_installed(addon_root / 'HarvestMapData' / 'Modules', 'RegionAD')
+        make_installed(addon_root / 'HarvestMapData' / 'Modules', 'RegionDC')
+        info = make_addon_info(id_=3034, title='HarvestMap-Data', directories=['HarvestMapData'])
+        api = make_api(addons={3034: info})
+
+        folder.scan(api)
+        by_dir = {a.dir: a for a in folder.installed}
+        assert by_dir['RegionAD'].id == 3034
+        assert by_dir['RegionDC'].id == 3034
+
+    def test_scan_links_bundle_members_via_immediate_wrapper(self, addon_root, folder):
+        """No pass-through dir needed: the immediate containing dir's own name already matches
+        an online listing, so members link on the first try."""
+        make_installed(addon_root / 'Bundle', 'BundleExtra1')
+        make_installed(addon_root / 'Bundle', 'BundleExtra2')
+        info = make_addon_info(id_=1, title='Bundle', directories=['Bundle'])
+        api = make_api(addons={1: info})
+
+        folder.scan(api)
+        by_dir = {a.dir: a for a in folder.installed}
+        assert by_dir['BundleExtra1'].id == 1
+        assert by_dir['BundleExtra2'].id == 1
+
+    def test_scan_leaves_bundle_unmatched_when_nothing_resolves_up_to_root(self, addon_root, folder):
+        make_installed(addon_root / 'Bundle', 'BundleExtra1')
+        make_installed(addon_root / 'Bundle', 'BundleExtra2')
+        api = StubAPI()  # nothing registered at all
+
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')
+            folder.scan(api)
+        by_dir = {a.dir: a for a in folder.installed}
+        assert by_dir['BundleExtra1'].infos is None
+        assert by_dir['BundleExtra2'].infos is None
+
+    def test_scan_leaves_ambiguous_bundle_dir_unmatched(self, addon_root, folder):
+        """Two different online addons declare the same directory as their own -- same tie
+        rule as an individual addon (see test_scan_without_addons_csv_leaves_unresolved_tie_
+        unmatched): stays unmatched rather than guessing, no scan-time warning either."""
+        make_installed(addon_root / 'Bundle', 'BundleExtra1')
+        make_installed(addon_root / 'Bundle', 'BundleExtra2')
+        one = make_addon_info(id_=1, title='Bundle One', directories=['Bundle'])
+        two = make_addon_info(id_=2, title='Bundle Two', directories=['Bundle'])
+        api = make_api(addons={1: one, 2: two})
+
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')
+            folder.scan(api)
+        by_dir = {a.dir: a for a in folder.installed}
+        assert by_dir['BundleExtra1'].infos is None
+        assert by_dir['BundleExtra2'].infos is None
+
+    def test_scan_never_looks_up_addons_root_itself_as_a_bundle_name(self, addon_root, folder):
+        """Two unrelated addons installed directly under the addons root share self.root as
+        their immediate parent -- that must never be tried as a candidate bundle name."""
+        make_installed(addon_root, 'AddonA')
+        make_installed(addon_root, 'AddonB')
+        looked_up = []
+
+        class RecordingApi(StubAPI):
+            def dir(self, name, link=None):
+                looked_up.append(name)
+                raise FileNotFoundError(name)
+
+        folder.scan(RecordingApi())
+        assert addon_root.name not in looked_up
 
     def test_scan_ignores_directory_without_manifest(self, addon_root, folder):
         (addon_root / 'NotAnAddon').mkdir()
@@ -676,6 +754,26 @@ class TestFolderUpdate:
         updates, added = folder.update(as_api(StubAPI()))
         assert (updates, added) == (0, 0)
 
+    def test_update_standalone_addon_in_subdir_stays_in_place(self, addon_root, folder, monkeypatch, tmp_path):
+        """parent is None -> path = addon.folder: a standalone addon installed in a non-default
+        subdirectory (not just directly under AddOns/) must be updated in place there, not moved."""
+        installed = make_installed(addon_root / 'subdir', 'MyAddon', Version='1.0')
+        upstream = make_addon_info(id_=1, title='MyAddon', version='2.0', directories=['MyAddon'])
+        installed.link(upstream)
+        folder._installed = {installed.folder: installed}
+
+        zip_bytes = _zip_bytes({
+            'MyAddon/MyAddon.txt': '## Title: MyAddon\n## APIVersion: 100035\n## Version: 2.0\n## Author: Test\n',
+            'MyAddon/Data.lua': 'new = 2\n',
+        })
+        _mock_download(monkeypatch, tmp_path, zip_bytes)
+
+        updates, added = folder.update(as_api(StubAPI()))
+
+        assert (updates, added) == (1, 0)
+        assert (addon_root / 'subdir' / 'MyAddon' / 'Data.lua').read_text() == 'new = 2\n'
+        assert not (addon_root / 'MyAddon').exists()  # must not end up freshly installed at top level
+
     def test_update_bundled_addon_installs_at_top_level_not_in_place(self, addon_root, folder, monkeypatch, tmp_path):
         make_installed(addon_root, 'Parent', Title='Parent')
         make_installed(addon_root / 'Parent', 'LibFoo', Title='LibFoo', IsLibrary='true', Version='1.0')
@@ -713,6 +811,140 @@ class TestFolderUpdate:
 
         updates, added = folder.update(as_api(StubAPI()))
         assert (updates, added) == (0, 0)
+
+    def test_update_sibling_of_flat_bundle_installs_like_standalone(self, addon_root, folder, monkeypatch, tmp_path):
+        """A flat-bundle sibling (.parent = the group's main entry) is treated exactly like an
+        ancestor-nested lib: if it can update, it's valid for it to trigger its own reinstall.
+        _inspect_bundle anchors extraction on the zip's own top-level name, not on whatever bare
+        dir name was asked for, so the fresh copy always lands back under the wrapper. Manually
+        sets .parent since _scan() doesn't populate it for siblings yet; main is deliberately
+        never added to folder._installed/linked, to isolate this to the sibling's own decision."""
+        main = make_installed(addon_root / 'Bundle', 'Bundle', Title='Bundle', Version='1.0')
+        sibling = make_installed(addon_root / 'Bundle', 'BundleExtra', Title='BundleExtra', Version='1.0')
+        sibling.parent = main
+        upstream = make_addon_info(id_=1, title='Bundle', version='2.0', directories=['Bundle'])
+        sibling.link(upstream)
+        folder._installed = {sibling.folder: sibling}
+
+        zip_bytes = _zip_bytes({
+            'Bundle/Bundle/Bundle.txt': '## Title: Bundle\n## APIVersion: 100035\n## Version: 2.0\n## Author: Test\n',
+            'Bundle/BundleExtra/BundleExtra.txt': ('## Title: BundleExtra\n## APIVersion: 100035\n'
+                                                   '## Version: 2.0\n## Author: Test\n'),
+        })
+        _mock_download(monkeypatch, tmp_path, zip_bytes)
+
+        updates, added = folder.update(as_api(StubAPI()))
+
+        assert updates >= 1  # _scan()'s fallback re-discovers the whole group from the one shared zip
+        assert (addon_root / 'Bundle' / 'BundleExtra' / 'BundleExtra.txt').exists()
+        assert not (addon_root / 'BundleExtra').exists()  # never lands directly at the addons root
+
+    def test_update_skips_superseded_sibling_of_flat_bundle(self, addon_root, folder, monkeypatch, tmp_path):
+        """A flat-bundle sibling already superseded (main is at a newer version) must not cause
+        any further update -- identical to the existing ancestor-nested 'superseded' case."""
+        main = make_installed(addon_root / 'Bundle', 'Bundle', Title='Bundle', Version='2.0')
+        sibling = make_installed(addon_root / 'Bundle', 'BundleExtra', Title='BundleExtra', Version='1.0')
+        sibling.parent = main
+        upstream = make_addon_info(id_=1, title='Bundle', version='2.0', directories=['Bundle'])
+        main.link(upstream)
+        sibling.link(upstream)
+        folder._installed = {main.folder: main, sibling.folder: sibling}
+
+        def boom(*a, **kw):
+            raise AssertionError('should not be called: sibling is superseded by main')
+        monkeypatch.setattr(install_mod.requests, 'head', boom)
+
+        updates, added = folder.update(as_api(StubAPI()))
+        assert updates == 0
+
+    def test_update_skips_sibling_not_matched_online(self, addon_root, folder, monkeypatch):
+        """A flat-bundle sibling whose name isn't independently listed never gets .infos set (a
+        regular re-scan can't resolve it via the API on its own) -- must not update at all."""
+        main = make_installed(addon_root / 'Bundle', 'Bundle', Title='Bundle', Version='1.0')
+        sibling = make_installed(addon_root / 'Bundle', 'BundleExtra', Title='BundleExtra', Version='1.0')
+        sibling.parent = main
+        folder._installed = {sibling.folder: sibling}  # sibling.infos stays None: never linked
+
+        def boom(*a, **kw):
+            raise AssertionError('should not be called: sibling has no infos to update from')
+        monkeypatch.setattr(install_mod.requests, 'head', boom)
+
+        updates, added = folder.update(as_api(StubAPI()))
+        assert updates == 0
+
+    def test_update_sibling_never_clashes_with_unrelated_standalone(self, addon_root, folder, monkeypatch, tmp_path):
+        """An unrelated, genuinely standalone addon that happens to share a sibling's bare dir
+        name must survive the sibling's update untouched -- _inspect_bundle always anchors on
+        the zip's own top-level name, so the sibling's reinstall can never erase or overwrite it."""
+        unrelated = make_installed(addon_root, 'BundleExtra', Title='Unrelated standalone addon')
+        (unrelated.folder / 'Data.lua').write_text('unrelated = 1\n')
+
+        main = make_installed(addon_root / 'Bundle', 'Bundle', Title='Bundle', Version='1.0')
+        sibling = make_installed(addon_root / 'Bundle', 'BundleExtra', Title='BundleExtra', Version='1.0')
+        sibling.parent = main
+        upstream = make_addon_info(id_=1, title='Bundle', version='2.0', directories=['Bundle'])
+        sibling.link(upstream)
+        folder._installed = {unrelated.folder: unrelated, sibling.folder: sibling}
+
+        zip_bytes = _zip_bytes({
+            'Bundle/Bundle/Bundle.txt': '## Title: Bundle\n## APIVersion: 100035\n## Version: 2.0\n## Author: Test\n',
+            'Bundle/BundleExtra/BundleExtra.txt': ('## Title: BundleExtra\n## APIVersion: 100035\n'
+                                                   '## Version: 2.0\n## Author: Test\n'),
+        })
+        _mock_download(monkeypatch, tmp_path, zip_bytes)
+
+        folder.update(as_api(StubAPI()))
+
+        assert (unrelated.folder / 'Data.lua').read_text() == 'unrelated = 1\n'
+
+    def test_update_main_sibling_of_flat_bundle_targets_wrapper_dir(self, addon_root, folder, monkeypatch, tmp_path):
+        """The main sibling's update must be anchored on the wrapper, not its own nested folder
+        -- passing addon.folder (today's parent-is-None behaviour) re-extracts one level too
+        deep and never touches the sibling's stale content."""
+        main = make_installed(addon_root / 'Bundle', 'Bundle', Title='Bundle', Version='1.0')
+        sibling = make_installed(addon_root / 'Bundle', 'BundleExtra', Title='BundleExtra', Version='2.0')
+        folder._installed = {main.folder: main, sibling.folder: sibling}
+        upstream = make_addon_info(id_=1, title='Bundle', version='2.0', directories=['Bundle'])
+        main.link(upstream)
+        sibling.link(upstream)  # already at 2.0 -> can_update is False, isolates this test to main's own path
+        sibling.parent = main
+
+        zip_bytes = _zip_bytes({
+            'Bundle/Bundle/Bundle.txt': '## Title: Bundle\n## APIVersion: 100035\n## Version: 2.0\n## Author: Test\n',
+            'Bundle/BundleExtra/BundleExtra.txt': ('## Title: BundleExtra\n## APIVersion: 100035\n'
+                                                   '## Version: 2.0\n## Author: Test\n'),
+        })
+        _mock_download(monkeypatch, tmp_path, zip_bytes)
+
+        folder.update(as_api(StubAPI()))
+
+        assert (addon_root / 'Bundle' / 'Bundle' / 'Bundle.txt').exists()
+        assert (addon_root / 'Bundle' / 'BundleExtra' / 'BundleExtra.txt').exists()
+        assert not (addon_root / 'Bundle' / 'Bundle' / 'Bundle' / 'Bundle.txt').exists()
+
+    def test_update_main_sibling_targets_wrapper_with_deep_nesting(self, addon_root, folder, monkeypatch, tmp_path):
+        """Same as above, but the main's manifest sits 2 levels below the wrapper (a pass-
+        through 'src' dir) -- proves the fix can't just be 'go up one level from addon.folder',
+        since that would land at the 'src' dir instead of the true wrapper."""
+        main = make_installed(addon_root / 'Bundle' / 'src', 'Bundle', Title='Bundle', Version='1.0')
+        sibling = make_installed(addon_root / 'Bundle', 'BundleExtra', Title='BundleExtra', Version='2.0')
+        folder._installed = {main.folder: main, sibling.folder: sibling}
+        upstream = make_addon_info(id_=1, title='Bundle', version='2.0', directories=['Bundle'])
+        main.link(upstream)
+        sibling.link(upstream)  # already at 2.0 -> can_update is False, isolates this test to main's own path
+        sibling.parent = main
+
+        zip_bytes = _zip_bytes({
+            'Bundle/src/Bundle/Bundle.txt': '## Title: Bundle\n## APIVersion: 100035\n## Version: 2.0\n## Author: Test\n',
+            'Bundle/BundleExtra/BundleExtra.txt': ('## Title: BundleExtra\n## APIVersion: 100035\n'
+                                                   '## Version: 2.0\n## Author: Test\n'),
+        })
+        _mock_download(monkeypatch, tmp_path, zip_bytes)
+
+        folder.update(as_api(StubAPI()))
+
+        assert (addon_root / 'Bundle' / 'src' / 'Bundle' / 'Bundle.txt').exists()
+        assert (addon_root / 'Bundle' / 'BundleExtra' / 'BundleExtra.txt').exists()
 
 
 class TestFolderInstallDeps:
