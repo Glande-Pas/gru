@@ -137,9 +137,9 @@ class TermDisplay:
         tags = []
         if addon.locked:
             tags.append(click.style('version locked', fg='cyan'))
-        if addon.parent is not None:
+        if addon.parent is not None and addon.dir != addon.parent.dir:
             tags.append(f'bundled inside {addon.parent.title}')
-        if len(infos.folders) > 1:
+        if len(addon.comparable_copies) > 1:
             rank = addon.version_rank
             fg = {'active': 'green', 'superseded': 'yellow'}.get(rank)
             tags.append(click.style(f'{rank} copy', fg=fg) if rank else 'copy')

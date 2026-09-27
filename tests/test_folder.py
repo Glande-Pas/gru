@@ -579,6 +579,24 @@ class TestScan:
         by_dir = {a.dir: a for a in folder.installed}
         assert by_dir['RegionAD'].id == 3034
         assert by_dir['RegionDC'].id == 3034
+        assert by_dir['RegionAD'].parent is by_dir['RegionDC'].parent
+        assert by_dir['RegionAD'].parent.dir == 'HarvestMapData'
+        assert by_dir['RegionAD'].parent.title == 'HarvestMapData'
+
+    def test_scan_sets_parent_on_members_even_when_bundle_stays_unmatched(self, addon_root, folder):
+        """The structural fact (these are bundled together) is independent of whether an online
+        listing was ever found -- .parent must still be set so TermDisplay can show 'bundled
+        inside <dir>' rather than leaving the group looking like unrelated top-level addons."""
+        make_installed(addon_root / 'Bundle', 'BundleExtra1')
+        make_installed(addon_root / 'Bundle', 'BundleExtra2')
+        api = StubAPI()  # nothing registered -- lookup fails all the way to the root
+
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')
+            folder.scan(api)
+        by_dir = {a.dir: a for a in folder.installed}
+        assert by_dir['BundleExtra1'].parent is by_dir['BundleExtra2'].parent
+        assert by_dir['BundleExtra1'].parent.dir == 'Bundle'
 
     def test_scan_links_bundle_members_via_immediate_wrapper(self, addon_root, folder):
         """No pass-through dir needed: the immediate containing dir's own name already matches

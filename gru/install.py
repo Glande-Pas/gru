@@ -240,8 +240,8 @@ class Folder:
             candidate_dir = addon.folder.parent
             if candidate_dir == self.root or candidate_dir in seen:
                 continue
-            members = [a for a in unmatched if a.folder.is_relative_to(candidate_dir)]
-            if len(members) < 2:
+            unresolved = [a for a in unmatched if a.folder.is_relative_to(candidate_dir)]
+            if len(unresolved) < 2:
                 continue
             seen.add(candidate_dir)
 
@@ -249,17 +249,23 @@ class Folder:
                 try:
                     infos = api.dir(candidate_dir.name, link=links.get(candidate_dir.name))
                 except AmbiguousDirectory as exc:
+                    # Include every co-located addon, not just the unresolved ones -- the
+                    # directly-resolving main sibling (its own dir happens to already match
+                    # online) still belongs in the same group for display/version-rank purposes.
+                    members = [a for a in results.values() if a.folder.is_relative_to(candidate_dir)]
                     yield AddonBundle(candidate_dir.name, members), None, exc.candidates
                     break
                 except FileNotFoundError:
                     if candidate_dir.parent == self.root:
+                        members = [a for a in results.values() if a.folder.is_relative_to(candidate_dir)]
                         yield AddonBundle(candidate_dir.name, members), None, []
                         break
                     candidate_dir = candidate_dir.parent
                     seen.add(candidate_dir)
-                    members = [a for a in unmatched if a.folder.is_relative_to(candidate_dir)]
+                    unresolved = [a for a in unmatched if a.folder.is_relative_to(candidate_dir)]
                     continue
                 else:
+                    members = [a for a in results.values() if a.folder.is_relative_to(candidate_dir)]
                     yield AddonBundle(candidate_dir.name, members), infos, []
                     break
 

@@ -152,7 +152,7 @@ class InstalledAddon(Dependency, DisplayAddonProtocol):
     is_local = True
     is_lib: bool
 
-    def __init__(self, path: pathlib.Path, parent: InstalledAddon | None = None) -> None:
+    def __init__(self, path: pathlib.Path, parent: InstalledAddon | AddonBundle | None = None) -> None:
         self.folder = path
         super().__init__(path.name, 0)  # set dir
         self.id = None
@@ -252,12 +252,25 @@ class InstalledAddon(Dependency, DisplayAddonProtocol):
         return datetime.datetime.fromtimestamp(max(stat.st_mtime, stat.st_ctime) + 2) <= self.infos.metadata['date']
 
     @property
+    def comparable_copies(self) -> list[InstalledAddon]:
+        """ Folders sharing `infos` that are genuinely comparable copies of this one -- either
+        the same dir, or not a differently-named sibling in the same bundle. A bundle's siblings
+        all share one `infos` despite being different addons (e.g. Arkadius Trade Tools'
+        SalesData01..16), so a same-bundle folder only counts if it's also the same dir --
+        whereas one addon distributed under several accepted directory names (no bundling
+        involved) still compares across all of them, same as before bundles existed. """
+        if self.infos is None:
+            return []
+        return [other for other in self.infos.folders.values()
+               if other.dir == self.dir or not (self.parent is not None and other.parent is self.parent)]
+
+    @property
     def version_rank(self) -> str:
-        """ 'active'/'superseded' by version among folders sharing `infos`, or '' if unknown
-        (no other folder, or a version ESO can't compare). ESO always loads the highest one. """
+        """ 'active'/'superseded' by version among comparable_copies, or '' if unknown (no other
+        folder, or a version ESO can't compare). ESO always loads the highest one. """
         if self.infos is None:
             return ''
-        others = list(self.infos.folders.values())
+        others = self.comparable_copies
         versions = [v for other in others if (v := _parse_version(other.version)) is not None]
         if len(versions) != len(others):
             return ''
@@ -288,9 +301,11 @@ class AddonBundle(DisplayAddonProtocol):
         self.dir = dir_
         self.members = members
         self.infos: AddonInfo | None = None
+        for member in members:
+            member.parent = self
         main = members[0]
         self.id = main.id
-        self.title = main.title
+        self.title = dir_
         self.author = main.author
         self.version = main.version
         self.api = main.api

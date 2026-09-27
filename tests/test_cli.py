@@ -916,6 +916,34 @@ class TestParentSuffixWording:
         output = self._list_output(monkeypatch, addons_root, config_file, LinkableApi())
         assert ', bundled inside ParentAddon' in output
 
+    def test_flat_bundle_sibling_shows_bundled_inside_without_spurious_copy_tag(self, monkeypatch, tmp_path):
+        """Real bug: ArkadiusTradeToolsSalesData16 is the only folder with that dir -- it must
+        not show 'active copy' just because its differently-named siblings share its infos via
+        the same bundle (AddonBundle.link() links every member to one shared AddonInfo). Needs
+        >=2 unmatched siblings alongside the directly-resolving 'Bundle' one, matching the real
+        shape: most of the group can't resolve individually, so find_bundle_matches() groups
+        them by their shared containing dir."""
+        addons_root = tmp_path / 'AddOns'
+        addons_root.mkdir()
+        config_file = tmp_path / 'gru.ini'
+        config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
+
+        make_installed(addons_root / 'Bundle', 'Bundle', Title='Bundle')
+        make_installed(addons_root / 'Bundle', 'BundleExtra1', Title='BundleExtra1')
+        make_installed(addons_root / 'Bundle', 'BundleExtra2', Title='BundleExtra2')
+        upstream = make_addon_info(id_=1, title='Bundle', directories=['Bundle'])
+
+        class LinkableApi(StubAPI):
+            def dir(self, name, link=None):
+                if name == 'Bundle':
+                    return upstream
+                raise FileNotFoundError(name)
+
+        output = self._list_output(monkeypatch, addons_root, config_file, LinkableApi())
+        assert output.count(', bundled inside Bundle') == 2  # BundleExtra1 and BundleExtra2
+        assert 'copy' not in output
+        assert 'Bundle [up to date]' in output  # the main entry: no tags at all, not even bundled-inside-itself
+
     def test_bundled_inside_and_copy_tag_combine_for_duplicate_nested_install(self, monkeypatch, tmp_path):
         """Real-world shape: a library bundled inside another addon's folder, also installed
         standalone at top level. Both folders share one online AddonInfo (-> a copy tag on
