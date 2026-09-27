@@ -3,6 +3,7 @@ and (via faked requests.head/get + user_cache) update()/install_deps()."""
 
 import inspect
 import io
+import pathlib
 import warnings
 import zipfile
 
@@ -763,3 +764,13 @@ class TestFolderInstallDeps:
 
         assert list(installed_addons) == []
         assert (addon_root / 'BadAddon' / 'Data.lua').exists()
+
+    def test_unzip_normalizes_windows_style_path_separators(self, folder, tmp_path):
+        """zipfile entries are always '/'-separated; looking one up by a native (WindowsPath)
+        str() would send zf.open() a '\\'-joined name and raise KeyError on Windows."""
+        zip_bytes = _zip_bytes({'sub/file.txt': 'hello\n'})
+        dest = tmp_path / 'dest'
+        files = [(pathlib.PureWindowsPath('sub/file.txt'), False, 6)]
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            folder._unzip(zf, files, dest, install_mod.SilentProgress(6, 'test'))
+        assert (dest / 'sub' / 'file.txt').read_text() == 'hello\n'

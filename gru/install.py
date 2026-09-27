@@ -430,7 +430,7 @@ class Folder:
                     continue
 
                 file_dest.parent.mkdir(exist_ok=True, parents=True)
-                with zf.open(str(file), 'r') as zfreader, open(file_dest, 'wb') as out:
+                with zf.open(file.as_posix(), 'r') as zfreader, open(file_dest, 'wb') as out:
                     shutil.copyfileobj(zfreader, out)
                 prog.update(size)
 
