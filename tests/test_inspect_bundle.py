@@ -218,16 +218,32 @@ class TestNestedFlatBundle:
         names = {str(fn) for fn, *_ in files}
         assert 'Bundle/LICENSE' in names
 
-    def test_single_nested_addon_unaffected(self, folder, stub_api, addon_root):
-        """Only one addon nested one level deep -- not the multi-addon flat-bundle case,
-        falls through to the existing 'use top_dir as install dir' handling unchanged."""
-        zf = make_zip({'Bundle/Bundle/Bundle.txt': MANIFEST.format(title='Bundle')})
+    def test_single_nested_addon_wrapper_dropped(self, folder, stub_api, addon_root):
+        """Only one addon nested in a wrapper dir (e.g. Srendarr's Srendarr/Srendarr/Srendarr.txt): install the
+        addon dir itself, so an update doesn't move an existing Bundle/Bundle.txt install to Bundle/Bundle/."""
+        zf = make_zip({
+            'Bundle/README.md': 'readme',
+            'Bundle/Bundle/Bundle.txt': MANIFEST.format(title='Bundle'),
+            'Bundle/Bundle/Sub/Code.lua': 'x = 1',
+        })
         path = addon_root / 'Bundle'
-        dest, erase, files = folder._inspect_bundle(path, zf, stub_api)
+        with pytest.warns(UserWarning, match='Addon nested in wrapper dir Bundle/, installing Bundle/'):
+            dest, erase, files = folder._inspect_bundle(path, zf, stub_api)
         assert dest == addon_root
         assert erase == [path]
-        names = {str(fn) for fn, *_ in files}
-        assert names == {'Bundle/Bundle/Bundle.txt'}
+        assert {(str(fn), str(src)) for fn, _, _, src in files} == {
+            ('Bundle/Bundle.txt', 'Bundle/Bundle/Bundle.txt'),
+            ('Bundle/Sub/Code.lua', 'Bundle/Bundle/Sub/Code.lua'),
+        }
+
+    def test_single_nested_addon_under_differently_named_wrapper(self, folder, stub_api, addon_root):
+        zf = make_zip({'Bundle-1.2/src/Bundle/Bundle.txt': MANIFEST.format(title='Bundle')})
+        path = addon_root / 'Bundle'
+        with pytest.warns(UserWarning, match='Addon nested in wrapper dir Bundle-1.2/src/, installing Bundle/'):
+            dest, erase, files = folder._inspect_bundle(path, zf, stub_api)
+        assert dest == addon_root
+        assert erase == [path]
+        assert [str(fn) for fn, *_ in files] == ['Bundle/Bundle.txt']
 
     def test_mixed_depth_nesting_detected_by_manifest_location(self, folder, addon_root):
         """One addon's manifest sits 2 levels below the wrapper (through a pass-through 'src'

@@ -1155,6 +1155,33 @@ class TestUnpackTracksAllInstalled:
         assert {a.dir for a in folder.installed} == {'Foo', 'Other'}
 
 
+class TestUnpackWrappedAddon:
+    def test_update_of_wrapped_addon_stays_in_place(self, addon_root, folder, monkeypatch, tmp_path):
+        """Srendarr's zip ships Srendarr/Srendarr/Srendarr.txt: updating an install at Srendarr/Srendarr.txt
+        must replace it in place, not move it to Srendarr/Srendarr/."""
+        write_manifest(addon_root, 'Srendarr', Version='1.0')
+        upstream = make_addon_info(id_=655, title='Srendarr', version='2.0', directories=['Srendarr'])
+        api = as_api(StubAPI({'Srendarr': upstream}))
+        folder.scan(api)
+        before = folder.snapshot()
+
+        _mock_download(monkeypatch, tmp_path, _zip_bytes({
+            'Srendarr/': '',
+            'Srendarr/Srendarr/': '',
+            'Srendarr/Srendarr/Srendarr.txt': ('## Title: Srendarr\n## APIVersion: 100035\n## Version: 2.0\n'
+                                               '## Author: Test\n'),
+            'Srendarr/Srendarr/Icons/IconBG.dds': 'dds',
+        }))
+        with pytest.warns(UserWarning, match='Addon nested in wrapper dir'):
+            installed = folder.unpack(upstream, api, path=addon_root / 'Srendarr')
+
+        assert [a.folder for a in installed] == [addon_root / 'Srendarr']
+        assert sorted(p.relative_to(addon_root).as_posix() for p in addon_root.rglob('*') if p.is_file()) == [
+            'Srendarr/Icons/IconBG.dds', 'Srendarr/Srendarr.txt']
+        assert _version_changes(before, folder.snapshot()) == {('Srendarr', '1.0', '2.0')}
+        assert next(folder.dir('Srendarr')).infos is upstream
+
+
 class TestFolderInstallDeps:
     def test_install_deps_downloads_missing_dependency(self, addon_root, folder, monkeypatch, tmp_path):
         installed = make_installed(addon_root, 'MyAddon', DependsOn='LibFoo>=1')

@@ -32,7 +32,7 @@ from .api import _fuzz, _filter, AmbiguousDirectory
 from .patch import addon_patch_file, PatchError
 
 from typing import Protocol
-from collections.abc import Iterator, Iterable, Callable
+from collections.abc import Iterator, Iterable, Callable, Sequence
 
 if typing.TYPE_CHECKING:
     import gru.addon
@@ -56,6 +56,8 @@ ProgressFactory = Callable[[int, str], ProgressProtocol]
 #: so a lib pulled in by remove(deps=True)/remove_unused_deps()/remove_duplicates() gets the same
 #: policy as the addon(s) the caller removed directly.
 RemoveVarsPolicy = typing.Union[bool, Callable[[InstalledAddon], bool]]
+# A file to extract: (path relative to the destination, is_dir, size), plus its name in the zip when that differs
+ZipEntry = typing.Union[tuple[pathlib.PurePath, bool, int], tuple[pathlib.PurePath, bool, int, pathlib.PurePath]]
 
 
 class SilentProgress:
@@ -329,7 +331,7 @@ class Folder:
         return f'Folder({self.root})'
 
     def _inspect_bundle(self, path: pathlib.Path, zf: zipfile.ZipFile, api: gru.api.API
-                        ) -> tuple[pathlib.Path, list[pathlib.Path], list[tuple[pathlib.Path, bool, int]]]:
+                        ) -> tuple[pathlib.Path, list[pathlib.Path], Sequence[ZipEntry]]:
         """ This is the annoying bit where we need to handle non-standard zip bundles
 
         General logic:
@@ -341,7 +343,8 @@ class Folder:
         Returns a tuple of:
         - a destination directory for zip contents,
         - a lits of directories to remove
-        - a list of file infos from the zip, such that their extracted path ends up in addon.root
+        - a list of file infos from the zip, such that their extracted path ends up in addon.root: (path relative to
+          the destination, is_dir, size), plus the entry's name in the zip when it differs from that path
         """
         # NB: always ignore macos garbage
         files = [(pathlib.Path(info.filename), info.is_dir(), info.file_size)
@@ -420,6 +423,16 @@ class Folder:
                 files = [(fn, is_dir, sz) for fn, is_dir, sz in files
                          if not any(fn == d or fn.is_relative_to(d) for d in pruned_dirs)]
                 return path.parent, [path], files
+
+            # A single addon nested in a wrapper dir: the game only finds addons whose manifest sits
+            # directly in their own dir, and extracting the wrapper would move an existing install one
+            # level down. Install the addon dir itself, dropping the wrapper and anything else in it.
+            if len(nested_dirs) == 1:
+                inner = next(iter(nested_dirs))
+                warnings.warn(f'Addon nested in wrapper dir {inner.parent.as_posix()}/, installing {inner.name}/')
+                path = path.parent / inner.name
+                return path.parent, [path], [(fn.relative_to(inner.parent), is_dir, sz, fn)
+                                             for fn, is_dir, sz in files if fn.is_relative_to(inner)]
 
             # In 1-dir case does not really matter
             if top_dir != path.name:
@@ -511,12 +524,12 @@ class Folder:
         freshness = datetime.datetime.fromtimestamp(stat.st_mtime, datetime.timezone.utc).replace(tzinfo=None)
         return size == stat.st_size and changed < freshness
 
-    def _unzip(self, zf: zipfile.ZipFile, files: list[tuple[pathlib.Path, bool, int]], dest: pathlib.Path,
+    def _unzip(self, zf: zipfile.ZipFile, files: Sequence[ZipEntry], dest: pathlib.Path,
                progress: ProgressProtocol) -> None:
         dest = dest.resolve()
         dest.mkdir(parents=True, exist_ok=True)
         with progress as prog:
-            for file, is_dir, size in files:
+            for file, is_dir, size, *source in files:
                 file_dest = (dest / file).resolve()
                 if not file_dest.is_relative_to(dest):
                     continue
@@ -527,7 +540,8 @@ class Folder:
 
                 file_dest.parent.mkdir(exist_ok=True, parents=True)
                 try:
-                    with zf.open(file.as_posix(), 'r') as zfreader, open(file_dest, 'wb') as out:
+                    with zf.open((source[0] if source else file).as_posix(), 'r') as zfreader, \
+                            open(file_dest, 'wb') as out:
                         shutil.copyfileobj(zfreader, out)
                 except KeyError as exc:
                     # Shouldn't happen, but must not crash whatever command is unzipping.
@@ -574,7 +588,7 @@ class Folder:
                     continue
                 shutil.rmtree(erased)
 
-            extract_size = sum(sz for fn, dr, sz in extract)
+            extract_size = sum(sz for fn, dr, sz, *_ in extract)
             self._unzip(zf, extract, dest, progress(extract_size, f'Extracting  {fname}...'))
 
         # Update our list of installed addons, rescanning newly extracted paths to catch nested addons
