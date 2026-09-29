@@ -86,7 +86,7 @@ class StubAddon:
 
 class StubAPI:
     """Minimal stand-in for API — only implements dir() and search()."""
-    def __init__(self, addons: dict[str, StubAddon] | None = None):
+    def __init__(self, addons: dict[str, StubAddon | AddonInfo] | None = None):
         self._addons = addons or {}
 
     def search(self, term: str) -> list:
