@@ -133,18 +133,31 @@ def find_ambiguous(local: Folder, api: API) -> list[tuple[InstalledAddon, list[A
 _T = TypeVar('_T')
 
 
-def _normalize_remote_entries(entries: Iterable[tuple[str, _T]], dir_: str) -> dict[str, _T]:
-    """ (raw zip path, value) pairs -> {path relative to dir_: value}, matching what
-    InstalledAddon.files yields. Drops entries outside `dir_` (sibling bundled addons),
-    directory markers, and GARBAGE/dotfiles. """
+def _manifest_anchor(paths: Iterable[tuple[str, ...]], manifest: str) -> tuple[str, ...]:
+    """ Lowercased zip path of the directory holding `manifest`, e.g. 'Srendarr/Srendarr.txt': normally at the
+    zip root, failing that the shallowest one below wrapper dirs -- e.g. `Srendarr/Srendarr/` in a zip shipping
+    `Srendarr/Srendarr/Srendarr.txt`, which _inspect_bundle() installs without its wrapper dir. """
+    target = tuple(part.lower() for part in pathlib.PurePosixPath(manifest).parts)
+    anchors = [parts[:-1] for parts in (tuple(part.lower() for part in path) for path in paths)
+               if parts[-len(target):] == target]
+    if not anchors or target[:-1] in anchors:
+        return target[:-1]
+    return min(anchors, key=len)
+
+
+def _normalize_remote_entries(entries: Iterable[tuple[str, _T]], manifest: str) -> dict[str, _T]:
+    """ (raw zip path, value) pairs -> {path relative to the addon dir: value}, matching what
+    InstalledAddon.files yields. The addon dir is the one holding `manifest`, the addon's dir and manifest file
+    name (e.g. 'Srendarr/Srendarr.txt'), see _manifest_anchor(). Drops entries outside it (sibling bundled
+    addons, wrapper dirs), directory markers, and GARBAGE/dotfiles. """
+    files = [(pathlib.PurePosixPath(raw_path).parts, value)
+             for raw_path, value in entries if not raw_path.endswith('/')]
+    anchor = _manifest_anchor((parts for parts, _ in files), manifest)
     result: dict[str, _T] = {}
-    for raw_path, value in entries:
-        if raw_path.endswith('/'):
+    for parts, value in files:
+        if tuple(part.lower() for part in parts[:len(anchor)]) != anchor:
             continue
-        parts = pathlib.PurePosixPath(raw_path).parts
-        if not parts or parts[0].lower() != dir_.lower():
-            continue
-        rel = parts[1:]
+        rel = parts[len(anchor):]
         if not rel or any(part.startswith('.') or part in GARBAGE for part in rel):
             continue
         result['/'.join(rel).lower()] = value
@@ -239,7 +252,8 @@ def _crc_match(installed: InstalledAddon, candidate: AddonInfo, url_template: st
         logger.debug(' crc check: could not fetch %r (%s) -- skipping', url, exc)
         return None
 
-    remote_files = _normalize_remote_entries(((e.filename, e.crc32) for e in remote_entries), installed.dir)
+    remote_files = _normalize_remote_entries(((e.filename, e.crc32) for e in remote_entries),
+                                             f'{installed.dir}/{installed.manifest.name}')
     local_files = {path.as_posix().lower(): file_crc32(installed.folder / path) for path in installed.files}
 
     matched = local_files == remote_files

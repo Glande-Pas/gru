@@ -452,9 +452,9 @@ class TestNormalizeRemoteEntries:
         'other/util.lua'."""
         local_files = {'brhelper.txt', 'sub/util.lua'}
         wrong_dir_files = app_mod._normalize_remote_entries(
-            ((f, True) for f in ['BRHelper/BRHelper.txt', 'BRHelper/other/util.lua']), 'BRHelper')
+            ((f, True) for f in ['BRHelper/BRHelper.txt', 'BRHelper/other/util.lua']), 'BRHelper/BRHelper.txt')
         right_dir_files = app_mod._normalize_remote_entries(
-            ((f, True) for f in ['BRHelper/BRHelper.txt', 'BRHelper/sub/util.lua']), 'BRHelper')
+            ((f, True) for f in ['BRHelper/BRHelper.txt', 'BRHelper/sub/util.lua']), 'BRHelper/BRHelper.txt')
 
         assert set(wrong_dir_files) != local_files
         assert set(right_dir_files) == local_files
@@ -464,7 +464,7 @@ class TestNormalizeRemoteEntries:
         _inspect_bundle()) -- it must not count against an otherwise-exact content match."""
         files = app_mod._normalize_remote_entries(
             ((f, True) for f in ['BRHelper/BRHelper.txt', 'BRHelper/__MACOSX/BRHelper.txt', 'BRHelper/.DS_Store']),
-            'BRHelper')
+            'BRHelper/BRHelper.txt')
 
         assert set(files) == {'brhelper.txt'}
 
@@ -475,7 +475,7 @@ class TestNormalizeRemoteEntries:
         directories either, so these must not count against an otherwise-exact match."""
         files = app_mod._normalize_remote_entries(
             ((f, True) for f in ['BRHelper/', 'BRHelper/BRHelper.txt', 'BRHelper/libs/', 'BRHelper/libs/Lib.lua']),
-            'BRHelper')
+            'BRHelper/BRHelper.txt')
 
         assert set(files) == {'brhelper.txt', 'libs/lib.lua'}
 
@@ -484,21 +484,78 @@ class TestNormalizeRemoteEntries:
         addon must not be compared against this install."""
         files = app_mod._normalize_remote_entries(
             ((f, True) for f in ['BRHelper/BRHelper.txt', 'OtherLib/OtherLib.txt', 'OtherLib/Data.lua']),
-            'BRHelper')
+            'BRHelper/BRHelper.txt')
 
         assert set(files) == {'brhelper.txt'}
 
     def test_preserves_the_value_alongside_each_normalized_path(self):
         """_crc_match() relies on values (CRC32s) surviving normalization unchanged."""
         files = app_mod._normalize_remote_entries(
-            [('BRHelper/BRHelper.txt', 12345), ('BRHelper/Data.lua', 67890)], 'BRHelper')
+            [('BRHelper/BRHelper.txt', 12345), ('BRHelper/Data.lua', 67890)], 'BRHelper/BRHelper.txt')
 
         assert files == {'brhelper.txt': 12345, 'data.lua': 67890}
+
+    def test_addon_nested_in_wrapper_dir_is_anchored_at_its_manifest(self):
+        """A zip shipping Srendarr/Srendarr/Srendarr.txt is installed without its wrapper dir (see
+        _inspect_bundle()), so its files must compare relative to the manifest's dir, not the zip root."""
+        files = app_mod._normalize_remote_entries(
+            ((f, True) for f in ['Srendarr/', 'Srendarr/Srendarr/', 'Srendarr/Srendarr/Srendarr.txt',
+                                 'Srendarr/Srendarr/Icons/IconBG.dds', 'Srendarr/README.md']),
+            'Srendarr/Srendarr.txt')
+
+        assert set(files) == {'srendarr.txt', 'icons/iconbg.dds'}
+
+    def test_manifest_at_zip_root_dir_wins_over_a_deeper_same_named_one(self):
+        files = app_mod._normalize_remote_entries(
+            ((f, True) for f in ['Foo/Foo.txt', 'Foo/Old/Foo/Foo.txt']), 'Foo/Foo.txt')
+
+        assert set(files) == {'foo.txt', 'old/foo/foo.txt'}
+
+    def test_shallowest_nested_manifest_is_used(self):
+        files = app_mod._normalize_remote_entries(
+            ((f, True) for f in ['Wrap/src/Foo/Foo.addon', 'Wrap/src/Foo/Foo.lua', 'Wrap/src/Foo/x/Foo/Foo.addon']),
+            'Foo/Foo.addon')
+
+        assert set(files) == {'foo.addon', 'foo.lua', 'x/foo/foo.addon'}
+
+    def test_only_the_installed_manifest_name_anchors(self):
+        """The installed addon's own manifest file locates it: a same-named dir with a manifest of another
+        extension, or a manifest not directly in a same-named dir, is not it."""
+        entries = ['Wrap/Foo/Foo.txt', 'Wrap/Foo/Data.lua', 'Other/Foo.addon']
+        files = app_mod._normalize_remote_entries(((f, True) for f in entries), 'Foo/Foo.addon')
+
+        assert files == {}
 
 
 class TestFindExactMatchWithCrcVerification:
     def _installed(self, addon_root, dir_, **fields):
         return make_installed(addon_root, dir_, **fields)
+
+    def test_addon_nested_in_wrapper_dir_in_the_zip_crc_matches(self, addon_root, monkeypatch):
+        """Srendarr ships Srendarr/Srendarr/..., installed as AddOns/Srendarr/...: identical content must match."""
+        installed = self._installed(addon_root, 'Srendarr', Author='Phinix', Version='2.5')
+        (addon_root / 'Srendarr' / 'Core.lua').write_bytes(b'-- core')
+        candidate = make_addon_info(id_=655, title='Srendarr', author='Phinix', version='2.5')
+        manifest_bytes = (addon_root / 'Srendarr' / 'Srendarr.txt').read_bytes()
+        mock_remote_zip(monkeypatch, {'Srendarr/Srendarr/Srendarr.txt': manifest_bytes,
+                                      'Srendarr/Srendarr/Core.lua': b'-- core'})
+        folder = make_folder(addon_root)
+
+        result = app_mod.find_exact_match(installed, [candidate], make_api(), url_template=folder.url_template)
+
+        assert result is candidate
+
+    def test_addon_installed_with_its_wrapper_dir_crc_matches(self, addon_root, monkeypatch):
+        """Same zip, extracted as-is by older versions to AddOns/Srendarr/Srendarr/: still the same content."""
+        installed = self._installed(addon_root / 'Srendarr', 'Srendarr', Author='Phinix', Version='2.5')
+        candidate = make_addon_info(id_=655, title='Srendarr', author='Phinix', version='2.5')
+        manifest_bytes = (installed.folder / 'Srendarr.txt').read_bytes()
+        mock_remote_zip(monkeypatch, {'Srendarr/Srendarr/Srendarr.txt': manifest_bytes})
+        folder = make_folder(addon_root)
+
+        result = app_mod.find_exact_match(installed, [candidate], make_api(), url_template=folder.url_template)
+
+        assert result is candidate
 
     def test_metadata_pre_filter_skips_implausible_candidates_before_crc_check(self, addon_root, monkeypatch):
         """A candidate scoring below META_SCORE_THRESHOLD never gets a CRC check (a real network
