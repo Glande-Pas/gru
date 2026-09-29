@@ -574,17 +574,41 @@ class Folder:
             extract_size = sum(sz for fn, dr, sz in extract)
             self._unzip(zf, extract, dest, progress(extract_size, f'Extracting  {fname}...'))
 
-        # Update our list of installed addons
-        self._installed = {path: inst for path, inst in self._installed.items()
-                           if not any(path.is_relative_to(erased) for erased in erase_dirs)}
-        try:
-            installed_addons = {install_folder: InstalledAddon(install_folder)}  # TODO: nesting?
-        except (FileNotFoundError, AssertionError):
-            # Missing or malformed manifest -- defer to _scan(), which warns-and-skips instead of raising.
-            installed_addons = self._scan(install_folder, api)
+        # Update our list of installed addons, rescanning newly extracted paths to catch nested addons
+        resolved_root = self.root.resolve()
+        touched = {self.root / d.resolve().relative_to(resolved_root)
+                   for d in (*erase_dirs, *(dest / fn.parts[0] for fn, *_ in extract))
+                   if d.resolve().is_relative_to(resolved_root)}
+        touched = {d for d in touched if not any(d != o and d.is_relative_to(o) for o in touched)}
 
-        for inst in installed_addons.values():
-            inst.link(addon)
+        replaced = [inst for key, inst in self._installed.items() if any(key.is_relative_to(d) for d in touched)]
+        self._installed = {key: inst for key, inst in self._installed.items()
+                           if not any(key.is_relative_to(d) for d in touched)}
+        links = {inst.dir: inst.infos.metadata['link'] for inst in replaced
+                 if inst.infos is not None and inst.infos.metadata.get('link')}
+        locked = {inst.dir for inst in replaced if inst.locked}
+        for inst in replaced:
+            if inst.infos is not None and inst.infos.folders.get(inst.folder) is inst:
+                inst.infos.deregister(inst)
+
+        installed_addons: dict[pathlib.Path, gru.addon.InstalledAddon] = {}
+        for touched_dir in sorted(touched):
+            if touched_dir.is_dir():
+                # _scan() may also return the existing addon containing touched_dir, which was not reinstalled
+                installed_addons.update((key, inst) for key, inst in self._scan(touched_dir, api, links, locked).items()
+                                        if key.is_relative_to(touched_dir))
+
+        # The addon at install_folder is the one being installed. Without a manifest there (bundle or wrapper dir),
+        # fall back to linking whatever the scan couldn't match online under it.
+        if (main := installed_addons.get(install_folder)) is not None:
+            if main.infos is not None and main.infos is not addon:
+                main.infos.deregister(main)
+            main.link(addon)
+        else:
+            for key, inst in installed_addons.items():
+                if key.is_relative_to(install_folder) and inst.infos is None:
+                    inst.link(addon)
+
         self._installed.update(installed_addons)
         return installed_addons.values()
 

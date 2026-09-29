@@ -1068,6 +1068,92 @@ class TestUnmodifiedAddon:
             assert ref_addon.dir == 'MyAddon'
 
 
+def _version_changes(before, after) -> set[tuple[str, str, str]]:
+    """(dir, old version, new version) per folder that changed between two Folder.snapshot()s, as log_changes()
+    would report them -- '' standing for not installed."""
+    return {((after.get(k) or before[k])[0], before.get(k, ('', ''))[1], after.get(k, ('', ''))[1])
+            for k in before.keys() | after.keys() if before.get(k, ('', ''))[1] != after.get(k, ('', ''))[1]}
+
+
+class TestUnpackTracksAllInstalled:
+    """unpack() must leave Folder.installed matching what is on disk after extraction -- every addon it wrote,
+    not only the one at install_folder -- so snapshot()-based change logs don't report reinstalled addons as
+    removed or moved."""
+
+    def _manifest(self, title, version):
+        return f'## Title: {title}\n## APIVersion: 100035\n## Version: {version}\n## Author: Test\n'
+
+    def test_nested_library_is_updated_not_removed(self, addon_root, folder, monkeypatch, tmp_path):
+        write_manifest(addon_root, 'Foo', Version='1.0')
+        write_manifest(addon_root / 'Foo', 'LibX', Version='1.0', IsLibrary='true')
+        upstream = make_addon_info(id_=1, title='Foo', version='2.0', directories=['Foo'])
+        api = as_api(StubAPI({'Foo': upstream}))
+        folder.scan(api)
+        before = folder.snapshot()
+
+        _mock_download(monkeypatch, tmp_path, _zip_bytes({
+            'Foo/Foo.txt': self._manifest('Foo', '2.0'),
+            'Foo/LibX/LibX.txt': self._manifest('LibX', '2.0') + '## IsLibrary: true\n',
+        }))
+        installed = folder.unpack(upstream, api, path=addon_root / 'Foo')
+
+        assert {a.folder for a in installed} == {addon_root / 'Foo', addon_root / 'Foo' / 'LibX'}
+        assert _version_changes(before, folder.snapshot()) == {('Foo', '1.0', '2.0'), ('LibX', '1.0', '2.0')}
+        foo = next(folder.dir('Foo'))
+        lib = next(folder.dir('LibX'))
+        assert foo.infos is upstream
+        assert lib.infos is None  # not listed online: must not inherit Foo's listing
+        assert lib.parent is foo
+
+    def test_every_top_level_dir_of_the_bundle_is_tracked(self, addon_root, folder, monkeypatch, tmp_path):
+        write_manifest(addon_root, 'Bar', Version='1.0')
+        write_manifest(addon_root, 'BarLib', Version='1.0')
+        upstream = make_addon_info(id_=1, title='Bar', version='2.0', directories=['Bar', 'BarLib'])
+        api = as_api(StubAPI({'Bar': upstream}))
+        folder.scan(api)
+        before = folder.snapshot()
+
+        _mock_download(monkeypatch, tmp_path, _zip_bytes({
+            'Bar/Bar.txt': self._manifest('Bar', '2.0'),
+            'BarLib/BarLib.txt': self._manifest('BarLib', '2.0'),
+        }))
+        with pytest.warns(UserWarning, match='Installing 2 addons as part of Bar'):
+            folder.unpack(upstream, api, path=addon_root / 'Bar')
+
+        assert _version_changes(before, folder.snapshot()) == {('Bar', '1.0', '2.0'), ('BarLib', '1.0', '2.0')}
+
+    def test_nested_addon_keeps_its_lock(self, addon_root, folder, monkeypatch, tmp_path):
+        write_manifest(addon_root, 'Foo', Version='1.0')
+        write_manifest(addon_root / 'Foo', 'LibX', Version='1.0')
+        upstream = make_addon_info(id_=1, title='Foo', version='2.0', directories=['Foo'])
+        api = as_api(StubAPI({'Foo': upstream}))
+        folder.scan(api)
+        next(folder.dir('LibX')).locked = True
+
+        _mock_download(monkeypatch, tmp_path, _zip_bytes({
+            'Foo/Foo.txt': self._manifest('Foo', '2.0'),
+            'Foo/LibX/LibX.txt': self._manifest('LibX', '2.0'),
+        }))
+        folder.unpack(upstream, api, path=addon_root / 'Foo')
+
+        assert next(folder.dir('LibX')).locked
+
+    def test_untouched_addons_are_kept(self, addon_root, folder, monkeypatch, tmp_path):
+        write_manifest(addon_root, 'Foo', Version='1.0')
+        write_manifest(addon_root, 'Other', Version='1.0')
+        upstream = make_addon_info(id_=1, title='Foo', version='2.0', directories=['Foo'])
+        api = as_api(StubAPI({'Foo': upstream}))
+        folder.scan(api)
+        before = folder.snapshot()
+
+        _mock_download(monkeypatch, tmp_path, _zip_bytes({'Foo/Foo.txt': self._manifest('Foo', '2.0')}))
+        installed = folder.unpack(upstream, api, path=addon_root / 'Foo')
+
+        assert [a.folder for a in installed] == [addon_root / 'Foo']
+        assert _version_changes(before, folder.snapshot()) == {('Foo', '1.0', '2.0')}
+        assert {a.dir for a in folder.installed} == {'Foo', 'Other'}
+
+
 class TestFolderInstallDeps:
     def test_install_deps_downloads_missing_dependency(self, addon_root, folder, monkeypatch, tmp_path):
         installed = make_installed(addon_root, 'MyAddon', DependsOn='LibFoo>=1')
