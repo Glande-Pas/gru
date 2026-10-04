@@ -1,5 +1,5 @@
 [project]
-name = "Gru"
+name = "Gru-ESO"
 dynamic = ["version"]
 authors = [{name="Cimbali", email="me@cimba.li" }]
 description = "Gru gets/removes/updates your ESO add-ons. Nothing to do with being minions’ boss."
