@@ -15,6 +15,7 @@ import typing
 import sys
 import os
 import io
+import re
 from collections.abc import Iterator
 
 IS_POSIX = os.name == 'posix'
@@ -141,6 +142,54 @@ def user_config(*args: str) -> pathlib.Path:
     return file
 
 
+# Relative to the home directory
+_DOCUMENTS = ['Documents', 'OneDrive/Documents']
+_GAME_ADDONS = ['Elder Scrolls Online/live/AddOns', 'Elder Scrolls Online/pts/AddOns']
+_STEAM_ROOTS = [
+    '.local/share/Steam',
+    '.steam/steam',
+    '.var/app/com.valvesoftware.Steam/.local/share/Steam',  # Flatpak
+    '.var/app/com.valvesoftware.Steam/data/Steam',  # older Flatpak
+    'snap/steam/common/.local/share/Steam',  # Snap
+]
+_STEAM_PREFIX = 'steamapps/compatdata/306130/pfx'  # 306130 is ESO's Steam app id
+_WINE_PREFIXES = [  # glob patterns
+    '.wine',
+    'Games/*',  # Lutris
+    'Games/Heroic/Prefixes/*',
+    'Games/Heroic/Prefixes/default/*',
+    '.local/share/bottles/bottles/*',
+    '.var/app/com.usebottles.bottles/data/bottles/bottles/*',  # Flatpak Bottles
+]
+
+
+def _steam_libraries(root: pathlib.Path) -> list[pathlib.Path]:
+    """ A Steam install's own library, plus the extra ones (e.g. on other drives) listed in libraryfolders.vdf """
+    libraries = [root]
+    with contextlib.suppress(OSError):
+        vdf = (root / 'steamapps' / 'libraryfolders.vdf').read_text(encoding='utf-8', errors='replace')
+        libraries.extend(pathlib.Path(path.replace('\\\\', '\\')) for path in re.findall(r'"path"\s+"([^"]*)"', vdf))
+    return libraries
+
+
+def addons_dir_candidates() -> Iterator[pathlib.Path]:
+    """ Usual locations of the AddOns folder: native installs, then Steam/Proton, then other Wine prefixes """
+    home = user_home()
+    for docs in _DOCUMENTS:
+        for game in _GAME_ADDONS:
+            yield home / docs / game
+
+    for root in _STEAM_ROOTS:
+        for library in _steam_libraries(home / root):
+            for game in _GAME_ADDONS:
+                yield library / _STEAM_PREFIX / 'drive_c/users/steamuser/Documents' / game
+
+    for pattern in _WINE_PREFIXES:
+        for prefix in sorted(home.glob(pattern)):
+            for game in _GAME_ADDONS:
+                yield from sorted(prefix.glob(f'drive_c/users/*/Documents/{game}'))
+
+
 def load_config(config_file: pathlib.Path | str | None = None) -> configparser.ConfigParser:
     config = configparser.ConfigParser(delimiters=['='])
     config.read_file(io.StringIO(defaults))
@@ -153,12 +202,8 @@ def load_config(config_file: pathlib.Path | str | None = None) -> configparser.C
     if config.get('ESO.addons', 'root').strip():
         return config
 
-    paths = ['Documents/Elder Scrolls Online/live/AddOns', 'Documents/Elder Scrolls Online/pts/AddOns']
-    steam_library = '.local/share/Steam/'
-    steam_prefix = steam_library + 'steamapps/compatdata/306130/pfx/drive_c/users/steamuser/'
-    for check in [*paths, *(steam_prefix + path for path in paths)]:
-        addons_dir = user_home() / check
-        if addons_dir.exists():
+    for addons_dir in addons_dir_candidates():
+        if addons_dir.is_dir():
             config.set('ESO.addons', 'root', str(addons_dir.resolve()))
             break
     else:

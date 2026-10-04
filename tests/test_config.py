@@ -103,6 +103,51 @@ class TestLoadConfig:
         assert config.get('ESO.addons', 'root').strip() == ''
 
 
+class TestAddonsDirGuess:
+    @pytest.fixture
+    def home(self, tmp_path, monkeypatch, isolated_user_dirs):
+        isolated_user_dirs['config_file'].parent.mkdir(parents=True, exist_ok=True)
+        home = tmp_path / 'home'
+        monkeypatch.setattr(config_mod, 'user_home', lambda: home)
+        return home
+
+    @pytest.mark.parametrize('location', [
+        'Documents',
+        'OneDrive/Documents',
+        '.local/share/Steam/steamapps/compatdata/306130/pfx/drive_c/users/steamuser/Documents',
+        '.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/compatdata/306130/pfx/drive_c/users/steamuser/Documents',
+        'snap/steam/common/.local/share/Steam/steamapps/compatdata/306130/pfx/drive_c/users/steamuser/Documents',
+        '.wine/drive_c/users/someone/Documents',
+        'Games/the-elder-scrolls-online/drive_c/users/someone/Documents',
+        '.var/app/com.usebottles.bottles/data/bottles/bottles/ESO/drive_c/users/someone/Documents',
+    ])
+    def test_known_location_is_found(self, home, isolated_user_dirs, location):
+        addons = home / location / 'Elder Scrolls Online/live/AddOns'
+        addons.mkdir(parents=True)
+        config = load_config(isolated_user_dirs['config_file'])
+        assert config.get('ESO.addons', 'root') == str(addons.resolve())
+
+    def test_extra_steam_library_is_found(self, tmp_path, home, isolated_user_dirs):
+        library = tmp_path / 'mnt' / 'SteamLibrary'
+        addons = library / 'steamapps/compatdata/306130/pfx/drive_c/users/steamuser/Documents/Elder Scrolls Online/live/AddOns'
+        addons.mkdir(parents=True)
+        steamapps = home / '.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps'
+        steamapps.mkdir(parents=True)
+        (steamapps / 'libraryfolders.vdf').write_text(
+            '"libraryfolders"\n{\n\t"0"\n\t{\n\t\t"path"\t\t"' + str(steamapps.parent) + '"\n\t}\n'
+            '\t"1"\n\t{\n\t\t"path"\t\t"' + str(library) + '"\n\t}\n}\n')
+        config = load_config(isolated_user_dirs['config_file'])
+        assert config.get('ESO.addons', 'root') == str(addons.resolve())
+
+    def test_native_install_wins_over_proton(self, home, isolated_user_dirs):
+        native = home / 'Documents/Elder Scrolls Online/live/AddOns'
+        native.mkdir(parents=True)
+        (home / '.local/share/Steam/steamapps/compatdata/306130/pfx/drive_c/users/steamuser'
+         / 'Documents/Elder Scrolls Online/live/AddOns').mkdir(parents=True)
+        config = load_config(isolated_user_dirs['config_file'])
+        assert config.get('ESO.addons', 'root') == str(native.resolve())
+
+
 class TestDisplayUpdateConfig:
     def test_display_config_roundtrip(self, isolated_user_dirs):
         config = load_config(isolated_user_dirs['config_file'])
