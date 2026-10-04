@@ -24,7 +24,7 @@ from urllib.parse import quote as urllib_quote
 
 from .api import API, AmbiguousDirectory, PreviousVersion
 from .addon import AddonInfo, InstalledAddon, AddonBundle, DisplayAddonProtocol, GARBAGE, strip_eso_text, file_crc32
-from .config import user_config
+from .config import root_key, user_config
 from .install import Folder
 from .remotezip import fetch_remote_zip_directory
 
@@ -53,13 +53,13 @@ class ChangeEntry(NamedTuple):
     previous_state: str
 
 
-def addons_root_configured(config: configparser.ConfigParser, game: str) -> bool:
+def addons_root_configured(config: configparser.ConfigParser, game: str, target: str = 'live') -> bool:
     """ Whether `config` already points at an existing addons directory. """
-    root = config.get(f'{game}.addons', 'root')
+    root = config.get(f'{game}.addons', root_key(target))
     return bool(root) and pathlib.Path(root).exists()
 
 
-def build_app(game: str, config: configparser.ConfigParser) -> tuple[API, Folder]:
+def build_app(game: str, config: configparser.ConfigParser, target: str = 'live') -> tuple[API, Folder]:
     """ Build a live API + freshly-scanned Folder from an already-valid `config` (see
     addons_root_configured()) -- the non-interactive core a front-end calls once it has a
     usable config; resolving/prompting for a missing addons root is that front-end's job.
@@ -67,7 +67,7 @@ def build_app(game: str, config: configparser.ConfigParser) -> tuple[API, Folder
     Deliberately doesn't call resolve_exact_matches(): that's for whichever specific command
     needs addons resolved (`update`, `match`), not every command that happens to scan. """
     api = API.live(config)
-    local = Folder(game, config)
+    local = Folder(game, config, target)
     local.scan(api)
     return api, local
 
@@ -89,7 +89,7 @@ def append_change_log(path: pathlib.Path, row: list[str], max_lines: int) -> Non
 def read_changes(local: Folder, limit: int | None = None) -> list[ChangeEntry]:
     """ Read changes.csv, oldest first (matching on-disk order) -- or just the last `limit` rows.
     Returns [] if nothing has been logged yet (no command has changed the install state). """
-    path = user_config(local.game, 'changes.csv')
+    path = user_config(*local.meta, 'changes.csv')
     if not path.exists():
         return []
     with path.open(newline='') as f:
@@ -105,7 +105,7 @@ def log_changes(local: Folder, config: configparser.ConfigParser,
     after = local.snapshot()
     max_lines = config.getint(f'{local.game}.addons', 'log_lines')
     now = datetime.datetime.now().astimezone().isoformat(timespec='seconds')
-    path = user_config(local.game, 'changes.csv')
+    path = user_config(*local.meta, 'changes.csv')
     for folder in before.keys() | after.keys():
         old_dir, old_version, old_link = before.get(folder, ('', NOT_INSTALLED, ''))
         new_dir, new_version, new_link = after.get(folder, ('', NOT_INSTALLED, ''))

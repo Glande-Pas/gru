@@ -24,7 +24,7 @@ import requests
 import zipfile
 from collections.abc import Iterable
 
-from .config import load_config, save_config, user_cache, user_config, display_config, update_config
+from .config import root_key, load_config, save_config, user_cache, user_config, display_config, update_config
 from .api import API, AmbiguousDirectory
 from .addon import AddonInfo, InstalledAddon, ESO_COLORED_TEXT
 from .install import Folder
@@ -316,27 +316,31 @@ def add_repl_commands(group: click.Group) -> None:
         raise click_repl.ExitReplException()
 
 
-def resolve_addons_root(config: configparser.ConfigParser, game: str) -> bool:
-    """ Ensure `config` has a valid addons root, prompting interactively if missing.
-    Returns whether `config` was changed, so the caller can decide whether to persist it. """
-    if gru_app.addons_root_configured(config, game):
+def resolve_addons_root(config: configparser.ConfigParser, game: str, target: str = 'live') -> bool:
+    """ Ensure `config` has a valid addons root, prompting interactively if missing (live only:
+    PTS is optional, so a missing one is an error). Returns whether `config` was changed, so the
+    caller can decide whether to persist it. """
+    if gru_app.addons_root_configured(config, game, target):
         return False
+    if target != 'live':
+        raise click.ClickException(
+            f'{game} {target} addons directory not found; set it with `config set addons.{root_key(target)} <path>`')
     click.echo(f'{game} addons directory not found!')
     root = typing.cast(pathlib.Path, click.prompt(
         'Path to addons directory', prompt_suffix=':\n>> ',
         type=click.Path(exists=True, file_okay=False, path_type=pathlib.Path)))
-    config.set(f'{game}.addons', 'root', str(root.resolve()))
+    config.set(f'{game}.addons', root_key(target), str(root.resolve()))
     return True
 
 
-def build_app(game: str, config_file: pathlib.Path | None) -> tuple[configparser.ConfigParser, API, Folder]:
+def build_app(game: str, config_file: pathlib.Path | None, target: str = 'live') -> tuple[configparser.ConfigParser, API, Folder]:
     """ Load config, ensure a valid addons root (prompting interactively if needed), and build a
     live API + scanned Folder via gru.app.build_app(). The single seam a test needs to monkeypatch
     to drive commands without real network/disk. """
     config = load_config(config_file)
-    if resolve_addons_root(config, game):
+    if resolve_addons_root(config, game, target):
         save_config(config, config_file)
-    api, local = gru_app.build_app(game, config)
+    api, local = gru_app.build_app(game, config, target)
     return config, api, local
 
 
@@ -346,11 +350,13 @@ def build_app(game: str, config_file: pathlib.Path | None) -> tuple[configparser
               type=click.Path(dir_okay=False, writable=True, path_type=pathlib.Path), default=None)
 @click.option('--game', 'game', help='Choice of game', hidden=True,
               type=click.Choice(['ESO']), default='ESO')
+@click.option('-t', '--target', 'target', help='Game channel whose AddOns folder to manage',
+              type=click.Choice(['live', 'pts']), default='live')
 @click.option('--no-color', 'no_color', is_flag=True, default=False, help='Disable colored output')
 @click.option('--debug', 'debug', is_flag=True, default=False, hidden=True,
               help='Print addon-matching scoring/decisions (rank_candidates, find_exact_match, ...) to stderr')
 @click.pass_context
-def main(ctx: click.Context, game: str = 'ESO', config_file: pathlib.Path | None = None,
+def main(ctx: click.Context, game: str = 'ESO', target: str = 'live', config_file: pathlib.Path | None = None,
          no_color: bool = False, debug: bool = False) -> None:
     locale.setlocale(locale.LC_ALL, '')
 
@@ -372,11 +378,12 @@ def main(ctx: click.Context, game: str = 'ESO', config_file: pathlib.Path | None
             config = load_config(config_file)  # skip network fetch/scan as we may be setting those up
             api = local = None
         else:
-            config, api, local = build_app(game, config_file)
+            config, api, local = build_app(game, config_file, target)
     except (OSError, configparser.Error) as exc:
         raise click.ClickException(str(exc))
     ctx.obj['config'] = config
     ctx.obj['game'] = game
+    ctx.obj['target'] = target
     ctx.obj['config_file'] = config_file
     ctx.obj['api'] = api
     ctx.obj['local'] = local
@@ -385,6 +392,7 @@ def main(ctx: click.Context, game: str = 'ESO', config_file: pathlib.Path | None
         add_repl_commands(main)
         click_repl.repl(ctx, prompt_kwargs={
             'history': prompt_history.FileHistory(user_cache('history')),
+            **({'message': f'[{target}] > '} if target != 'live' else {}),
         })
 
 
@@ -484,7 +492,7 @@ def show_warnings(ctx: click.Context) -> None:
 
 @main.result_callback()
 @click.pass_context
-def process_result(ctx: click.Context, result: typing.Any, game: str, config_file: str | None, no_color: bool,
+def process_result(ctx: click.Context, result: typing.Any, game: str, target: str, config_file: str | None, no_color: bool,
                    debug: bool) -> None:
     show_warnings(ctx)
 
@@ -602,7 +610,7 @@ def get(ctx: click.Context, addon: list[str], auto_deps: bool = True, opt: bool 
 
             if version is not None:
                 click.echo(f'Consider `gru add-lock {found.dir}` to keep update from overwriting this version.')
-            if user_config(local.game, f'{found.dir}.patch').exists():
+            if user_config(*local.meta, f'{found.dir}.patch').exists():
                 click.echo(f'Note: a saved patch exists for {found.dir} but was not applied -- '
                            f'run `gru patch {found.dir}` to apply it.')
     finally:
@@ -1074,7 +1082,7 @@ def diff(ctx: click.Context, addon: str | None, url: str | None = None) -> None:
             url = click.prompt(f'Please manually specify {found.version} download url',
                                prompt_suffix=':\n>> ', type=str)
 
-    result_path = user_config(local.game, f'{found.dir}.patch')
+    result_path = user_config(*local.meta, f'{found.dir}.patch')
 
     with local.unmodified_addon(found.infos, found.dir, api, url=url) as ref_addon, result_path.open('w') as out:
         nfiles = addon_diff(ref_addon, found, out=out)
@@ -1103,7 +1111,7 @@ def patch(ctx: click.Context, addon: str | None, patch: pathlib.Path | None, par
         return
 
     if patch is None:
-        patch = user_config(local.game, f'{installed_addon.dir}.patch')
+        patch = user_config(*local.meta, f'{installed_addon.dir}.patch')
         if not patch.exists():
             click.echo('No saved changes to be re-applied.')
             return

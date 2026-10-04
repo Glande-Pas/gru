@@ -43,8 +43,9 @@ info = https://www.esoui.com/downloads/info{id}.html
 download = https://cdn.esoui.com/downloads/getfile.php?id={id}
 
 [ESO.addons]
-# Path to addons root directory
+# Path to addons root directory (live), and to the PTS one
 root =
+pts_root =
 # Whether to include optional dependences by default
 optional = off
 # Whether to automatically re-apply patches on updates
@@ -144,7 +145,7 @@ def user_config(*args: str) -> pathlib.Path:
 
 # Relative to the home directory
 _DOCUMENTS = ['Documents', 'OneDrive/Documents']
-_GAME_ADDONS = ['Elder Scrolls Online/live/AddOns', 'Elder Scrolls Online/pts/AddOns']
+TARGETS = ('live', 'pts')
 _STEAM_ROOTS = [
     '.local/share/Steam',
     '.steam/steam',
@@ -172,9 +173,15 @@ def _steam_libraries(root: pathlib.Path) -> list[pathlib.Path]:
     return libraries
 
 
-def addons_dir_candidates() -> Iterator[pathlib.Path]:
+def root_key(target: str = 'live') -> str:
+    """ Name of the `addons` config entry holding the target's AddOns directory """
+    return 'root' if target == 'live' else f'{target}_root'
+
+
+def addons_dir_candidates(target: str = 'live') -> Iterator[pathlib.Path]:
     """ Usual locations of the AddOns folder: native installs, then Steam/Proton, then other Wine prefixes """
     home = user_home()
+    _GAME_ADDONS = [f'Elder Scrolls Online/{target}/AddOns']
     for docs in _DOCUMENTS:
         for game in _GAME_ADDONS:
             yield home / docs / game
@@ -198,20 +205,19 @@ def load_config(config_file: pathlib.Path | str | None = None) -> configparser.C
     if config_file.exists():
         config.read(config_file)
 
-    # Valid addons directory?
-    if config.get('ESO.addons', 'root').strip():
-        return config
+    changed = False
+    for target in TARGETS:
+        key = root_key(target)
+        if config.get('ESO.addons', key).strip():
+            continue
+        for addons_dir in addons_dir_candidates(target):
+            if addons_dir.is_dir():
+                config.set('ESO.addons', key, str(addons_dir.resolve()))
+                changed = True
+                break
 
-    for addons_dir in addons_dir_candidates():
-        if addons_dir.is_dir():
-            config.set('ESO.addons', 'root', str(addons_dir.resolve()))
-            break
-    else:
-        # No valid guesses, return as-is
-        return config
-
-    # Otherwise update before returning
-    save_config(config, config_file)
+    if changed:
+        save_config(config, config_file)
     return config
 
 

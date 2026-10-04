@@ -252,3 +252,17 @@ def _write_minimal_mo(path: pathlib.Path, catalog: dict[str, str]) -> None:
     output += ids
     output += strs
     path.write_bytes(output)
+
+
+class TestTargets:
+    def test_root_key(self):
+        assert config_mod.root_key('live') == 'root'
+        assert config_mod.root_key('pts') == 'pts_root'
+
+    def test_candidates_are_per_target(self, monkeypatch, tmp_path):
+        monkeypatch.setenv('HOME', str(tmp_path))
+        live = list(config_mod.addons_dir_candidates('live'))
+        pts = list(config_mod.addons_dir_candidates('pts'))
+        assert live and pts
+        assert all('/live/' in str(p) for p in live)
+        assert all('/pts/' in str(p) for p in pts)
