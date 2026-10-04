@@ -115,7 +115,8 @@ class TestAddonsDirGuess:
         'Documents',
         'OneDrive/Documents',
         '.local/share/Steam/steamapps/compatdata/306130/pfx/drive_c/users/steamuser/Documents',
-        '.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/compatdata/306130/pfx/drive_c/users/steamuser/Documents',
+        ('.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/compatdata/306130/pfx/'
+         'drive_c/users/steamuser/Documents'),
         'snap/steam/common/.local/share/Steam/steamapps/compatdata/306130/pfx/drive_c/users/steamuser/Documents',
         '.wine/drive_c/users/someone/Documents',
         'Games/the-elder-scrolls-online/drive_c/users/someone/Documents',
@@ -129,7 +130,8 @@ class TestAddonsDirGuess:
 
     def test_extra_steam_library_is_found(self, tmp_path, home, isolated_user_dirs):
         library = tmp_path / 'mnt' / 'SteamLibrary'
-        addons = library / 'steamapps/compatdata/306130/pfx/drive_c/users/steamuser/Documents/Elder Scrolls Online/live/AddOns'
+        addons = (library / 'steamapps/compatdata/306130/pfx' /
+                  'drive_c/users/steamuser/Documents/Elder Scrolls Online/live/AddOns')
         addons.mkdir(parents=True)
         steamapps = home / '.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps'
         steamapps.mkdir(parents=True)
@@ -252,3 +254,17 @@ def _write_minimal_mo(path: pathlib.Path, catalog: dict[str, str]) -> None:
     output += ids
     output += strs
     path.write_bytes(output)
+
+
+class TestTargets:
+    def test_root_key(self):
+        assert config_mod.root_key('live') == 'root'
+        assert config_mod.root_key('pts') == 'pts_root'
+
+    def test_candidates_are_per_target(self, monkeypatch, tmp_path):
+        monkeypatch.setenv('HOME', str(tmp_path))
+        live = list(config_mod.addons_dir_candidates('live'))
+        pts = list(config_mod.addons_dir_candidates('pts'))
+        assert live and pts
+        assert all('/live/' in str(p) for p in live)
+        assert all('/pts/' in str(p) for p in pts)

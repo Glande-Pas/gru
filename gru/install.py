@@ -26,7 +26,7 @@ import typing
 import csv
 from urllib.parse import quote as urllib_quote
 
-from .config import user_cache, user_config
+from .config import root_key, user_cache, user_config
 from .addon import InstalledAddon, AddonInfo, AddonBundle, GARBAGE, MANIFEST_EXTS, _parse_version
 from .api import _fuzz, _filter, AmbiguousDirectory
 from .patch import addon_patch_file, PatchError
@@ -79,9 +79,12 @@ class SilentProgress:
 
 
 class Folder:
-    def __init__(self, game: str, config: configparser.ConfigParser) -> None:
+    def __init__(self, game: str, config: configparser.ConfigParser, target: str = 'live') -> None:
         self.game = game
-        self.root: pathlib.Path = pathlib.Path(config.get(f'{game}.addons', 'root'))
+        self.target = target
+        #: user_config() path prefix of this target's metadata (live keeps the legacy game dir)
+        self.meta: tuple[str, ...] = (game,) if target == 'live' else (game, target)
+        self.root: pathlib.Path = pathlib.Path(config.get(f'{game}.addons', root_key(target)))
         self.url_template: str = config.get(f'{game}.links', 'download')
         #: A list of addons that have local file info and are enriched as appropriate with API info
         self._installed: dict[pathlib.Path, gru.addon.InstalledAddon] = {}
@@ -126,7 +129,7 @@ class Folder:
         .locked flag InstalledAddon otherwise always starts False with. Both matched by dir, same
         as every other addons.csv column, so a dir shared by several folders gets the same
         link/lock state for all of them. """
-        path = user_config(self.game, 'addons.csv')
+        path = user_config(*self.meta, 'addons.csv')
         if not path.exists():
             return {}, set()
         with path.open(newline='') as f:
@@ -158,7 +161,7 @@ class Folder:
 
     def export_state(self) -> None:
         """ Keep <config>/<game>/addons.csv in sync with the current install state. """
-        with user_config(self.game, 'addons.csv').open('w', newline='') as out:
+        with user_config(*self.meta, 'addons.csv').open('w', newline='') as out:
             self.write_csv(out)
 
     def _scan(self, root: pathlib.Path, api: gru.api.API | None = None, links: dict[str, str] | None = None,
@@ -671,7 +674,7 @@ class Folder:
                               f'{"".join(traceback.format_exc())}')
 
         for addon in updates:
-            if patch and (patch_file := user_config(self.game, f'{addon.dir}.patch')).exists():
+            if patch and (patch_file := user_config(*self.meta, f'{addon.dir}.patch')).exists():
                 self._reapply_patch(addon, patch_file)
 
         if deps:
@@ -699,7 +702,7 @@ class Folder:
                                   f'{"".join(traceback.format_exc())}')
                     continue
                 for addon in addons:
-                    if patch and (patch_file := user_config(self.game, f'{addon.dir}.patch')).exists():
+                    if patch and (patch_file := user_config(*self.meta, f'{addon.dir}.patch')).exists():
                         self._reapply_patch(addon, patch_file)
                 added += 1
                 deps.extend(addons)

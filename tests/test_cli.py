@@ -123,7 +123,7 @@ class TestBuildAppPersistsResolvedRootOnly:
         config_file = self._config_file(tmp_path, addons_root)
 
         saved = []
-        monkeypatch.setattr(cli_mod, 'resolve_addons_root', lambda cfg, game: True)
+        monkeypatch.setattr(cli_mod, 'resolve_addons_root', lambda cfg, game, target='live': True)
         monkeypatch.setattr(cli_mod, 'save_config', lambda cfg, cfg_file: saved.append(cfg_file))
 
         cli_mod.build_app('ESO', config_file)
@@ -136,7 +136,7 @@ class TestBuildAppPersistsResolvedRootOnly:
         config_file = self._config_file(tmp_path, addons_root)
 
         saved = []
-        monkeypatch.setattr(cli_mod, 'resolve_addons_root', lambda cfg, game: False)
+        monkeypatch.setattr(cli_mod, 'resolve_addons_root', lambda cfg, game, target='live': False)
         monkeypatch.setattr(cli_mod, 'save_config', lambda cfg, cfg_file: saved.append(cfg_file))
 
         cli_mod.build_app('ESO', config_file)
@@ -205,7 +205,7 @@ class TestWithRealAddons:
         config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
         _patch_user_config(monkeypatch, tmp_path)
 
-        def fake_build_app(game, cfg_file):
+        def fake_build_app(game, cfg_file, target='live'):
             config = load_config(cfg_file)
             api = StubAPI()
             local = make_folder(addons_root)
@@ -384,7 +384,7 @@ class TestCleanupCommand:
                     return upstream
                 raise FileNotFoundError(name)
 
-        def fake_build_app(game, cfg_file):
+        def fake_build_app(game, cfg_file, target='live'):
             config = load_config(cfg_file)
             api = LinkableApi()
             local = make_folder(addons_root)
@@ -470,7 +470,7 @@ class TestLockCommands:
         locked_addon.locked = True
         setup_local.export_state()
 
-        def fake_build_app(game, cfg_file):
+        def fake_build_app(game, cfg_file, target='live'):
             config = load_config(cfg_file)
             api = StubAPI()
             local = make_folder(addons_root)
@@ -559,7 +559,7 @@ class TestMatchCommand:
                     raise AmbiguousDirectory(name, [base, jp])
                 raise FileNotFoundError(name)
 
-        def fake_build_app(game, cfg_file):
+        def fake_build_app(game, cfg_file, target='live'):
             config = load_config(cfg_file)
             api = AmbiguousApi()
             local = make_folder(addons_root)
@@ -590,7 +590,7 @@ class TestMatchCommand:
         config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
         _patch_user_config(monkeypatch, tmp_path)
 
-        def fake_build_app(game, cfg_file):
+        def fake_build_app(game, cfg_file, target='live'):
             config = load_config(cfg_file)
             api = StubAPI()
             local = make_folder(addons_root)
@@ -633,7 +633,7 @@ class TestMatchCommand:
                     raise AmbiguousDirectory(name, [base, jp])
                 raise FileNotFoundError(name)
 
-        def fake_build_app(game, cfg_file):
+        def fake_build_app(game, cfg_file, target='live'):
             config = load_config(cfg_file)
             api = AmbiguousApi()
             local = make_folder(addons_root)
@@ -674,7 +674,7 @@ class TestExportCommand:
                     return upstream
                 raise FileNotFoundError(name)
 
-        def fake_build_app(game, cfg_file):
+        def fake_build_app(game, cfg_file, target='live'):
             config = load_config(cfg_file)
             api = LinkableApi()
             local = make_folder(addons_root)
@@ -774,7 +774,7 @@ class TestParentSuffixWording:
     folder nested in a matched one)."""
 
     def _list_output(self, monkeypatch, addons_root, config_file, api):
-        def fake_build_app(game, cfg_file):
+        def fake_build_app(game, cfg_file, target='live'):
             config = load_config(cfg_file)
             local = make_folder(addons_root)
             local.scan(api)
@@ -805,7 +805,7 @@ class TestParentSuffixWording:
         a real visual cue for the difference instead of two seemingly-identical strings."""
         addons_root, config_file, api = self._single_addon_setup(tmp_path, 'HideGroup|c5050ffNecro|r', 'HideGroupNecro')
 
-        def fake_build_app(game, cfg_file):
+        def fake_build_app(game, cfg_file, target='live'):
             config = load_config(cfg_file)
             local = make_folder(addons_root)
             local.scan(api)  # pyright: ignore[reportArgumentType] -- stub API, not a real gru.api.API
@@ -1017,7 +1017,7 @@ class TestNoColor:
         config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
         make_installed(addons_root, 'MyAddon', Title='|c5050ffMyAddon|r')
 
-        def fake_build_app(game, cfg_file):
+        def fake_build_app(game, cfg_file, target='live'):
             config = load_config(cfg_file)
             api = StubAPI()
             local = make_folder(addons_root)
@@ -1108,7 +1108,7 @@ class TestDiffCommand:
         monkeypatch.setattr(install_mod, 'user_cache', lambda *parts: _touch_cache_path(tmp_path, *parts))
         _patch_user_config(monkeypatch, tmp_path)
 
-        def fake_build_app(game, cfg_file):
+        def fake_build_app(game, cfg_file, target='live'):
             config = load_config(cfg_file)
             api = StubAPI()
             local = make_folder(addons_root)
@@ -1200,7 +1200,7 @@ class TestUpdateCommand:
         monkeypatch.setattr(install_mod, 'user_cache', lambda *parts: _touch_cache_path(tmp_path, *parts))
         _patch_user_config(monkeypatch, tmp_path)
 
-        def fake_build_app(game, cfg_file):
+        def fake_build_app(game, cfg_file, target='live'):
             config = load_config(cfg_file)
             api = StubAPI()
             local = make_folder(addons_root)
@@ -1241,7 +1241,7 @@ class TestUpdateCommand:
 
         make_installed(addons_root, 'Mystery', Title='Mystery', Version='1.0')
 
-        def fake_build_app(game, cfg_file):
+        def fake_build_app(game, cfg_file, target='live'):
             config = load_config(cfg_file)
             api = StubAPI()
             local = make_folder(addons_root)
@@ -1286,7 +1286,7 @@ class TestUpdateCommand:
                     raise AmbiguousDirectory(name, [other, exact])
                 raise FileNotFoundError(name)
 
-        def fake_build_app(game, cfg_file):
+        def fake_build_app(game, cfg_file, target='live'):
             config = load_config(cfg_file)
             api = AmbiguousApi()
             local = make_folder(addons_root)
@@ -1320,7 +1320,7 @@ class TestAddonStateSurvivesCrash:
 
         make_installed(addons_root, 'MyAddon', Version='1.0')
 
-        def fake_build_app(game, cfg_file):
+        def fake_build_app(game, cfg_file, target='live'):
             config = load_config(cfg_file)
             api = StubAPI()
             local = make_folder(addons_root)
@@ -1363,7 +1363,7 @@ class TestAddonStateSurvivesCrash:
 
         addons_root = cli_app['config_dir'].parent / 'AddOns'
 
-        def fake_build_app(game, cfg_file):
+        def fake_build_app(game, cfg_file, target='live'):
             config = load_config(cfg_file)
             api = FindableApi()
             local = make_folder(addons_root)
@@ -1396,7 +1396,7 @@ class TestPatchCommand:
         installed = make_installed(addons_root, 'MyAddon', Title='MyAddon')
         (installed.folder / 'Data.lua').write_text('old = 2\n')
 
-        def fake_build_app(game, cfg_file):
+        def fake_build_app(game, cfg_file, target='live'):
             config = load_config(cfg_file)
             api = StubAPI()
             local = make_folder(addons_root)
@@ -1455,7 +1455,7 @@ class TestSearchAndMissCommands:
                     return found_dep
                 raise FileNotFoundError(name)
 
-        def fake_build_app(game, cfg_file):
+        def fake_build_app(game, cfg_file, target='live'):
             config = load_config(cfg_file)
             api = RichStubAPI()
             local = make_folder(addons_root)
@@ -1492,7 +1492,7 @@ class TestFolderDisplayDescriptionField:
         config_file = tmp_path / 'gru.ini'
         config_file.write_text(f'[ESO.addons]\nroot = {addons_root}\n')
 
-        def fake_build_app(game, cfg_file):
+        def fake_build_app(game, cfg_file, target='live'):
             config = load_config(cfg_file)
             api = StubAPI()  # empty -- addon stays unmatched, goes through _folder()
             local = make_folder(addons_root)
@@ -1523,7 +1523,7 @@ class TestGetCommand:
         return {'addons_root': addons_root, 'config_file': config_file, 'config_dir': tmp_path / 'config'}
 
     def _wire_build_app(self, monkeypatch, addons_root, api):
-        def fake_build_app(game, cfg_file):
+        def fake_build_app(game, cfg_file, target='live'):
             config = load_config(cfg_file)
             local = make_folder(addons_root)
             local.scan(api)
@@ -1983,7 +1983,7 @@ class TestConfigLoadFailure:
     click.ClickException: 'Error: ...' + exit code 1) instead of crashing with a raw traceback."""
 
     def test_config_dir_creation_failure_errors_out_cleanly(self, monkeypatch, tmp_path):
-        def boom(game, config_file):
+        def boom(game, config_file, target='live'):
             raise PermissionError('Permission denied: /nonexistent/gru')
         monkeypatch.setattr(cli_mod, 'build_app', boom)
 
@@ -2009,7 +2009,7 @@ class TestConfigLoadFailure:
         assert 'Permission denied' in result.output
 
     def test_unrelated_crash_still_propagates(self, monkeypatch, tmp_path):
-        def boom(game, config_file):
+        def boom(game, config_file, target='live'):
             raise RuntimeError('simulated crash')
         monkeypatch.setattr(cli_mod, 'build_app', boom)
 
@@ -2022,7 +2022,7 @@ class TestAboutCommand:
     def test_prints_about_text_without_building_the_app(self, monkeypatch, tmp_path):
         """about needs no config, API, or addons folder -- unlike every other command, it must
         not even attempt build_app()."""
-        def boom(game, config_file):
+        def boom(game, config_file, target='live'):
             raise AssertionError('about should not call build_app()')
         monkeypatch.setattr(cli_mod, 'build_app', boom)
 
@@ -2041,7 +2041,7 @@ class TestHelpCommand:
     def test_prints_the_same_as_the_help_flag_without_building_the_app(self, monkeypatch, tmp_path):
         """help needs no config, API, or addons folder, like about -- and must render byte-for-
         byte the same text as --help, not just something similar."""
-        def boom(game, config_file):
+        def boom(game, config_file, target='live'):
             raise AssertionError('help should not call build_app()')
         monkeypatch.setattr(cli_mod, 'build_app', boom)
 

@@ -1,6 +1,7 @@
 """Tests for gru.install.Folder: lookup, dependency tracking, scanning, removal,
 and (via faked requests.head/get + user_cache) update()/install_deps()."""
 
+import configparser
 import inspect
 import io
 import pathlib
@@ -1224,3 +1225,15 @@ class TestFolderInstallDeps:
                 folder._unzip(zf, files, dest, install_mod.SilentProgress(6, 'test'))
         assert not (dest / 'missing.txt').exists()
         assert (dest / 'present.txt').read_text() == 'hello\n'
+
+
+def test_pts_folder_uses_own_root_and_metadata(tmp_path):
+    config = configparser.ConfigParser()
+    config.add_section('ESO.addons')
+    config.set('ESO.addons', 'root', str(tmp_path / 'live'))
+    config.set('ESO.addons', 'pts_root', str(tmp_path / 'pts'))
+    config.add_section('ESO.links')
+    config.set('ESO.links', 'download', 'https://example.com/dl?id={id}/')
+    live, pts = Folder('ESO', config), Folder('ESO', config, 'pts')
+    assert live.root == tmp_path / 'live' and live.meta == ('ESO',)
+    assert pts.root == tmp_path / 'pts' and pts.meta == ('ESO', 'pts')
