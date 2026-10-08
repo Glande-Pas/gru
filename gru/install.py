@@ -649,7 +649,7 @@ class Folder:
                     opt: bool = False) -> list[gru.addon.InstalledAddon]:
         unused = []
         for addon in pool:
-            if addon.is_lib and self.depcount(addon, opt=opt) == 0:
+            if addon.is_lib and addon.parent is None and self.depcount(addon, opt=opt) == 0:
                 unused.append(addon)
         return unused
 

@@ -244,6 +244,13 @@ class TestDependencyTracking:
         folder.scan()
         assert folder.unused_deps(folder.installed) == []
 
+    def test_unused_deps_ignores_bundle_members(self, addon_root, folder):
+        main = make_installed(addon_root / 'Bundle', 'Main')
+        ext = make_installed(addon_root / 'Bundle', 'MainExt', IsLibrary='true')
+        bundle = AddonBundle('Bundle', addon_root / 'Bundle', [main, ext])
+        folder._installed = {bundle.folder: bundle, main.folder: main, ext.folder: ext}
+        assert folder.unused_deps(folder.installed) == []
+
 
 # ---------------------------------------------------------------------------
 # remove / remove_unused_deps
