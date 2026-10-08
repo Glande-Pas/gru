@@ -27,11 +27,31 @@ def atol(val: str) -> int:
     return int(num.group(0)) if num is not None else 0
 
 
-def _parse_version(value: str) -> tuple[int, ...] | None:
-    """ Parse a dotted version string into a tuple of ints, or None if it has no digits at all """
+VersionKey = tuple[tuple[int, int | str], ...]
+
+# Token kinds, in sort order: pre-release words sort below the bare release (END), which sorts below any suffix
+_PRE, _END, _WORD, _NUM = range(4)
+_PRERELEASE = {name: rank for rank, name in enumerate(('alpha', 'beta', 'pre', 'rc'))}
+
+
+def _parse_version(value: str) -> VersionKey | None:
+    """ Tokenize a version into numbers and letter runs (anything else is a separator), or None if it has no digits.
+    Numbers compare numerically, letters lexically (case-insensitive) and sort below numbers, except the
+    pre-release words alpha < beta < pre < rc, which sort below the release itself:
+    1.2rc1 < 1.2 < 1.2a < 1.2.0 """
     if not isinstance(value, str) or not any(char.isdigit() for char in value):
         return None
-    return tuple(atol(token) for token in value.split('.'))
+    value = re.sub(r'^\s*v\.?\s*(?=\d)', '', value, flags=re.IGNORECASE)
+    key: list[tuple[int, int | str]] = []
+    for tok in re.findall(r'\d+|[^\W\d_]+', value):
+        if tok.isdigit():
+            key.append((_NUM, int(tok)))
+        elif (word := tok.lower()) in _PRERELEASE:
+            key.append((_PRE, _PRERELEASE[word]))
+        else:
+            key.append((_WORD, word))
+    key.append((_END, 0))
+    return tuple(key)
 
 
 def file_crc32(path: pathlib.Path) -> int:
@@ -218,9 +238,9 @@ class InstalledAddon(Dependency, DisplayAddonProtocol):
         if is_local is not None and upstream is not None:
             return is_local < upstream
 
-        stat = self.manifest.stat()
         # NB. some file systems have 2s resolution, but addons should never get updates within 2s
-        return datetime.datetime.fromtimestamp(max(stat.st_mtime, stat.st_ctime) + 2) <= self.infos.metadata['date']
+        # NB2. A spurious update 'self-heals': reinstalling rewrites the manifest which bumps mtime.
+        return datetime.datetime.fromtimestamp(self.manifest.stat().st_mtime + 2) <= self.infos.metadata['date']
 
     @property
     def comparable_copies(self) -> list[InstalledAddon]:

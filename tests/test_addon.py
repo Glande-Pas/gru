@@ -1,6 +1,7 @@
 """Tests for gru.addon: AddonInfo dir resolution, manifest parsing, update detection."""
 
 import io
+import os
 import zlib
 import zipfile
 import datetime
@@ -31,17 +32,46 @@ class TestAtol:
 
 
 class TestParseVersion:
-    def test_dotted_numeric(self):
-        assert _parse_version('1.20') == (1, 20)
-
     def test_no_digits_returns_none(self):
         assert _parse_version('unknown') is None
 
     def test_non_string_returns_none(self):
         assert _parse_version(None) is None  # pyright: ignore[reportArgumentType] -- deliberately wrong type
 
-    def test_mixed_digits_and_text_parses_leading_number(self):
-        assert _parse_version('1.2beta') == (1, 2)
+    def test_tokenizes_numbers_letters_and_separators(self):
+        assert _parse_version('1a-0-rc2') == ((3, 1), (2, 'a'), (3, 0), (0, 3), (3, 2), (1, 0))
+
+    @pytest.mark.parametrize('a, b', [
+        ('1.2', '1.20'),
+        ('1.9', '1.10'),
+        ('2026-07-26', '2026-10-04'),
+        ('2026-7-5', '2026-07-06'),
+        ('2026/07/26', '2026.10.04'),
+        ('20251229-0001', '20251229-0002'),
+        ('1.2-3', '1.2-4'),
+        ('1.2', '1.2a'),
+        ('1.2a', '1.2b'),
+        ('1.2rc1', '1.2rc2'),
+        ('1.2rc9', '1.2.0'),
+        ('1a-0-rc1', '1a-0-rc2'),
+        ('1a-0-rc2', '1b'),
+        ('v1.2', '1.3'),
+        ('1.2rc1', '1.2'),
+        ('1.2-alpha', '1.2-beta'),
+        ('1.2-beta', '1.2-pre'),
+        ('1.2-pre', '1.2-RC1'),
+        ('1.2-rc2', '1.2'),
+        ('1.2-rc9', '1.2a'),
+    ])
+    def test_ordering(self, a, b):
+        va, vb = _parse_version(a), _parse_version(b)
+        assert va is not None and vb is not None and va < vb
+
+    @pytest.mark.parametrize('a, b', [
+        ('v1.2', '1.2'), ('v. 1.2', '1.2'), ('V.1.2', '1.2'), ('1.2RC1', '1.2rc1'), ('1_2', '1.2'), ('1.02', '1.2')
+    ])
+    def test_equivalent(self, a, b):
+        assert _parse_version(a) == _parse_version(b)
 
 
 class TestStripEsoText:
@@ -285,6 +315,20 @@ class TestInstalledAddonCanUpdate:
         upstream = make_addon_info(title='MyAddon', version=None, date=datetime.datetime(2100, 1, 1))
         installed.link(upstream)
         assert installed.can_update is True
+
+    def test_date_fallback_uses_mtime_not_ctime(self, tmp_path):
+        installed = make_installed(tmp_path, 'MyAddon', Version='unknown')
+        upstream = make_addon_info(title='MyAddon', version='unknown', date=datetime.datetime(2020, 1, 1))
+        installed.link(upstream)
+        os.utime(installed.manifest, (0, 946684800))  # mtime 2000, ctime now
+        assert installed.can_update is True
+
+    def test_date_fallback_false_when_mtime_after_upstream(self, tmp_path):
+        installed = make_installed(tmp_path, 'MyAddon', Version='unknown')
+        upstream = make_addon_info(title='MyAddon', version='unknown', date=datetime.datetime(2020, 1, 1))
+        installed.link(upstream)
+        os.utime(installed.manifest, (0, 1893456000))  # mtime 2030
+        assert installed.can_update is False
 
 
 class TestInstalledAddonVersionRank:
