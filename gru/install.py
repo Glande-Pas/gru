@@ -27,7 +27,7 @@ import csv
 from urllib.parse import quote as urllib_quote
 
 from .config import root_key, user_cache, user_config
-from .addon import InstalledAddon, AddonInfo, AddonBundle, GARBAGE, MANIFEST_EXTS, _parse_version
+from .addon import InstalledAddon, AddonInfo, AddonBundle, VersionOverride, GARBAGE, MANIFEST_EXTS, _parse_version
 from .api import _fuzz, _filter, AmbiguousDirectory
 from .patch import addon_patch_file, PatchError
 
@@ -88,6 +88,8 @@ class Folder:
         self.url_template: str = config.get(f'{game}.links', 'download')
         #: A list of addons that have local file info and are enriched as appropriate with API info
         self._installed: dict[pathlib.Path, gru.addon.InstalledAddon] = {}
+        #: Candidate version overrides by addon id, as last read from versions.csv
+        self._override_rows: dict[int, list[VersionOverride]] = {}
 
     @property
     def installed(self) -> Iterable[gru.addon.InstalledAddon]:
@@ -120,7 +122,28 @@ class Folder:
 
     def scan(self, api: gru.api.API | None = None) -> None:
         links, locked = self.read_csv_hints()
+        self._override_rows = self.read_version_overrides()
         self._installed = self._scan(self.root, api, links=links, locked=locked)
+
+    def read_version_overrides(self) -> dict[int, list[VersionOverride]]:
+        """ Candidate rows from versions.csv, by addon id. Malformed rows are skipped. """
+        path = user_config(*self.meta, 'versions.csv')
+        if not path.exists():
+            return {}
+        rows: dict[int, list[VersionOverride]] = {}
+        with path.open(newline='') as f:
+            for row in csv.DictReader(f):
+                try:
+                    override = VersionOverride(int(row['id']), row['listing_version'], row['local_version'],
+                                               row['fingerprint'])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                rows.setdefault(override.id, []).append(override)
+        return rows
+
+    def _apply_override(self, addon: gru.addon.InstalledAddon) -> None:
+        if addon.override is None and addon.id is not None:
+            addon.apply_override(self._override_rows.get(addon.id, []))
 
     def read_csv_hints(self) -> tuple[dict[str, str], set[str]]:
         """ dir -> link, and the set of locked dirs, from the last addons.csv snapshot -- the
@@ -163,6 +186,26 @@ class Folder:
         """ Keep <config>/<game>/addons.csv in sync with the current install state. """
         with user_config(*self.meta, 'addons.csv').open('w', newline='') as out:
             self.write_csv(out)
+        self.export_version_overrides()
+
+    def export_version_overrides(self) -> None:
+        """ Rewrite versions.csv from the overrides of currently-installed addons: rows of addons that were
+        removed, reinstalled or modified are dropped by construction. """
+        for addon in self.installed:  # e.g. linked since the scan by `gru match`
+            self._apply_override(addon)
+        overrides = {addon.override for addon in self.installed if addon.override is not None}
+        path = user_config(*self.meta, 'versions.csv')
+        if not overrides:
+            path.unlink(missing_ok=True)
+            return
+        with path.open('w', newline='') as out:
+            writer = csv.writer(out)
+            writer.writerow(['id', 'listing_version', 'local_version', 'fingerprint'])
+            writer.writerows((o.id, o.listing_version, o.local_version, o.fingerprint)
+                             for o in sorted(overrides, key=lambda o: (o.id, o.local_version, o.fingerprint)))
+        self._override_rows = {}
+        for override in overrides:
+            self._override_rows.setdefault(override.id, []).append(override)
 
     def _scan(self, root: pathlib.Path, api: gru.api.API | None = None, links: dict[str, str] | None = None,
               locked: set[str] | None = None) -> dict[pathlib.Path, gru.addon.InstalledAddon]:
@@ -215,6 +258,7 @@ class Folder:
             try:
                 if api:
                     addon.link(api.dir(path.name, link=links.get(path.name)))
+                    self._apply_override(addon)
             except FileNotFoundError:
                 pass  # left unmatched -- TermDisplay flags it (no listing / ambiguous)
 
@@ -224,6 +268,7 @@ class Folder:
             for bundle, infos, candidates in self.find_bundle_matches(results, api, links, locked):
                 if infos is not None:
                     bundle.link(infos)
+                    self._apply_override(bundle)
                 # else: no confident match (not found at all, or ambiguous) -- left for
                 # gru_app.find_ambiguous_bundles()/`gru match` to resolve, same as individual
                 # unmatched addons.
@@ -607,6 +652,8 @@ class Folder:
             if main.infos is not None and main.infos is not addon:
                 main.infos.deregister(main)
             main.link(addon)
+            if url_override is None:
+                main.record_override(addon.version)
         else:
             for key, inst in installed_addons.items():
                 if key.is_relative_to(install_folder) and inst.infos is None:

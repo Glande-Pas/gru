@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import re
 import zlib
+import hashlib
+import dataclasses
 import collections
 import datetime
 import pathlib
@@ -61,6 +63,16 @@ def file_crc32(path: pathlib.Path) -> int:
         for chunk in iter(lambda: f.read(65536), b''):
             crc = zlib.crc32(chunk, crc)
     return crc
+
+
+@dataclasses.dataclass(frozen=True)
+class VersionOverride:
+    """ The install of listing `id` at `listing_version` shows `local_version` in its manifest and hashed to
+    `fingerprint` (see InstalledAddon.fingerprint()). Only valid while all of them still match. """
+    id: int
+    listing_version: str
+    local_version: str
+    fingerprint: str
 
 
 ESO_COLORED_TEXT = re.compile(r'\|c(?P<color>[0-9a-fA-F]{6})(?P<text>[^|]+)(?:\|r)?')
@@ -139,6 +151,10 @@ class AddonInfo(DisplayAddonProtocol):
 
 
 class InstalledAddon(Dependency, DisplayAddonProtocol):
+    #: Restored from versions.csv by Folder; replaces `version` with the listing's when set. Class-level as
+    #: AddonBundle skips __init__.
+    override: VersionOverride | None = None
+
     """ An installed addon as detected by the game, with matching manifest. """
     is_local = True
     is_lib: bool
@@ -206,7 +222,7 @@ class InstalledAddon(Dependency, DisplayAddonProtocol):
 
         self.title = infos.pop('title', self.manifest.stem)
         self.author = infos.pop('author', 'unknown')
-        self.version = infos.pop('version', 'unknown')
+        self.manifest_version = infos.pop('version', 'unknown')
 
         # NB. emit warning last
         if missing_mandatory_keys:
@@ -227,6 +243,43 @@ class InstalledAddon(Dependency, DisplayAddonProtocol):
         self.id = infos.id
         self.infos = infos
         infos.register(self)
+
+    def fingerprint(self) -> str:
+        """ Digest of every file's path and CRC-32, same normalisation as the remote zip comparison """
+        digest = hashlib.sha256()
+        for path, crc in sorted((path.as_posix().lower(), file_crc32(self.folder / path)) for path in self.files):
+            digest.update(f'{path}\0{crc:08x}\n'.encode())
+        return digest.hexdigest()[:32]
+
+    def record_override(self, listing_version: str) -> None:
+        """ Called right after installing `listing_version` of the linked listing """
+        self.override = None
+        if self.id is None or self.manifest_version == listing_version:
+            return
+        self.override = VersionOverride(self.id, listing_version, self.manifest_version, self.fingerprint())
+
+    def apply_override(self, candidates: Sequence[VersionOverride]) -> bool:
+        """ Show the listing version if a candidate still describes this exact install """
+        if self.id is None:
+            return False
+        candidates = [c for c in candidates if c.id == self.id and c.local_version == self.manifest_version]
+        if not candidates:
+            return False
+        fingerprint = self.fingerprint()
+        match = next((c for c in candidates if c.fingerprint == fingerprint), None)
+        if match is None:
+            return False
+        self.override = match
+        return True
+
+    @property
+    def version(self) -> str:
+        """ The listing's version if an override applies, otherwise the manifest's """
+        return self.override.listing_version if self.override is not None else self.manifest_version
+
+    @version.setter
+    def version(self, value: str) -> None:
+        self.manifest_version = value
 
     @property
     def can_update(self) -> bool:
@@ -302,15 +355,15 @@ class AddonBundle(InstalledAddon):
             member.parent = self
 
     @property
-    def version(self) -> str:
+    def manifest_version(self) -> str:  # pyright: ignore[reportIncompatibleVariableOverride]
         """ prefer member version whose own dir matches the bundle's, otherwise majority vote """
         named_main = next((member for member in self.members if member.dir == self.dir), None)
         if named_main is not None:
-            return named_main.version
-        counts = collections.Counter(member.version for member in self.members).most_common()
+            return named_main.manifest_version
+        counts = collections.Counter(member.manifest_version for member in self.members).most_common()
         if len(counts) == 1 or counts[0][1] > counts[1][1]:
             return counts[0][0]
-        return self.members[0].version
+        return self.members[0].manifest_version
 
     @property
     def deps(self) -> list[Dependency]:

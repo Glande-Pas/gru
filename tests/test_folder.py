@@ -1244,3 +1244,118 @@ def test_pts_folder_uses_own_root_and_metadata(tmp_path):
     live, pts = Folder('ESO', config), Folder('ESO', config, 'pts')
     assert live.root == tmp_path / 'live' and live.meta == ('ESO',)
     assert pts.root == tmp_path / 'pts' and pts.meta == ('ESO', 'pts')
+
+
+class TestVersionOverride:
+    """A listing version whose zip ships a different manifest version is remembered in versions.csv and shown
+    in place of the manifest's -- only while id, manifest version and file contents all still match."""
+
+    def _setup(self, addon_root, folder, monkeypatch, tmp_path, listing='1.0.8', manifest='1.0'):
+        write_manifest(addon_root, 'Foo', Version='0.9')
+        upstream = make_addon_info(id_=1, title='Foo', version=listing, directories=['Foo'])
+        api = as_api(StubAPI({'Foo': upstream}))
+        folder.scan(api)
+        _mock_download(monkeypatch, tmp_path, _zip_bytes({
+            'Foo/Foo.txt': f'## Title: Foo\n## APIVersion: 100035\n## Version: {manifest}\n## Author: Test\n',
+        }))
+        folder.unpack(upstream, api, path=addon_root / 'Foo')
+        return upstream, api
+
+    def _rescan(self, folder, api):
+        folder.scan(api)
+        return next(folder.dir('Foo'))
+
+    def test_install_shows_listing_version_and_is_not_updatable(self, addon_root, folder, monkeypatch, tmp_path):
+        self._setup(addon_root, folder, monkeypatch, tmp_path)
+        foo = next(folder.dir('Foo'))
+        assert (foo.version, foo.manifest_version) == ('1.0.8', '1.0')
+        assert not foo.can_update
+
+    def test_rescan_restores_override_from_file(self, addon_root, folder, monkeypatch, tmp_path):
+        _, api = self._setup(addon_root, folder, monkeypatch, tmp_path)
+        folder.export_state()
+        assert list(tmp_path.rglob('versions.csv'))
+        assert self._rescan(folder, api).version == '1.0.8'
+
+    def test_no_row_when_versions_agree(self, addon_root, folder, monkeypatch, tmp_path):
+        self._setup(addon_root, folder, monkeypatch, tmp_path, listing='1.0', manifest='1.0')
+        folder.export_state()
+        assert not list(tmp_path.rglob('versions.csv'))
+
+    def test_modified_files_drop_override(self, addon_root, folder, monkeypatch, tmp_path):
+        _, api = self._setup(addon_root, folder, monkeypatch, tmp_path)
+        folder.export_state()
+        (addon_root / 'Foo' / 'extra.lua').write_text('x')
+        assert self._rescan(folder, api).version == '1.0'
+        folder.export_state()
+        assert not list(tmp_path.rglob('versions.csv'))
+
+    def test_manifest_version_change_drops_override(self, addon_root, folder, monkeypatch, tmp_path):
+        _, api = self._setup(addon_root, folder, monkeypatch, tmp_path)
+        folder.export_state()
+        write_manifest(addon_root, 'Foo', Version='1.1')
+        assert self._rescan(folder, api).version == '1.1'
+
+    def test_other_listing_id_does_not_inherit(self, addon_root, folder, monkeypatch, tmp_path):
+        self._setup(addon_root, folder, monkeypatch, tmp_path)
+        folder.export_state()
+        other = as_api(StubAPI({'Foo': make_addon_info(id_=2, title='Foo', version='1.0.8', directories=['Foo'])}))
+        assert self._rescan(folder, other).version == '1.0'
+
+    def test_newer_listing_is_an_update(self, addon_root, folder, monkeypatch, tmp_path):
+        self._setup(addon_root, folder, monkeypatch, tmp_path)
+        folder.export_state()
+        newer = as_api(StubAPI({'Foo': make_addon_info(id_=1, title='Foo', version='1.0.9', directories=['Foo'])}))
+        foo = self._rescan(folder, newer)
+        assert foo.version == '1.0.8' and foo.can_update
+
+    def test_url_override_install_records_nothing(self, addon_root, folder, monkeypatch, tmp_path):
+        write_manifest(addon_root, 'Foo', Version='0.9')
+        upstream = make_addon_info(id_=1, title='Foo', version='1.0.8', directories=['Foo'])
+        api = as_api(StubAPI({'Foo': upstream}))
+        folder.scan(api)
+        _mock_download(monkeypatch, tmp_path, _zip_bytes({
+            'Foo/Foo.txt': '## Title: Foo\n## APIVersion: 100035\n## Version: 1.0\n## Author: Test\n'}))
+        folder.unpack(upstream, api, path=addon_root / 'Foo', url_override='http://x/old.zip')
+        assert next(folder.dir('Foo')).override is None
+
+    def test_malformed_rows_are_skipped(self, addon_root, folder, tmp_path):
+        path = _touch_config_path(tmp_path, 'ESO', 'versions.csv')
+        install_mod.user_config = lambda *parts: path if parts[-1] == 'versions.csv' else tmp_path.joinpath(*parts)
+        path.write_text('id,listing_version,local_version,fingerprint\nnotint,1,2,3\nshort\n')
+        assert folder.read_version_overrides() == {}
+
+    def test_bundle_override_applies_to_bundle_not_members(self, addon_root, folder):
+        from gru.addon import AddonBundle
+        m1 = make_installed(addon_root / 'Bundle', 'A', Title='A', Version='1.0')
+        m2 = make_installed(addon_root / 'Bundle', 'B', Title='B', Version='1.0')
+        bundle = AddonBundle('Bundle', addon_root / 'Bundle', [m1, m2])
+        folder._installed = {bundle.folder: bundle}
+        bundle.link(make_addon_info(id_=7, title='Bundle', version='1.0.5', directories=['Bundle']))
+        bundle.record_override('1.0.5')
+        assert (bundle.version, bundle.manifest_version, m1.version, m2.version) == ('1.0.5', '1.0', '1.0', '1.0')
+        assert not bundle.can_update
+
+        folder.export_state()
+        folder._override_rows = folder.read_version_overrides()
+        fresh = AddonBundle('Bundle', addon_root / 'Bundle', [m1, m2])
+        fresh.link(bundle.infos)
+        folder._apply_override(fresh)
+        assert fresh.version == '1.0.5'
+        (addon_root / 'Bundle' / 'A' / 'x.lua').write_text('x')
+        stale = AddonBundle('Bundle', addon_root / 'Bundle', [m1, m2])
+        stale.link(bundle.infos)
+        folder._apply_override(stale)
+        assert stale.version == '1.0'
+
+    def test_fixed_release_prunes_row(self, addon_root, folder, monkeypatch, tmp_path):
+        upstream, api = self._setup(addon_root, folder, monkeypatch, tmp_path)
+        folder.export_state()
+        assert list(tmp_path.rglob('versions.csv'))
+        fixed = make_addon_info(id_=1, title='Foo', version='1.0.9', directories=['Foo'])
+        _mock_download(monkeypatch, tmp_path, _zip_bytes({
+            'Foo/Foo.txt': '## Title: Foo\n## APIVersion: 100035\n## Version: 1.0.9\n## Author: Test\n'}))
+        folder.unpack(fixed, as_api(StubAPI({'Foo': fixed})), path=addon_root / 'Foo')
+        folder.export_state()
+        assert not list(tmp_path.rglob('versions.csv'))
+        assert next(folder.dir('Foo')).version == '1.0.9'
