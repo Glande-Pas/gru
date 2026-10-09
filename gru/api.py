@@ -23,6 +23,7 @@ from typing import TypeVar, NamedTuple
 from collections.abc import Iterable, Iterator, Mapping
 
 from . import config as gruconfig
+from .cache import prune_http_caches
 from .addon import AddonInfo, DisplayAddonProtocol
 
 if typing.TYPE_CHECKING:
@@ -294,6 +295,10 @@ class API:
                 continue  # not a data row (e.g. the header) or missing its download link
             versions.append(PreviousVersion(version or '', size or '', uploader, date or '', href, aid))
         return versions
+
+    def prune_cache(self) -> None:
+        """ Drop expired entries from the on-disk HTTP caches """
+        prune_http_caches(self.session, self.zip_session)
 
     @classmethod
     def reset(cls) -> None:

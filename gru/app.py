@@ -23,6 +23,7 @@ from collections.abc import Iterable
 from urllib.parse import quote as urllib_quote
 
 from .api import API, AmbiguousDirectory, PreviousVersion
+from .cache import prune_downloads
 from .addon import AddonInfo, InstalledAddon, AddonBundle, DisplayAddonProtocol, GARBAGE, strip_eso_text, file_crc32
 from .config import root_key, user_config
 from .install import Folder
@@ -69,6 +70,11 @@ def build_app(game: str, config: configparser.ConfigParser, target: str = 'live'
     api = API.live(config)
     local = Folder(game, config, target)
     local.scan(api)
+    try:
+        prune_downloads(local.installed)
+    except OSError as exc:
+        logger.debug('could not prune downloads: %s', exc)
+    api.prune_cache()
     return api, local
 
 

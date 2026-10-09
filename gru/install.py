@@ -28,6 +28,7 @@ from urllib.parse import quote as urllib_quote
 
 from .config import root_key, user_cache, user_config
 from .addon import InstalledAddon, AddonInfo, AddonBundle, VersionOverride, GARBAGE, MANIFEST_EXTS, _parse_version
+from .cache import download_name
 from .api import _fuzz, _filter, AmbiguousDirectory
 from .patch import addon_patch_file, PatchError
 
@@ -533,14 +534,6 @@ class Folder:
                 prog.update(len(chunk))
 
     @staticmethod
-    def _suggested_filename(headers: dict, default: str) -> str:
-        """ Extract the server-suggested filename from a Content-Disposition header, if any """
-        for tok in map(str.strip, headers.get('content-disposition', '').split(';')):
-            if tok.startswith('filename='):
-                return tok[10:].strip('"')
-        return default
-
-    @staticmethod
     def _cache_is_fresh(headers: dict, zippath: pathlib.Path) -> bool:
         """ Whether the cached zip at `zippath` is still up to date per HEAD response `headers` """
         if not zippath.exists():
@@ -594,8 +587,7 @@ class Folder:
             check.raise_for_status()
             headers = {key.lower(): value for key, value in check.headers.items()}
 
-        fname = self._suggested_filename(headers, fname)
-        zippath = user_cache('dl', fname)
+        zippath = user_cache('dl', download_name(addon.id, addon.dir, addon.version, url_override))
 
         # Download
         if self._cache_is_fresh(headers, zippath):

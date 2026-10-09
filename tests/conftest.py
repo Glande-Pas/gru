@@ -92,6 +92,9 @@ class StubAPI:
     def search(self, term: str) -> list:
         return []
 
+    def prune_cache(self) -> None:
+        pass
+
     def cat_name_hierarchy(self, start: int) -> list:
         return []
 

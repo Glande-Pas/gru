@@ -24,6 +24,7 @@ import requests
 import zipfile
 from collections.abc import Iterable
 
+from .cache import trim_history
 from .config import root_key, load_config, save_config, user_cache, user_config, display_config, update_config
 from .api import API, AmbiguousDirectory
 from .addon import AddonInfo, InstalledAddon, ESO_COLORED_TEXT
@@ -391,8 +392,10 @@ def main(ctx: click.Context, game: str = 'ESO', target: str = 'live', config_fil
 
     if ctx.invoked_subcommand is None:
         add_repl_commands(main)
+        history_path = user_cache('history')
+        trim_history(history_path)
         click_repl.repl(ctx, prompt_kwargs={
-            'history': prompt_history.FileHistory(user_cache('history')),
+            'history': prompt_history.FileHistory(history_path),
             **({'message': f'[{target}] > '} if target != 'live' else {}),
         })
 

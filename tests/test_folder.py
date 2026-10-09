@@ -736,15 +736,6 @@ class TestScan:
 # unpack()'s extracted, network-free decision logic
 # ---------------------------------------------------------------------------
 
-class TestSuggestedFilename:
-    def test_uses_content_disposition_filename(self, folder):
-        headers = {'content-disposition': 'attachment; filename="Foo.zip"'}
-        assert folder._suggested_filename(headers, 'default.zip') == 'Foo.zip'
-
-    def test_falls_back_to_default_without_header(self, folder):
-        assert folder._suggested_filename({}, 'default.zip') == 'default.zip'
-
-
 class TestCacheIsFresh:
     def test_missing_file_is_not_fresh(self, folder, tmp_path):
         headers = {'last-modified': 'Wed, 21 Oct 2015 07:28:00 GMT', 'content-length': '5'}
@@ -1359,3 +1350,16 @@ class TestVersionOverride:
         folder.export_state()
         assert not list(tmp_path.rglob('versions.csv'))
         assert next(folder.dir('Foo')).version == '1.0.9'
+
+
+class TestDownloadCacheName:
+    def test_zip_cached_under_deterministic_name_ignoring_server_name(self, addon_root, folder, monkeypatch, tmp_path):
+        from gru.cache import download_name
+        upstream = make_addon_info(id_=3, title='Foo', version='2.0', directories=['Foo'])
+        _mock_download(monkeypatch, tmp_path, _zip_bytes({
+            'Foo/Foo.txt': '## Title: Foo\n## APIVersion: 100035\n## Version: 2.0\n## Author: Test\n'}))
+        monkeypatch.setattr(install_mod.requests, 'head', lambda url, allow_redirects=True: _FakeResponse(
+            headers={'content-disposition': 'attachment; filename="Server_Name.zip"'}))
+        folder.unpack(upstream, as_api(StubAPI({'Foo': upstream})))
+        cached = {p.name for p in tmp_path.rglob('*.zip')}
+        assert cached == {download_name(3, 'Foo', '2.0')}
