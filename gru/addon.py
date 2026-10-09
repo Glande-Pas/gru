@@ -14,7 +14,7 @@ import datetime
 import pathlib
 import warnings
 import unicodedata
-from typing import Protocol
+from typing import Protocol, Union
 from collections.abc import Sequence
 
 from .config import encoding_open
@@ -29,7 +29,7 @@ def atol(val: str) -> int:
     return int(num.group(0)) if num is not None else 0
 
 
-VersionKey = tuple[tuple[int, int | str], ...]
+VersionKey = tuple[tuple[int, Union[int, str]], ...]
 
 # Token kinds, in sort order: pre-release words sort below the bare release (END), which sorts below any suffix
 _PRE, _END, _WORD, _NUM = range(4)
