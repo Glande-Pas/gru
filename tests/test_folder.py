@@ -1330,6 +1330,7 @@ class TestVersionOverride:
         folder.export_state()
         folder._override_rows = folder.read_version_overrides()
         fresh = AddonBundle('Bundle', addon_root / 'Bundle', [m1, m2])
+        assert bundle.infos is not None
         fresh.link(bundle.infos)
         folder._apply_override(fresh)
         assert fresh.version == '1.0.5'
