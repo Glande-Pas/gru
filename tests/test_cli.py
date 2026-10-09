@@ -2062,3 +2062,10 @@ class TestFolderSearchTiebreak:
         folder.scan()
         result = folder.search('Tied Title')
         assert len(result) >= 2
+
+
+def test_version_shows_install_channel(tmp_path):
+    import gru
+    result = invoke(tmp_path / 'config', ['--version'])
+    assert result.exit_code == 0
+    assert result.output.startswith(f'gru {gru.__version__} (installed via ')

@@ -278,7 +278,7 @@ class InstalledAddon(Dependency, DisplayAddonProtocol):
         return self.override.listing_version if self.override is not None else self.manifest_version
 
     @version.setter
-    def version(self, value: str) -> None:
+    def version(self, value: str) -> None:  # pyright: ignore[reportIncompatibleVariableOverride]
         self.manifest_version = value
 
     @property

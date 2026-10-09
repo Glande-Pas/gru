@@ -24,7 +24,9 @@ import requests
 import zipfile
 from collections.abc import Iterable
 
+from . import __version__
 from .cache import trim_history
+from .channel import detect as detect_channel
 from .config import root_key, load_config, save_config, user_cache, user_config, display_config, update_config
 from .api import API, AmbiguousDirectory
 from .addon import AddonInfo, InstalledAddon, ESO_COLORED_TEXT
@@ -346,6 +348,12 @@ def build_app(game: str, config_file: pathlib.Path | None, target: str = 'live')
     return config, api, local
 
 
+def _print_version(ctx: click.Context, _param: click.Parameter, value: bool) -> None:
+    if value and not ctx.resilient_parsing:
+        click.echo(f'gru {__version__} (installed via {detect_channel()})')
+        ctx.exit()
+
+
 @click.group(cls=SectionedHelpGroup, invoke_without_command=True, help=gru_app.ABOUT.splitlines()[0],
              context_settings=dict(help_option_names=['-h', '--help']))
 @click.option('--config', 'config_file', help='path to config file',
@@ -355,6 +363,8 @@ def build_app(game: str, config_file: pathlib.Path | None, target: str = 'live')
 @click.option('-t', '--target', 'target', help='Game channel whose AddOns folder to manage',
               type=click.Choice(['live', 'pts']), default='live')
 @click.option('--no-color', 'no_color', is_flag=True, default=False, help='Disable colored output')
+@click.option('--version', 'show_version', is_flag=True, is_eager=True, expose_value=False, callback=_print_version,
+              help='Show version and install channel, then exit')
 @click.option('--debug', 'debug', is_flag=True, default=False, hidden=True,
               help='Print addon-matching scoring/decisions (rank_candidates, find_exact_match, ...) to stderr')
 @click.pass_context
