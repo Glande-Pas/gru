@@ -90,3 +90,19 @@ def test_flatpak_detection_uses_env(monkeypatch):
 def test_msstore_requires_windows_apps_path(monkeypatch):
     monkeypatch.setattr(channel_mod.os, 'name', 'posix')
     assert not channel_mod._is_msstore()
+
+
+def test_msstore_detects_frozen_packaged_build(monkeypatch):
+    monkeypatch.undo()
+    monkeypatch.setattr(channel_mod.os, 'name', 'nt')
+    monkeypatch.setattr(channel_mod.sys, 'frozen', True, raising=False)
+    monkeypatch.setattr(channel_mod, '_has_package_identity', lambda: True)
+    assert channel_mod._is_msstore()
+
+
+def test_msstore_ignores_unfrozen_packaged_python(monkeypatch):
+    monkeypatch.undo()
+    monkeypatch.setattr(channel_mod.os, 'name', 'nt')
+    monkeypatch.setattr(channel_mod.sys, 'frozen', False, raising=False)
+    monkeypatch.setattr(channel_mod, '_has_package_identity', lambda: True)
+    assert not channel_mod._is_msstore()

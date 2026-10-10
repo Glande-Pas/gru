@@ -10,6 +10,8 @@ import functools
 import importlib.metadata
 import os
 import pathlib
+import re
+import sys
 
 DIST_NAME = 'Gru-ESO'
 #: Packagers can pin the channel instead of relying on detection
@@ -37,10 +39,27 @@ def _is_flatpak() -> bool:
     return pathlib.Path('/.flatpak-info').exists() or bool(os.environ.get('FLATPAK_ID'))
 
 
+def _has_package_identity() -> bool:
+    """ Whether this process runs as a packaged (MSIX) app, per GetCurrentPackageFullName """
+    import ctypes
+    length = ctypes.c_uint32(0)
+    try:
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        status = kernel32.GetCurrentPackageFullName(ctypes.byref(length), None)
+    except (AttributeError, OSError):
+        return False
+    return status == 122  # ERROR_INSUFFICIENT_BUFFER: has an identity (15700 means no package)
+
+
 def _is_msstore() -> bool:
     """ Packaged apps live under WindowsApps. (A Store-installed *Python* running a pip-installed gru does not:
-    its packages are in the user profile.) """
-    return os.name == 'nt' and any(part.lower() == 'windowsapps' for part in pathlib.Path(__file__).resolve().parts)
+    its packages are in the user profile.) A frozen single-file build unpacks to a temp dir instead, so it is
+    recognized by its own package identity, which a Store-installed Python (not frozen) must not count. """
+    if os.name != 'nt':
+        return False
+    if 'windowsapps' in re.split(r'[\\/]', os.path.realpath(__file__).lower()):
+        return True
+    return bool(getattr(sys, 'frozen', False)) and _has_package_identity()
 
 
 def _from_metadata() -> Channel:
