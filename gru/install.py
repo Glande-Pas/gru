@@ -171,17 +171,19 @@ class Folder:
                 for addon in self.installed}
 
     def write_csv(self, out: typing.IO, recurse: bool = False) -> int:
-        """ Write dir/version/link/locked rows for installed addons to `out`. Returns the row count. """
+        """ Write dir/version/link rows for installed addons to `out`, plus a locked column if any is locked.
+        Returns the row count. """
+        addons = [addon for addon in self.installed if recurse or addon.parent is None]
+        with_locked = any(addon.locked for addon in addons)
         writer = csv.writer(out)
-        writer.writerow(['dir', 'version', 'link', 'locked'])
-        count = 0
-        for addon in self.installed:
-            if not (recurse or addon.parent is None):
-                continue
+        writer.writerow(['dir', 'version', 'link', *(['locked'] if with_locked else [])])
+        for addon in addons:
             link = addon.infos.metadata['link'] if addon.infos is not None else ''
-            writer.writerow([addon.dir, addon.version, link, 'locked' if addon.locked else ''])
-            count += 1
-        return count
+            row = [addon.dir, addon.version, link]
+            if with_locked:
+                row.append('locked' if addon.locked else '')
+            writer.writerow(row)
+        return len(addons)
 
     def export_state(self) -> None:
         """ Keep <config>/<game>/addons.csv in sync with the current install state. """

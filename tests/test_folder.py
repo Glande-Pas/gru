@@ -576,6 +576,21 @@ class TestScan:
         [addon] = list(folder.installed)
         assert addon.id == 2996
 
+    def test_write_csv_has_locked_column_only_when_something_is_locked(self, addon_root, folder):
+        import io
+        make_installed(addon_root, 'MyAddon')
+        folder.scan()
+        out = io.StringIO()
+        assert folder.write_csv(out) == 1
+        assert out.getvalue().splitlines()[0] == 'dir,version,link'
+
+        next(iter(folder.installed)).locked = True
+        out = io.StringIO()
+        folder.write_csv(out)
+        header, row = out.getvalue().splitlines()
+        assert header == 'dir,version,link,locked'
+        assert row.endswith(',locked')
+
     def test_scan_without_addons_csv_leaves_unresolved_tie_unmatched(self, addon_root, folder, tmp_path):
         """No prior addons.csv (e.g. first-ever scan) -- read_csv_hints() finds nothing, so
         API.dir() has no link to resolve the tie with. It must not guess: the addon stays
