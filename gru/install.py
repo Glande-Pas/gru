@@ -311,6 +311,9 @@ class Folder:
             seen.add(candidate_dir)
 
             while True:
+                existing = results.get(candidate_dir)
+                if existing is not None and not isinstance(existing, AddonBundle) and existing.infos is not None:
+                    break  # an identified addon in its own right: its subfolders are its members, not a bundle
                 try:
                     infos = api.dir(candidate_dir.name, link=links.get(candidate_dir.name))
                 except AmbiguousDirectory as exc:

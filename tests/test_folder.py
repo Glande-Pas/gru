@@ -591,6 +591,23 @@ class TestScan:
         assert header == 'dir,version,link,locked'
         assert row.endswith(',locked')
 
+    def test_scan_keeps_identified_addon_with_unmatched_subfolders_as_addon(self, addon_root, folder):
+        """LibGroupBroadcast: an identified addon with its own manifest containing unmatched library folders. It
+        must stay a real addon (satisfying dependencies on it), not be replaced by an AddonBundle."""
+        make_installed(addon_root, 'Parent', IsLibrary='true')
+        for sub in ('SubA', 'SubB'):
+            make_installed(addon_root / 'Parent', sub, IsLibrary='true', DependsOn='Parent')
+        make_installed(addon_root, 'User', DependsOn='Parent')
+        api = make_api(addons={1: make_addon_info(id_=1, title='Parent', directories=['Parent']),
+                               2: make_addon_info(id_=2, title='User', directories=['User'])})
+
+        folder.scan(api)
+        by_dir = {a.dir: a for a in folder.installed}
+        assert not isinstance(by_dir['Parent'], AddonBundle)
+        assert by_dir['Parent'].id == 1
+        assert by_dir['SubA'].parent is by_dir['Parent']
+        assert folder.missing_deps(folder.installed) == []
+
     def test_scan_without_addons_csv_leaves_unresolved_tie_unmatched(self, addon_root, folder, tmp_path):
         """No prior addons.csv (e.g. first-ever scan) -- read_csv_hints() finds nothing, so
         API.dir() has no link to resolve the tie with. It must not guess: the addon stays
