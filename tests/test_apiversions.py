@@ -145,3 +145,13 @@ class TestGameVersionFallback:
         folder.api_versions = apiversions.parse(DATA)
 
         assert folder.game_api_version() is None
+
+    def test_settings_file_wins(self, tmp_path):
+        root = tmp_path / 'live' / 'AddOns'
+        root.mkdir(parents=True)
+        (root.parent / 'AddOnSettings.txt').write_text('#Version 101049\n')
+        folder = make_folder(root)
+        folder.scan()
+        folder.api_versions = apiversions.parse(DATA)
+
+        assert folder.game_api_version() == 101049

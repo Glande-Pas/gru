@@ -132,9 +132,13 @@ class TermDisplay:
         return text + ' ' * max(0, width - len(click.unstyle(text)))
 
     def _game_tags(self, addon: gru.addon.InstalledAddon) -> list[str]:
-        """ Tags comparing the addon with the game: API version newer or older than the game's """
+        """ Tags from the game's AddOnSettings.txt: disabled in game, API version newer or older than the game's """
         local = self.local
         tags = []
+        disabled = local.disabled_in_game(addon) if hasattr(local, 'disabled_in_game') else None
+        if disabled is not None:
+            tags.append(click.style('disabled on all characters' if disabled.everywhere else
+                                    f'disabled on {len(disabled.characters)} character(s)', fg='magenta'))
         api_state = local.api_vs_game(addon) if hasattr(local, 'api_vs_game') else None
         if api_state is not None:
             tags.append(click.style(f'{api_state} API than the game', fg='red' if api_state == 'newer' else None))

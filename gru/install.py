@@ -30,6 +30,7 @@ from .config import root_key, user_cache, user_config
 from .addon import InstalledAddon, AddonInfo, AddonBundle, VersionOverride, GARBAGE, MANIFEST_EXTS, _parse_version
 from .cache import download_name
 from .apiversions import ApiVersions
+from .gamesettings import DisabledInfo, GameSettings, load as load_game_settings
 from .api import _fuzz, _filter, AmbiguousDirectory
 from .patch import addon_patch_file, PatchError
 
@@ -92,6 +93,8 @@ class Folder:
         self._installed: dict[pathlib.Path, gru.addon.InstalledAddon] = {}
         #: Candidate version overrides by addon id, as last read from versions.csv
         self._override_rows: dict[int, list[VersionOverride]] = {}
+        #: The game's AddOnSettings.txt next to the AddOns folder, as of the last scan; None if there is none
+        self.game_settings: GameSettings | None = None
         #: Names of game API versions: set by front-ends (apiversions.load() does HTTP, scan() never does)
         self.api_versions: ApiVersions | None = None
 
@@ -128,10 +131,28 @@ class Folder:
         links, locked = self.read_csv_hints()
         self._override_rows = self.read_version_overrides()
         self._installed = self._scan(self.root, api, links=links, locked=locked)
+        self.game_settings = load_game_settings(self.root.parent)
+
+    def disabled_in_game(self, addon: gru.addon.InstalledAddon) -> DisabledInfo | None:
+        """ Where the game has `addon` disabled, per AddOnSettings.txt. A bundle counts as disabled where all of
+        its members are. """
+        if self.game_settings is None:
+            return None
+        if not isinstance(addon, AddonBundle):
+            return self.game_settings.disabled(addon.dir)
+        infos = [self.disabled_in_game(member) for member in addon.members]
+        if not infos or any(info is None for info in infos):
+            return None
+        found = typing.cast('list[DisabledInfo]', infos)
+        characters = [c for c in found[0].characters if all(c in info.characters for info in found[1:])]
+        everywhere = all(info.everywhere for info in found)
+        return DisabledInfo(everywhere, characters) if everywhere or characters else None
 
     def game_api_version(self) -> int | None:
-        """ The API version of the game for this target: for live, the version the API versions list marks as
-        current. """
+        """ The API version of the game for this target: from AddOnSettings.txt, else for live the version the
+        API versions list marks as current. """
+        if self.game_settings is not None and self.game_settings.api_version is not None:
+            return self.game_settings.api_version
         if self.target == 'live' and self.api_versions is not None:
             return self.api_versions.current()
         return None
