@@ -33,6 +33,7 @@ from .addon import AddonInfo, InstalledAddon, ESO_COLORED_TEXT
 from .install import Folder
 from .patch import addon_diff, addon_patch_file, PatchError
 from . import app as gru_app
+from . import apiversions
 
 if typing.TYPE_CHECKING:
     import gru.addon
@@ -130,6 +131,15 @@ class TermDisplay:
         text = self._render_eso_text(text)
         return text + ' ' * max(0, width - len(click.unstyle(text)))
 
+    def _game_tags(self, addon: gru.addon.InstalledAddon) -> list[str]:
+        """ Tags comparing the addon with the game: API version newer or older than the game's """
+        local = self.local
+        tags = []
+        api_state = local.api_vs_game(addon) if hasattr(local, 'api_vs_game') else None
+        if api_state is not None:
+            tags.append(click.style(f'{api_state} API than the game', fg='red' if api_state == 'newer' else None))
+        return tags
+
     def _installed(self, item: str, addon: gru.addon.InstalledAddon) -> None:
         """ Show addon info from the API endpoint """
         click.echo()
@@ -151,6 +161,7 @@ class TermDisplay:
             tags.append(click.style(f'{rank} copy', fg=fg) if rank else 'copy')
         elif addon.title.strip() != infos.title.strip():
             tags.append(f'listed online as {infos.title}')
+        tags.extend(self._game_tags(addon))
         suffix = ''.join(f', {tag}' for tag in tags)
         click.echo(f'{item:{self.gutter}}{self._render_eso_text(addon.title)} [{status}{suffix}]')
         # TODO: Based on verbosity level, only click.echo a number of those:
@@ -204,6 +215,7 @@ class TermDisplay:
         if parent and parent.id and parent.infos is not None:
             tags.append(f'bundled inside {parent.infos.title}')
         tags.append(self._unmatched_status(folder))
+        tags.extend(self._game_tags(folder))
         suffix = ''.join(f', {tag}' for tag in tags)
         click.echo(f'{item:{self.gutter}}{self._render_eso_text(folder.title)}  [installed{suffix}]')
         infos = [[
@@ -222,7 +234,8 @@ class TermDisplay:
         ctx = click.get_current_context()
         self.api = ctx.obj['api']
         self.cat_name_hierarchy = ctx.obj['api'].cat_name_hierarchy
-        self.rel_path = lambda path, root=ctx.obj['local'].root: path.relative_to(root)
+        self.local = ctx.obj['local']
+        self.rel_path = lambda path, root=self.local.root: path.relative_to(root)
 
         for n, addon in enumerate(results, num_from + 1):
             item = f'{n:{self.gutter - 2}}: ' if len(results) > 1 else ''
@@ -965,6 +978,11 @@ def search(ctx: click.Context, term: str | None, max_: int = 10) -> None:
         click.echo('No matches.')
 
 
+def _api_versions() -> apiversions.ApiVersions | None:
+    """ The game API version names, for the commands that compare add-ons against the game's version """
+    return apiversions.load()
+
+
 @main.command('list')
 @click.pass_context
 def list_(ctx: click.Context) -> None:
@@ -975,6 +993,7 @@ def list_(ctx: click.Context) -> None:
         click.echo('No addons installed.')
         return
 
+    local.api_versions = _api_versions()
     click.echo(f'Found {len(local.installed)} addon(s):')
     TermDisplay(local.installed)
     show_warnings(ctx)

@@ -29,6 +29,7 @@ from urllib.parse import quote as urllib_quote
 from .config import root_key, user_cache, user_config
 from .addon import InstalledAddon, AddonInfo, AddonBundle, VersionOverride, GARBAGE, MANIFEST_EXTS, _parse_version
 from .cache import download_name
+from .apiversions import ApiVersions
 from .api import _fuzz, _filter, AmbiguousDirectory
 from .patch import addon_patch_file, PatchError
 
@@ -91,6 +92,8 @@ class Folder:
         self._installed: dict[pathlib.Path, gru.addon.InstalledAddon] = {}
         #: Candidate version overrides by addon id, as last read from versions.csv
         self._override_rows: dict[int, list[VersionOverride]] = {}
+        #: Names of game API versions: set by front-ends (apiversions.load() does HTTP, scan() never does)
+        self.api_versions: ApiVersions | None = None
 
     @property
     def installed(self) -> Iterable[gru.addon.InstalledAddon]:
@@ -125,6 +128,28 @@ class Folder:
         links, locked = self.read_csv_hints()
         self._override_rows = self.read_version_overrides()
         self._installed = self._scan(self.root, api, links=links, locked=locked)
+
+    def game_api_version(self) -> int | None:
+        """ The API version of the game for this target: for live, the version the API versions list marks as
+        current. """
+        if self.target == 'live' and self.api_versions is not None:
+            return self.api_versions.current()
+        return None
+
+    def api_vs_game(self, addon: gru.addon.InstalledAddon) -> str | None:
+        """ 'newer' if every API version `addon` declares is newer than the game's, 'older' if every one is older,
+        else None (including when the game's version is unknown). Manifests often list the live and PTS versions
+        together, so one version at or above the game's is neither. """
+        game = self.game_api_version()
+        if game is None:
+            return None
+        members = addon.members if isinstance(addon, AddonBundle) else [addon]
+        declared = [version for member in members for version in member.api]
+        if not declared:
+            return None
+        if min(declared) > game:
+            return 'newer'
+        return 'older' if max(declared) < game else None
 
     def read_version_overrides(self) -> dict[int, list[VersionOverride]]:
         """ Candidate rows from versions.csv, by addon id. Malformed rows are skipped. """

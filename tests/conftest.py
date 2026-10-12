@@ -54,6 +54,12 @@ def _no_real_user_config(tmp_path, monkeypatch):
                 monkeypatch.setattr(mod, 'user_cache', fake_cache)
 
 
+@pytest.fixture(autouse=True)
+def _no_network_api_versions(monkeypatch):
+    """The CLI fetches the API versions list for some commands: tests never do."""
+    monkeypatch.setattr('gru.cli._api_versions', lambda: None)
+
+
 # ---------------------------------------------------------------------------
 # Zip helpers
 # ---------------------------------------------------------------------------
