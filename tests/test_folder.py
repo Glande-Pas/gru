@@ -1088,6 +1088,28 @@ class TestUnmodifiedAddon:
         with folder.unmodified_addon(upstream, 'BundleExtra', StubAPI()) as ref_addon:
             assert ref_addon.dir == 'BundleExtra'
 
+    def test_bundle_is_diffed_against_the_whole_unpacked_bundle(self, folder, addon_root, monkeypatch, tmp_path):
+        """A bundle and its member of the same name share a dir name: the reference must be the one at the
+        installed addon's own path, else an unmodified bundle reports every file as changed."""
+        upstream = make_addon_info(id_=1, title='Bundle', version='1.0', directories=['Bundle'])
+        manifest = '## Title: {title}\n## APIVersion: 100035\n## Version: 1.0\n## Author: Test\n'
+        zip_bytes = _zip_bytes({
+            'Bundle/Bundle/Bundle.txt': manifest.format(title='Bundle'),
+            'Bundle/Bundle/Bundle.lua': 'x = 1\n',
+            'Bundle/BundleExtra/BundleExtra.txt': manifest.format(title='BundleExtra'),
+            'Bundle/BundleExtra/code.lua': 'y = 2\n',
+        })
+        _mock_download(monkeypatch, tmp_path, zip_bytes)
+        with pytest.warns(UserWarning, match='nested under Bundle/'):
+            folder.unpack(upstream, StubAPI())
+        bundle = next(a for a in folder.installed if isinstance(a, AddonBundle))
+
+        with pytest.warns(UserWarning, match='nested under Bundle/'), \
+                folder.unmodified_addon(upstream, bundle.dir, StubAPI(),
+                                        relpath=bundle.folder.relative_to(addon_root)) as ref_addon:
+            assert isinstance(ref_addon, AddonBundle)
+            assert addon_diff(bundle, ref_addon, io.StringIO()) == 0
+
     def test_falls_back_to_first_member_when_dir_not_found(self, folder, monkeypatch, tmp_path):
         upstream = make_addon_info(id_=1, title='MyAddon', version='1.0', directories=['MyAddon'])
         zip_bytes = _zip_bytes({
@@ -1267,6 +1289,21 @@ def test_pts_folder_uses_own_root_and_metadata(tmp_path):
     live, pts = Folder('ESO', config), Folder('ESO', config, 'pts')
     assert live.root == tmp_path / 'live' and live.meta == ('ESO',)
     assert pts.root == tmp_path / 'pts' and pts.meta == ('ESO', 'pts')
+
+
+@pytest.mark.parametrize('option, expected', [(None, True), ('on', True), ('off', False)])
+def test_update_by_date_option_reaches_scanned_addons(tmp_path, option, expected):
+    config = configparser.ConfigParser()
+    config.add_section('ESO.addons')
+    config.set('ESO.addons', 'root', str(tmp_path))
+    if option is not None:
+        config.set('ESO.addons', 'update_by_date', option)
+    config.add_section('ESO.links')
+    config.set('ESO.links', 'download', 'https://example.com/dl?id={id}/')
+    write_manifest(tmp_path, 'Foo', Version='1.0')
+    folder = Folder('ESO', config)
+    folder.scan()
+    assert [a.update_by_date for a in folder.installed] == [expected]
 
 
 class TestVersionOverride:

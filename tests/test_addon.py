@@ -330,6 +330,38 @@ class TestInstalledAddonCanUpdate:
         os.utime(installed.manifest, (0, 1893456000))  # mtime 2030
         assert installed.can_update is False
 
+    def test_equal_versions_are_outdated_when_listing_is_newer_than_install(self, tmp_path):
+        installed = make_installed(tmp_path, 'MyAddon', Version='1.0')
+        upstream = make_addon_info(title='MyAddon', version='1.0', date=datetime.datetime(2100, 1, 1))
+        installed.link(upstream)
+        assert installed.can_update is True
+
+    def test_equal_versions_with_older_listing_are_current(self, tmp_path):
+        installed = make_installed(tmp_path, 'MyAddon', Version='1.0')
+        upstream = make_addon_info(title='MyAddon', version='1.0', date=datetime.datetime(2020, 1, 1))
+        installed.link(upstream)
+        assert installed.can_update is False
+
+    def test_equal_versions_by_date_can_be_disabled(self, tmp_path):
+        installed = make_installed(tmp_path, 'MyAddon', Version='1.0')
+        installed.update_by_date = False
+        upstream = make_addon_info(title='MyAddon', version='1.0', date=datetime.datetime(2100, 1, 1))
+        installed.link(upstream)
+        assert installed.can_update is False
+
+    def test_newer_installed_version_is_not_outdated_by_date(self, tmp_path):
+        installed = make_installed(tmp_path, 'MyAddon', Version='2.0')
+        upstream = make_addon_info(title='MyAddon', version='1.0', date=datetime.datetime(2100, 1, 1))
+        installed.link(upstream)
+        assert installed.can_update is False
+
+    def test_matched_listing_version_is_not_outdated_by_date(self, tmp_path):
+        installed = make_installed(tmp_path, 'MyAddon', Version='1.0')
+        installed.override = type('Override', (), {'listing_version': '1.1'})()
+        upstream = make_addon_info(title='MyAddon', version='1.1', date=datetime.datetime(2100, 1, 1))
+        installed.link(upstream)
+        assert installed.can_update is False
+
 
 class TestInstalledAddonVersionRank:
     def test_no_other_folder_has_empty_rank_not_trivially_active(self, tmp_path):

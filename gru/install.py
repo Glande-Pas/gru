@@ -89,6 +89,7 @@ class Folder:
         self.meta: tuple[str, ...] = (game,) if target == 'live' else (game, target)
         self.root: pathlib.Path = pathlib.Path(config.get(f'{game}.addons', root_key(target)))
         self.url_template: str = config.get(f'{game}.links', 'download')
+        self.update_by_date: bool = config.getboolean(f'{game}.addons', 'update_by_date', fallback=True)
         #: A list of addons that have local file info and are enriched as appropriate with API info
         self._installed: dict[pathlib.Path, gru.addon.InstalledAddon] = {}
         #: Candidate version overrides by addon id, as last read from versions.csv
@@ -115,7 +116,11 @@ class Folder:
 
     @contextlib.contextmanager
     def unmodified_addon(self, addon: gru.addon.AddonInfo, dir_: str, api: gru.api.API,
-                         url: str | None = None) -> Iterator[gru.addon.InstalledAddon]:
+                         url: str | None = None,
+                         relpath: pathlib.Path | None = None) -> Iterator[gru.addon.InstalledAddon]:
+        """ A pristine copy of `addon`, unpacked to a temporary folder, to diff an installed addon against: the one
+        installed at `relpath` (relative to the addons folder) if given and found, else the one named `dir_`. A
+        bundle shares its dir name with its member of the same name, so only the path tells them apart. """
         with self.temp_root() as temp_root:
             temp_location = temp_root.root / addon.dir
             # unpack() returns a collection (possibly several addons for a multi-dir bundle);
@@ -123,7 +128,10 @@ class Folder:
             # specifically the one matching `dir_` (e.g. one bundle member among many), not
             # just whichever happens to be first in unpack()'s result.
             installed_addons = list(temp_root.unpack(addon, api, url_override=url))
-            temp_addon = next((a for a in installed_addons if a.dir == dir_), installed_addons[0])
+            temp_addon = next((a for a in installed_addons if relpath is not None
+                               and a.folder == temp_root.root / relpath), None)
+            if temp_addon is None:
+                temp_addon = next((a for a in installed_addons if a.dir == dir_), installed_addons[0])
             yield temp_addon
             shutil.rmtree(temp_location)
 
@@ -304,6 +312,7 @@ class Folder:
                 continue
 
             addon.locked = path.name in locked
+            addon.update_by_date = self.update_by_date
             try:
                 if api:
                     addon.link(api.dir(path.name, link=links.get(path.name)))

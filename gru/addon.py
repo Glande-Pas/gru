@@ -154,6 +154,8 @@ class InstalledAddon(Dependency, DisplayAddonProtocol):
     #: Restored from versions.csv by Folder; replaces `version` with the listing's when set. Class-level as
     #: AddonBundle skips __init__.
     override: VersionOverride | None = None
+    #: Set by Folder from the `update_by_date` option
+    update_by_date: bool = True
 
     """ An installed addon as detected by the game, with matching manifest. """
     is_local = True
@@ -289,7 +291,9 @@ class InstalledAddon(Dependency, DisplayAddonProtocol):
         is_local = _parse_version(self.version)
         upstream = _parse_version(self.infos.version)
         if is_local is not None and upstream is not None:
-            return is_local < upstream
+            # Equal versions may hide a re-upload: compare dates, unless the files already matched a listing version
+            if is_local != upstream or not self.update_by_date or self.override is not None:
+                return is_local < upstream
 
         # NB. some file systems have 2s resolution, but addons should never get updates within 2s
         # NB2. A spurious update 'self-heals': reinstalling rewrites the manifest which bumps mtime.

@@ -50,6 +50,8 @@ pts_root =
 optional = off
 # Whether to automatically re-apply patches on updates
 patch_updates = on
+# Whether an addon with the same version as its listing is outdated if the listing is newer than the install
+update_by_date = on
 # Sort equal matches in search according to one of: downloads, monthly, favorites
 sortkey = downloads
 # Number of rows kept in the rotating changes.csv log
