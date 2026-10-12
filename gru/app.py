@@ -151,14 +151,17 @@ def _manifest_anchor(paths: Iterable[tuple[str, ...]], manifest: str) -> tuple[s
     return min(anchors, key=len)
 
 
-def _normalize_remote_entries(entries: Iterable[tuple[str, _T]], manifest: str) -> dict[str, _T]:
+def _normalize_remote_entries(entries: Iterable[tuple[str, _T]], manifest: str,
+                              levels_up: int = 0) -> dict[str, _T]:
     """ (raw zip path, value) pairs -> {path relative to the addon dir: value}, matching what
     InstalledAddon.files yields. The addon dir is the one holding `manifest`, the addon's dir and manifest file
     name (e.g. 'Srendarr/Srendarr.txt'), see _manifest_anchor(). Drops entries outside it (sibling bundled
-    addons, wrapper dirs), directory markers, and GARBAGE/dotfiles. """
+    addons, wrapper dirs), directory markers, and GARBAGE/dotfiles. `levels_up` moves the root that many
+    directories above the manifest's: 1 for a bundle, whose folder holds its members' dirs. """
     files = [(pathlib.PurePosixPath(raw_path).parts, value)
              for raw_path, value in entries if not raw_path.endswith('/')]
     anchor = _manifest_anchor((parts for parts, _ in files), manifest)
+    anchor = anchor[:max(len(anchor) - levels_up, 0)]
     result: dict[str, _T] = {}
     for parts, value in files:
         if tuple(part.lower() for part in parts[:len(anchor)]) != anchor:
@@ -258,8 +261,12 @@ def _crc_match(installed: InstalledAddon, candidate: AddonInfo, url_template: st
         logger.debug(' crc check: could not fetch %r (%s) -- skipping', url, exc)
         return None
 
-    remote_files = _normalize_remote_entries(((e.filename, e.crc32) for e in remote_entries),
-                                             f'{installed.dir}/{installed.manifest.name}')
+    if isinstance(installed, AddonBundle):  # no manifest of its own: anchor on a member's, one level down
+        member = installed.members[0]
+        manifest, levels_up = f'{member.dir}/{member.manifest.name}', 1
+    else:
+        manifest, levels_up = f'{installed.dir}/{installed.manifest.name}', 0
+    remote_files = _normalize_remote_entries(((e.filename, e.crc32) for e in remote_entries), manifest, levels_up)
     local_files = {path.as_posix().lower(): file_crc32(installed.folder / path) for path in installed.files}
 
     matched = local_files == remote_files
@@ -318,7 +325,12 @@ def resolve_exact_matches(local: Folder, api: API) -> list[InstalledAddon]:
     logger.debug('resolve_exact_matches: %d ambiguous addon(s) to check', len(ambiguous))
     resolved = []
     for installed, candidates in ambiguous:
-        exact = find_exact_match(installed, candidates, api, url_template=local.url_template)
+        try:
+            exact = find_exact_match(installed, candidates, api, url_template=local.url_template)
+        except Exception as exc:  # one unreadable addon shouldn't stop the others
+            logger.debug('resolve_exact_matches: %r failed: %r', installed.dir, exc)
+            warnings.warn(f'Could not check ambiguous addon {installed.dir!r}: {exc}')
+            continue
         if exact is None:
             continue
         installed.link(exact)

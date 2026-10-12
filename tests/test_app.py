@@ -695,6 +695,34 @@ class TestFindExactMatchWithCrcVerification:
         assert result is candidate
         assert fake_session.calls
 
+    def _bundle(self, addon_root):
+        members = [make_installed(addon_root / 'Bundle', name) for name in ('BundleExtra1', 'BundleExtra2')]
+        return AddonBundle('Bundle', addon_root / 'Bundle', members)
+
+    def test_bundle_crc_matches_its_zip(self, addon_root, monkeypatch):
+        bundle = self._bundle(addon_root)
+        candidate = make_addon_info(id_=1, title='Bundle', directories=['Bundle'])
+        mock_remote_zip(monkeypatch, {
+            f'Bundle/{name}/{name}.txt': (addon_root / 'Bundle' / name / f'{name}.txt').read_bytes()
+            for name in ('BundleExtra1', 'BundleExtra2')})
+        folder = make_folder(addon_root)
+
+        result = app_mod.find_exact_match(bundle, [candidate], make_api(), url_template=folder.url_template)
+
+        assert result is candidate
+
+    def test_bundle_crc_mismatch_when_a_member_differs(self, addon_root, monkeypatch):
+        bundle = self._bundle(addon_root)
+        candidate = make_addon_info(id_=1, title='Bundle', directories=['Bundle'])
+        mock_remote_zip(monkeypatch, {
+            'Bundle/BundleExtra1/BundleExtra1.txt': (addon_root / 'Bundle/BundleExtra1/BundleExtra1.txt').read_bytes(),
+            'Bundle/BundleExtra2/BundleExtra2.txt': b'## Title: other'})
+        folder = make_folder(addon_root)
+
+        result = app_mod.find_exact_match(bundle, [candidate], make_api(), url_template=folder.url_template)
+
+        assert result is None
+
     def test_no_url_template_never_resolves(self, addon_root, monkeypatch):
         """Without url_template, content can never be verified, so find_exact_match() never
         resolves anything -- and doesn't even attempt a HEAD/Range request in the process."""
@@ -747,6 +775,29 @@ class TestResolveExactMatches:
         assert resolved == []
         installed = next(a for a in folder.installed if a.dir == 'BRHelper')
         assert installed.infos is None
+
+    def test_failing_addon_warns_and_the_others_still_resolve(self, addon_root, folder, monkeypatch):
+        make_installed(addon_root, 'AAHelper')
+        make_installed(addon_root, 'BRHelper')
+        exact = make_addon_info(id_=2, title='Exact', directories=['BRHelper'])
+        api = make_api(addons={1: make_addon_info(id_=1, title='Other', directories=['AAHelper']), 2: exact})
+        folder.scan(api)
+        monkeypatch.setattr(app_mod, 'find_ambiguous', lambda local, api: [
+            (next(a for a in local.installed if a.dir == 'AAHelper'), []),
+            (next(a for a in local.installed if a.dir == 'BRHelper'), [exact])])
+
+        def fake(installed, candidates, api, url_template=None):
+            if installed.dir == 'AAHelper':
+                raise FileNotFoundError('Invalid addon: Missing manifest')
+            return exact
+        monkeypatch.setattr(app_mod, 'find_exact_match', fake)
+
+        with pytest.warns(UserWarning) as caught:
+            resolved = app_mod.resolve_exact_matches(folder, api)
+
+        assert [a.dir for a in resolved] == ['BRHelper']
+        messages = [str(w.message) for w in caught]
+        assert any("'AAHelper'" in m and 'Missing manifest' in m for m in messages)
 
     def test_warns_about_each_resolution(self, addon_root, folder, monkeypatch):
         make_installed(addon_root, 'BRHelper')
