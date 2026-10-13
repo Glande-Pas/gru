@@ -174,17 +174,16 @@ class TestMultiDirBundle:
 # ---------------------------------------------------------------------------
 
 class TestNestedFlatBundle:
-    def test_kept_nested_and_warns(self, folder, stub_api, addon_root):
+    def test_kept_nested(self, folder, stub_api, addon_root):
         """Several addons nested under a manifest-less wrapper dir stay nested (the game
-        scans AddOns/ recursively) but are now recognised and reported, instead of being
-        silently treated as an opaque single addon."""
+        scans AddOns/ recursively) but are now recognised, instead of being silently
+        treated as an opaque single addon."""
         zf = make_zip({
             'Bundle/Bundle/Bundle.txt': MANIFEST.format(title='Bundle'),
             'Bundle/BundleExtra/BundleExtra.txt': MANIFEST.format(title='BundleExtra'),
         })
         path = addon_root / 'Bundle'
-        with pytest.warns(UserWarning, match='Installing 2 addons nested under Bundle/'):
-            dest, erase, files = folder._inspect_bundle(path, zf, stub_api)
+        dest, erase, files = folder._inspect_bundle(path, zf, stub_api)
         assert dest == addon_root
         assert erase == [path]
         names = {str(fn) for fn, *_ in files}
@@ -240,7 +239,6 @@ class TestNestedFlatBundle:
             'Bundle/BundleExtra/BundleExtra.txt': MANIFEST.format(title='BundleExtra'),
         })
         path = addon_root / 'Bundle'
-        with pytest.warns(UserWarning, match='Installing 1 addons nested under Bundle/: Bundle'):
-            dest, erase, files = folder._inspect_bundle(path, zf, api)
+        dest, erase, files = folder._inspect_bundle(path, zf, api)
         names = {str(fn) for fn, *_ in files}
         assert names == {'Bundle/src/Bundle/Bundle.txt'}

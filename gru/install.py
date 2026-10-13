@@ -520,7 +520,6 @@ class Folder:
                         if dep.id != main_id:
                             pruned.add(dir_)
                 nested -= pruned
-                warnings.warn(f'Installing {len(nested)} addons nested under {top_dir}/: {", ".join(sorted(nested))}')
                 # Only drop files under a pruned addon dir -- loose files (LICENSE, README) stay.
                 pruned_dirs = {d for d in nested_dirs if d.name in pruned}
                 files = [(fn, is_dir, sz) for fn, is_dir, sz in files

@@ -1100,13 +1100,11 @@ class TestUnmodifiedAddon:
             'Bundle/BundleExtra/code.lua': 'y = 2\n',
         })
         _mock_download(monkeypatch, tmp_path, zip_bytes)
-        with pytest.warns(UserWarning, match='nested under Bundle/'):
-            folder.unpack(upstream, StubAPI())
+        folder.unpack(upstream, StubAPI())
         bundle = next(a for a in folder.installed if isinstance(a, AddonBundle))
 
-        with pytest.warns(UserWarning, match='nested under Bundle/'), \
-                folder.unmodified_addon(upstream, bundle.dir, StubAPI(),
-                                        relpath=bundle.folder.relative_to(addon_root)) as ref_addon:
+        with folder.unmodified_addon(upstream, bundle.dir, StubAPI(),
+                                     relpath=bundle.folder.relative_to(addon_root)) as ref_addon:
             assert isinstance(ref_addon, AddonBundle)
             assert addon_diff(bundle, ref_addon, io.StringIO()) == 0
 
