@@ -27,7 +27,7 @@ import csv
 from urllib.parse import quote as urllib_quote
 
 from .config import root_key, user_cache, user_config
-from .addon import InstalledAddon, AddonInfo, AddonBundle, VersionOverride, GARBAGE, MANIFEST_EXTS, _parse_version
+from .addon import InstalledAddon, AddonInfo, AddonBundle, VersionOverride, GARBAGE, MANIFEST_EXTS, parse_version
 from .cache import download_name
 from .apiversions import ApiVersions
 from .gamesettings import DisabledInfo, GameSettings, load as load_game_settings
@@ -889,13 +889,13 @@ class Folder:
         for addon in pool:
             if not addon.is_lib or addon.parent is not None or addon.infos is None:
                 continue
-            this = _parse_version(addon.version)
+            this = parse_version(addon.version)
             if this is None:
                 continue
             for other in addon.infos.folders.values():
                 if other.parent is None:
                     continue
-                other_version = _parse_version(other.version)
+                other_version = parse_version(other.version)
                 if other_version is not None and other_version >= this:
                     redundant.append((addon, other))
                     break

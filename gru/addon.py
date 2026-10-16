@@ -36,7 +36,7 @@ _PRE, _END, _WORD, _NUM = range(4)
 _PRERELEASE = {name: rank for rank, name in enumerate(('alpha', 'beta', 'pre', 'rc'))}
 
 
-def _parse_version(value: str) -> VersionKey | None:
+def parse_version(value: str) -> VersionKey | None:
     """ Tokenize a version into numbers and letter runs (anything else is a separator), or None if it has no digits.
     Numbers compare numerically, letters lexically (case-insensitive) and sort below numbers, except the
     pre-release words alpha < beta < pre < rc, which sort below the release itself:
@@ -288,8 +288,8 @@ class InstalledAddon(Dependency, DisplayAddonProtocol):
         if self.id is None or self.infos is None:
             return False
 
-        is_local = _parse_version(self.version)
-        upstream = _parse_version(self.infos.version)
+        is_local = parse_version(self.version)
+        upstream = parse_version(self.infos.version)
         if is_local is not None and upstream is not None:
             # Equal versions may hide a re-upload: compare dates, unless the files already matched a listing version
             if is_local != upstream or not self.update_by_date or self.override is not None:
@@ -316,10 +316,10 @@ class InstalledAddon(Dependency, DisplayAddonProtocol):
         others = [other for other in self.comparable_copies if other.folder != self.folder]
         if not others:
             return ''
-        versions = [v for other in others if (v := _parse_version(other.version)) is not None]
+        versions = [v for other in others if (v := parse_version(other.version)) is not None]
         if len(versions) != len(others):
             return ''
-        this = _parse_version(self.version)
+        this = parse_version(self.version)
         if this is None:
             return ''
         return 'active' if this >= max(versions) else 'superseded'
@@ -395,8 +395,8 @@ class AddonBundle(InstalledAddon):
         """ Same comparison as InstalledAddon.can_update, minus its fallback (mtime check on manifest) """
         if self.id is None or self.infos is None:
             return False
-        is_local = _parse_version(self.version)
-        upstream = _parse_version(self.infos.version)
+        is_local = parse_version(self.version)
+        upstream = parse_version(self.infos.version)
         if is_local is not None and upstream is not None:
             return is_local < upstream
         return False

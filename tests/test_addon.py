@@ -9,7 +9,7 @@ import warnings
 
 import pytest
 
-from gru.addon import atol, _parse_version, strip_eso_text, file_crc32, AddonInfo, InstalledAddon, AddonBundle
+from gru.addon import atol, parse_version, strip_eso_text, file_crc32, AddonInfo, InstalledAddon, AddonBundle
 
 from .conftest import make_addon_info, make_installed, write_manifest
 
@@ -33,13 +33,13 @@ class TestAtol:
 
 class TestParseVersion:
     def test_no_digits_returns_none(self):
-        assert _parse_version('unknown') is None
+        assert parse_version('unknown') is None
 
     def test_non_string_returns_none(self):
-        assert _parse_version(None) is None  # pyright: ignore[reportArgumentType] -- deliberately wrong type
+        assert parse_version(None) is None  # pyright: ignore[reportArgumentType] -- deliberately wrong type
 
     def test_tokenizes_numbers_letters_and_separators(self):
-        assert _parse_version('1a-0-rc2') == ((3, 1), (2, 'a'), (3, 0), (0, 3), (3, 2), (1, 0))
+        assert parse_version('1a-0-rc2') == ((3, 1), (2, 'a'), (3, 0), (0, 3), (3, 2), (1, 0))
 
     @pytest.mark.parametrize('a, b', [
         ('1.2', '1.20'),
@@ -64,14 +64,14 @@ class TestParseVersion:
         ('1.2-rc9', '1.2a'),
     ])
     def test_ordering(self, a, b):
-        va, vb = _parse_version(a), _parse_version(b)
+        va, vb = parse_version(a), parse_version(b)
         assert va is not None and vb is not None and va < vb
 
     @pytest.mark.parametrize('a, b', [
         ('v1.2', '1.2'), ('v. 1.2', '1.2'), ('V.1.2', '1.2'), ('1.2RC1', '1.2rc1'), ('1_2', '1.2'), ('1.02', '1.2')
     ])
     def test_equivalent(self, a, b):
-        assert _parse_version(a) == _parse_version(b)
+        assert parse_version(a) == parse_version(b)
 
 
 class TestStripEsoText:
