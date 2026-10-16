@@ -125,7 +125,7 @@ def find_ambiguous(local: Folder, api: API) -> list[tuple[InstalledAddon, list[A
     just missing), paired with their candidate listings -- for `gru match` to resolve. """
     found = []
     for addon in local.installed:
-        if addon.infos is not None:
+        if addon.infos is not None or addon.source:
             continue
         try:
             api.dir(addon.dir)

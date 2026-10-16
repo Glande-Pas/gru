@@ -204,6 +204,8 @@ class TermDisplay:
 
     def _unmatched_status(self, folder: gru.addon.InstalledAddon) -> str:
         """ Why this folder has no online match, re-derived fresh from the API. """
+        if folder.source:
+            return click.style('git' if folder.source.startswith('git+') else 'local', fg='cyan')
         if _unmatched_reason(self.api, folder.dir) == 'ambiguous':
             return click.style('ambiguous - see gru match', fg='red', bold=True)
         return click.style('no listing', fg='yellow')
@@ -767,7 +769,7 @@ def update(ctx: click.Context, auto_deps: bool, opt: bool | None, patch: bool | 
         else:
             click.echo(f'Updated {updates} addon(s)')
 
-        unmatched = [addon for addon in local.installed if addon.id is None]
+        unmatched = [addon for addon in local.installed if addon.id is None and not addon.source]
         if unmatched:
             click.echo()
             click.echo(click.style(

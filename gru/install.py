@@ -27,7 +27,8 @@ import csv
 from urllib.parse import quote as urllib_quote
 
 from .config import root_key, user_cache, user_config
-from .addon import InstalledAddon, AddonInfo, AddonBundle, VersionOverride, GARBAGE, MANIFEST_EXTS, parse_version
+from .addon import (InstalledAddon, AddonInfo, AddonBundle, VersionOverride, GARBAGE, MANIFEST_EXTS, parse_version,
+                    is_offline_link)
 from .cache import download_name
 from .apiversions import ApiVersions
 from .gamesettings import DisabledInfo, GameSettings, load as load_game_settings
@@ -220,9 +221,11 @@ class Folder:
         """ folder -> (dir, version, link) for every currently-installed addon. Keyed by folder,
         not dir: two folders can share the same dir name (a standalone/bundled duplicate pair),
         and a dir-keyed dict would silently drop one of them. """
-        return {addon.folder: (addon.dir, addon.version,
-                               addon.infos.metadata['link'] if addon.infos is not None else '')
-                for addon in self.installed}
+        return {addon.folder: (addon.dir, addon.version, self._link(addon)) for addon in self.installed}
+
+    @staticmethod
+    def _link(addon: gru.addon.InstalledAddon) -> str:
+        return addon.infos.metadata['link'] if addon.infos is not None else addon.source
 
     def write_csv(self, out: typing.IO, recurse: bool = False) -> int:
         """ Write dir/version/link rows for installed addons to `out`, plus a locked column if any is locked.
@@ -232,8 +235,7 @@ class Folder:
         writer = csv.writer(out)
         writer.writerow(['dir', 'version', 'link', *(['locked'] if with_locked else [])])
         for addon in addons:
-            link = addon.infos.metadata['link'] if addon.infos is not None else ''
-            row = [addon.dir, addon.version, link]
+            row = [addon.dir, addon.version, self._link(addon)]
             if with_locked:
                 row.append('locked' if addon.locked else '')
             writer.writerow(row)
@@ -313,8 +315,12 @@ class Folder:
 
             addon.locked = path.name in locked
             addon.update_by_date = self.update_by_date
+            if is_offline_link(link := links.get(path.name, '')):
+                addon.source = link
+            elif parent is not None:
+                addon.source = parent.source  # nested in a local/git checkout
             try:
-                if api:
+                if api and not addon.source:
                     addon.link(api.dir(path.name, link=links.get(path.name)))
                     self._apply_override(addon)
             except FileNotFoundError:
@@ -341,7 +347,7 @@ class Folder:
         online listing """
         locked = locked or set()
         unmatched = [addon for addon in results.values()
-                     if addon.infos is None and not isinstance(addon, AddonBundle)]
+                     if addon.infos is None and not addon.source and not isinstance(addon, AddonBundle)]
         seen: set[pathlib.Path] = set()
 
         def make_bundle(candidate_dir: pathlib.Path) -> gru.addon.AddonBundle:
@@ -367,8 +373,15 @@ class Folder:
 
             while True:
                 existing = results.get(candidate_dir)
-                if existing is not None and not isinstance(existing, AddonBundle) and existing.infos is not None:
+                if existing is not None and not isinstance(existing, AddonBundle) and (existing.infos is not None
+                                                                                       or existing.source):
                     break  # an identified addon in its own right: its subfolders are its members, not a bundle
+                if is_offline_link(link := links.get(candidate_dir.name, '')):
+                    bundle = make_bundle(candidate_dir)
+                    for addon_ in (bundle, *bundle.members):
+                        addon_.source = link
+                    yield bundle, None, []
+                    break
                 try:
                     infos = api.dir(candidate_dir.name, link=links.get(candidate_dir.name))
                 except AmbiguousDirectory as exc:
@@ -683,8 +696,7 @@ class Folder:
         replaced = [inst for key, inst in self._installed.items() if any(key.is_relative_to(d) for d in touched)]
         self._installed = {key: inst for key, inst in self._installed.items()
                            if not any(key.is_relative_to(d) for d in touched)}
-        links = {inst.dir: inst.infos.metadata['link'] for inst in replaced
-                 if inst.infos is not None and inst.infos.metadata.get('link')}
+        links = {inst.dir: self._link(inst) for inst in replaced if self._link(inst)}
         locked = {inst.dir for inst in replaced if inst.locked}
         for inst in replaced:
             if inst.infos is not None and inst.infos.folders.get(inst.folder) is inst:
@@ -760,7 +772,7 @@ class Folder:
             # triggers its own standalone reinstall below (path=None, since .parent is not None),
             # which never touches the bundle: the bundle's own can_update is self-determined and
             # evaluated on its own loop iteration, not influenced by any member's update status.
-            if not addon.can_update or addon.infos is None or addon.locked:
+            if not addon.can_update or addon.infos is None or addon.locked or addon.source:
                 continue
             if addon.parent is not None and addon.is_superseded:
                 continue  # a newer copy already exists elsewhere; nothing to do here

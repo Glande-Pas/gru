@@ -12,7 +12,8 @@ import pytest
 
 import gru.install as install_mod
 from gru.install import Folder
-from gru.addon import AddonBundle
+from gru.addon import AddonBundle, is_offline_link
+from gru.app import find_ambiguous
 from gru.patch import addon_diff
 
 from .conftest import as_api, make_api, make_installed, make_addon_info, write_manifest, StubAPI
@@ -1431,3 +1432,106 @@ class TestDownloadCacheName:
         folder.unpack(upstream, as_api(StubAPI({'Foo': upstream})))
         cached = {p.name for p in tmp_path.rglob('*.zip')}
         assert cached == {download_name(3, 'Foo', '2.0')}
+
+
+# ---------------------------------------------------------------------------
+# Offline links (local:, git+...) in addons.csv
+# ---------------------------------------------------------------------------
+
+class TestOfflineLinks:
+    @pytest.fixture
+    def write_hints(self, monkeypatch, tmp_path):
+        def write(*rows: str) -> None:
+            csv_path = tmp_path / 'addons.csv'
+            csv_path.write_text('dir,version,link\n' + ''.join(f'{row}\n' for row in rows))
+            monkeypatch.setattr(install_mod, 'user_config',
+                                lambda *parts: csv_path if parts[-1] == 'addons.csv' else tmp_path.joinpath(*parts))
+        return write
+
+    @pytest.fixture
+    def recording_api(self):
+        class RecordingApi(StubAPI):
+            looked_up: list[str] = []
+
+            def dir(self, name, link=None):
+                self.looked_up.append(name)
+                return super().dir(name, link)
+        return RecordingApi({name: make_addon_info(id_=i, title=name, directories=[name])
+                             for i, name in enumerate(['Mine', 'Bundle', 'Child', 'Other'], 1)})
+
+    @pytest.mark.parametrize('link,expected', [
+        ('local:', True),
+        ('git+https://github.com/a/Mine.git', True),
+        ('git+https://github.com/a/Mine.git@v1.0', True),
+        ('https://www.esoui.com/downloads/info1-Mine.html', False),
+        ('', False),
+    ])
+    def test_is_offline_link(self, link, expected):
+        assert is_offline_link(link) is expected
+
+    @pytest.mark.parametrize('link', ['local:', 'git+https://github.com/a/Mine.git@v1.0'])
+    def test_scan_does_not_look_up_offline_addon(self, addon_root, folder, write_hints, recording_api, link):
+        make_installed(addon_root, 'Mine')
+        make_installed(addon_root, 'Other')
+        write_hints(f'Mine,1.0,{link}')
+
+        folder.scan(recording_api)
+        by_dir = {a.dir: a for a in folder.installed}
+        assert recording_api.looked_up == ['Other']
+        assert by_dir['Mine'].infos is None
+        assert by_dir['Mine'].source == link
+        assert by_dir['Other'].id is not None
+
+    def test_nested_addon_inherits_source(self, addon_root, folder, write_hints, recording_api):
+        make_installed(addon_root, 'Mine')
+        make_installed(addon_root / 'Mine', 'Child')
+        write_hints('Mine,1.0,local:')
+
+        folder.scan(recording_api)
+        by_dir = {a.dir: a for a in folder.installed}
+        assert recording_api.looked_up == []
+        assert by_dir['Child'].source == 'local:'
+        assert by_dir['Child'].infos is None
+
+    def test_offline_bundle_dir_not_looked_up(self, addon_root, folder, write_hints, recording_api):
+        make_installed(addon_root / 'Bundle', 'BundleExtra1')
+        make_installed(addon_root / 'Bundle', 'BundleExtra2')
+        write_hints('Bundle,1.0,local:')
+
+        folder.scan(recording_api)
+        bundle = folder._installed[addon_root / 'Bundle']
+        assert isinstance(bundle, AddonBundle)
+        assert 'Bundle' not in recording_api.looked_up
+        assert bundle.infos is None
+        assert {m.source for m in bundle.members} == {bundle.source} == {'local:'}
+
+    def test_write_csv_keeps_offline_link(self, addon_root, folder, write_hints, recording_api):
+        make_installed(addon_root, 'Mine')
+        write_hints('Mine,1.0,git+https://github.com/a/Mine.git')
+        folder.scan(recording_api)
+
+        out = io.StringIO()
+        folder.write_csv(out)
+        assert out.getvalue().splitlines()[1] == 'Mine,1.0,git+https://github.com/a/Mine.git'
+        assert folder.snapshot()[addon_root / 'Mine'][2] == 'git+https://github.com/a/Mine.git'
+
+    def test_update_skips_offline_addon(self, addon_root, folder, monkeypatch):
+        installed = make_installed(addon_root, 'Mine', Version='1.0')
+        installed.link(make_addon_info(id_=1, title='Mine', version='2.0', directories=['Mine']))
+        installed.source = 'local:'
+        folder._installed = {installed.folder: installed}
+
+        unpacked = []
+        monkeypatch.setattr(folder, 'unpack', lambda *a, **kw: unpacked.append(a) or [])
+
+        assert folder.update(as_api(StubAPI())) == (0, 0)
+        assert unpacked == []
+
+    def test_find_ambiguous_skips_offline_addon(self, addon_root, folder, write_hints):
+        make_installed(addon_root, 'Mine')
+        write_hints('Mine,1.0,local:')
+        tied = [make_addon_info(id_=i, title=f'Mine {i}', directories=['Mine']) for i in (1, 2)]
+        api = make_api(addons={a.id: a for a in tied})
+
+        folder.scan(api)
+        assert find_ambiguous(folder, api) == []

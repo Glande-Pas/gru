@@ -21,6 +21,12 @@ from .config import encoding_open
 
 GARBAGE = {'__MACOSX', '.DS_STORE'}
 MANIFEST_EXTS = ('.txt', '.addon')
+#: addons.csv link schemes for addons never matched online nor updated by gru
+OFFLINE_SCHEMES = ('local:', 'git+')
+
+
+def is_offline_link(link: str) -> bool:
+    return link.startswith(OFFLINE_SCHEMES)
 
 
 def atol(val: str) -> int:
@@ -156,6 +162,8 @@ class InstalledAddon(Dependency, DisplayAddonProtocol):
     override: VersionOverride | None = None
     #: Set by Folder from the `update_by_date` option
     update_by_date: bool = True
+    #: Offline link (local:, git+...) from addons.csv: never matched online nor updated
+    source: str = ''
 
     """ An installed addon as detected by the game, with matching manifest. """
     is_local = True
