@@ -38,10 +38,14 @@ def cache(tmp_path, monkeypatch):
 def calls(monkeypatch):
     log = []
 
-    def fake_get(url, headers=None, timeout=None):
-        log.append(headers)
-        return fake_get.response
-    fake_get.response = Response(data=DATA)
+    class FakeGet:
+        response = Response(data=DATA)
+
+        def __call__(self, url, headers=None, timeout=None):
+            log.append(headers)
+            return self.response
+
+    fake_get = FakeGet()
     monkeypatch.setattr(apiversions.requests, 'get', fake_get)
     return fake_get, log
 

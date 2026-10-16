@@ -9,7 +9,8 @@ import warnings
 
 import pytest
 
-from gru.addon import atol, parse_version, strip_eso_text, file_crc32, AddonInfo, InstalledAddon, AddonBundle
+from gru.addon import (atol, parse_version, strip_eso_text, file_crc32, AddonInfo, InstalledAddon, AddonBundle,
+                       VersionOverride)
 
 from .conftest import make_addon_info, make_installed, write_manifest
 
@@ -357,7 +358,7 @@ class TestInstalledAddonCanUpdate:
 
     def test_matched_listing_version_is_not_outdated_by_date(self, tmp_path):
         installed = make_installed(tmp_path, 'MyAddon', Version='1.0')
-        installed.override = type('Override', (), {'listing_version': '1.1'})()
+        installed.override = VersionOverride(id=1, listing_version='1.1', local_version='1.0', fingerprint='x')
         upstream = make_addon_info(title='MyAddon', version='1.1', date=datetime.datetime(2100, 1, 1))
         installed.link(upstream)
         assert installed.can_update is False

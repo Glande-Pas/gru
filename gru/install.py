@@ -173,7 +173,7 @@ class Folder:
         if game is None:
             return None
         members = addon.members if isinstance(addon, AddonBundle) else [addon]
-        declared = [version for member in members for version in member.api]
+        declared = typing.cast('list[int]', [version for member in members for version in member.api])
         if not declared:
             return None
         if min(declared) > game:
