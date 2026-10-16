@@ -231,6 +231,28 @@ class Folder:
         locked = {row['dir'] for row in rows if row.get('locked')}
         return links, locked
 
+    def _subtree(self, addon: gru.addon.InstalledAddon) -> list[gru.addon.InstalledAddon]:
+        return [inst for inst in self.installed if inst.folder.is_relative_to(addon.folder)]
+
+    def mark_local(self, addon: gru.addon.InstalledAddon) -> None:
+        """ Never match `addon` (nor addons inside it) online, nor update it """
+        for inst in self._subtree(addon):
+            if inst.infos is not None and inst.infos.folders.get(inst.folder) is inst:
+                inst.infos.deregister(inst)
+            inst.infos = None
+            inst.id = None
+            inst.override = None
+            inst.source = 'local:'
+
+    def mark_online(self, addon: gru.addon.InstalledAddon, api: gru.api.API) -> gru.addon.InstalledAddon | None:
+        """ Undo mark_local() and rescan to match it online again. Returns the rescanned addon. """
+        for inst in self._subtree(addon):
+            if inst.source == addon.source:
+                inst.source = ''
+        self.export_state()
+        self.scan(api)
+        return self._installed.get(addon.folder)
+
     def snapshot(self) -> dict[pathlib.Path, tuple[str, str, str]]:
         """ folder -> (dir, version, link) for every currently-installed addon. Keyed by folder,
         not dir: two folders can share the same dir name (a standalone/bundled duplicate pair),

@@ -261,9 +261,35 @@ def _confirm(query: str | None) -> bool:
     return answer
 
 
-def _prompt_addon(results: Iterable[AddonT], confirm_prompt: str | None = None,
-                  show_batch: int | None = None) -> AddonT | None:
-    """ Pick an addon from a list of addons """
+MARK_LOCAL = 'local'
+
+
+def _int_or_letter(lo: int, hi: int, letters: str) -> click.ParamType:
+    """ click prompt type: an int in [lo, hi], or one of `letters` """
+    def convert(value: typing.Any) -> int | str:
+        text = str(value).strip().lower()
+        if text and text in letters:
+            return text
+        number = int(text)
+        if not lo <= number <= hi:
+            raise ValueError(f'{number} is not in the range {lo}-{hi}')
+        return number
+    return click.types.FuncParamType(convert)
+
+
+@typing.overload
+def _prompt_addon(results: Iterable[AddonT], confirm_prompt: str | None = None, show_batch: int | None = None,
+                  local_choice: typing.Literal[False] = False) -> AddonT | None: ...
+
+
+@typing.overload
+def _prompt_addon(results: Iterable[AddonT], confirm_prompt: str | None = None, show_batch: int | None = None,
+                  *, local_choice: typing.Literal[True]) -> AddonT | typing.Literal['local'] | None: ...
+
+
+def _prompt_addon(results: Iterable[AddonT], confirm_prompt: str | None = None, show_batch: int | None = None,
+                  local_choice: bool = False) -> AddonT | typing.Literal['local'] | None:
+    """ Pick an addon from a list of addons. With `local_choice`, answering 'l' returns MARK_LOCAL. """
     results = list(results)
     if not results:
         click.echo('No addon found')
@@ -279,28 +305,34 @@ def _prompt_addon(results: Iterable[AddonT], confirm_prompt: str | None = None,
 
     TermDisplay(results[:show_batch])
 
+    letters = 'l' if local_choice else ''
+    hint = ', l marks local' if local_choice else ''
     if len(results) == 1:
-        return results[0] if _confirm(confirm_prompt) else None
+        if not local_choice:
+            return results[0] if _confirm(confirm_prompt) else None
+        answer = click.prompt(f'{confirm_prompt or "Confirm?"} [y/n{hint}]', prompt_suffix=':\n>> ',
+                              type=click.Choice(['y', 'n', 'l'], case_sensitive=False))
+        click.echo()
+        return results[0] if answer.lower() == 'y' else MARK_LOCAL if answer.lower() == 'l' else None
 
+    answer: int | str
     for shown in range(show_batch, len(results), show_batch):
-        answer = click.prompt(f'Select (1-{shown}, 0 cancels, empty continues)', prompt_suffix=':\n>> ', default=-1,
-                              type=click.IntRange(-1, shown + 1), show_default=False)
-        if answer >= 0:
+        answer = click.prompt(f'Select (1-{shown}, 0 cancels, empty continues{hint})', prompt_suffix=':\n>> ',
+                              default=-1, type=_int_or_letter(-1, shown + 1, letters), show_default=False)
+        if isinstance(answer, str) or answer >= 0:
             break
 
         TermDisplay(results[shown:shown+show_batch], num_from=shown)
     else:
-        answer = click.prompt(f'Select (1-{len(results)}, 0 cancels)', prompt_suffix=':\n>> ',
-                              type=click.IntRange(0, len(results) + 1))
+        answer = click.prompt(f'Select (1-{len(results)}, 0 cancels{hint})', prompt_suffix=':\n>> ',
+                              type=_int_or_letter(0, len(results) + 1, letters))
 
     click.echo()
-    try:
-        answer = int(answer)
-    except ValueError:
-        return None
-
-    if 1 <= answer <= len(results):
+    if answer == 'l':
+        return MARK_LOCAL
+    if isinstance(answer, int) and 1 <= answer <= len(results):
         return results[answer - 1]
+    return None
 
 
 def _find_installed(local: gru.install.Folder, api: gru.api.API, term: str | None,
@@ -777,7 +809,7 @@ def update(ctx: click.Context, auto_deps: bool, opt: bool | None, patch: bool | 
                 'for updates:', fg='red', bold=True))
             for addon in unmatched:
                 note = ('ambiguous - see `gru match`' if _unmatched_reason(api, addon.dir) == 'ambiguous'
-                        else 'no online listing')
+                        else 'no online listing - see `gru match --local`')
                 click.echo(click.style(f'  - {TermDisplay._render_eso_text(addon.title)} ({note})', fg='red'))
     finally:
         local.export_state()
@@ -898,45 +930,122 @@ def list_locks(ctx: click.Context) -> None:
     show_warnings(ctx)
 
 
+def _is_git_checkout(addon: gru.addon.InstalledAddon) -> bool:
+    return (addon.folder / '.git').exists()
+
+
+def _match_local(ctx: click.Context, addon: str | None) -> None:
+    """ gru match --local: never match an addon online nor update it """
+    api = ctx.obj['api']
+    local = ctx.obj['local']
+    found = _find_installed(local, api, addon, 'Mark as local?', pool=[a for a in local.installed if not a.source])
+    if found is None:
+        return
+    title = TermDisplay._render_eso_text(found.title)
+    if found.source:
+        click.echo(f'{title} is already {"a git checkout" if _is_git_checkout(found) else "local"}.')
+        return
+    local.mark_local(found)
+    local.export_state()
+    click.echo(f'{title} is now local: never matched online nor updated.')
+
+
+def _match_online(ctx: click.Context, addon: str | None) -> gru.addon.InstalledAddon | None:
+    """ gru match --online: undo --local. Returns the addon if it still needs matching. """
+    api = ctx.obj['api']
+    local = ctx.obj['local']
+    pool = [a for a in local.installed if a.source and not _is_git_checkout(a)
+            and (a.parent is None or a.parent.source != a.source)]
+    found = _find_installed(local, api, addon, 'Match online?', pool=pool)
+    if found is None:
+        return None
+    title = TermDisplay._render_eso_text(found.title)
+    if _is_git_checkout(found):
+        click.echo(f'{title} is a git checkout: remove its .git folder to match it online.')
+        return None
+    if not found.source:
+        click.echo(f'{title} is not local.')
+        return None
+    if found.parent is not None and found.parent.source == found.source:
+        click.echo(f'{title} is inside local addon {TermDisplay._render_eso_text(found.parent.title)}.')
+        return None
+
+    rescanned = local.mark_online(found, api)
+    click.echo(f'{title} is no longer local.')
+    if rescanned is not None and rescanned.infos is not None:
+        click.echo(f'Matched online as {TermDisplay._render_eso_text(rescanned.infos.title)}.')
+        return None
+    return rescanned
+
+
 @main.command(short_help='Resolve addons that ambiguously match several online listings')
 @click.argument('addon', required=False)
+@click.option('--local', 'mode', flag_value='local', help='Mark an addon local: never matched online nor updated')
+@click.option('--online', 'mode', flag_value='online', help='Undo --local: match an addon online again')
 @click.pass_context
-def match(ctx: click.Context, addon: str | None) -> None:
-    """ Resolve addons that ambiguously match several online listings """
+def match(ctx: click.Context, addon: str | None, mode: str | None) -> None:
+    """ Resolve addons that ambiguously match several online listings, or mark addons local """
     api = ctx.obj['api']
     local = ctx.obj['local']
     sortkey = ctx.obj['config'].get(f'{local.game}.addons', 'sortkey')
 
-    auto_resolved = gru_app.resolve_exact_matches(local, api)
-    auto_resolved += gru_app.resolve_ambiguous_bundles(local, api)
+    only = None
+    if mode == 'local':
+        _match_local(ctx, addon)
+        show_warnings(ctx)
+        return
+    elif mode == 'online':
+        only = _match_online(ctx, addon)
+    elif addon:
+        only = _find_installed(local, api, addon, 'Confirm match target?')
+        if only is not None and only.source:
+            kind = 'a git checkout' if _is_git_checkout(only) else 'local (see `gru match --online`)'
+            click.echo(f'{TermDisplay._render_eso_text(only.title)} is {kind}.')
+            only = None
+        elif only is not None and only.infos is not None:
+            click.echo(f'{TermDisplay._render_eso_text(only.title)} is already matched online as '
+                       f'{TermDisplay._render_eso_text(only.infos.title)}.')
+            only = None
+    if (mode or addon) and only is None:
+        show_warnings(ctx)
+        return
+
+    auto_resolved = gru_app.resolve_exact_matches(local, api, only)
+    auto_resolved += gru_app.resolve_ambiguous_bundles(local, api, only)
     if auto_resolved:
         local.export_state()
 
-    ambiguous = gru_app.find_ambiguous(local, api) + gru_app.find_ambiguous_bundles(local, api)
-    if addon:
-        term = addon.lower()
-        ambiguous = [(inst, c) for inst, c in ambiguous if term in inst.dir.lower() or term in inst.title.lower()]
-        auto_resolved = [inst for inst in auto_resolved if term in inst.dir.lower() or term in inst.title.lower()]
+    ambiguous = gru_app.find_ambiguous(local, api, only) + gru_app.find_ambiguous_bundles(local, api, only)
 
     total = len(ambiguous) + len(auto_resolved)
     if not total:
-        click.echo('No ambiguous addons to resolve.')
+        if only is not None:
+            click.echo(f'{TermDisplay._render_eso_text(only.title)} has no online listing: '
+                       f'`gru match --local {only.dir}` stops reporting it.')
+        else:
+            click.echo('No ambiguous addons to resolve.')
         show_warnings(ctx)
         return
 
     resolved = len(auto_resolved)
+    marked_local = 0
     for installed, candidates in ambiguous:
         ranked = gru_app.rank_candidates(installed, candidates, api, sortkey)
         click.echo(f'\n{TermDisplay._render_eso_text(installed.title)} ({installed.dir}):')
-        picked = _prompt_addon(ranked, f'Confirm this is {installed.title}?')
+        picked = _prompt_addon(ranked, f'Confirm this is {installed.title}?', local_choice=True)
         if picked is None:
             continue
-        installed.link(picked)
+        if picked == MARK_LOCAL:
+            local.mark_local(installed)
+            marked_local += 1
+        else:
+            installed.link(picked)
         resolved += 1
 
     if resolved > len(auto_resolved):
         local.export_state()
-    click.echo(f'Resolved {resolved} of {total} ambiguous addon(s).')
+    click.echo(f'Resolved {resolved} of {total} ambiguous addon(s)'
+               + (f', {marked_local} marked local.' if marked_local else '.'))
     show_warnings(ctx)
 
 

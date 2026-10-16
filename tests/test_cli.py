@@ -548,6 +548,7 @@ class TestMatchCommand:
         _patch_user_config(monkeypatch, tmp_path)
 
         make_installed(addons_root, 'BRHelper', Title='Blackrose Prison Helper JP', Author='tdenc')
+        make_installed(addons_root, 'Lonely', Title='Lonely')  # no online listing
         base = make_addon_info(id_=2181, title='Blackrose Prison Helper', author='andy.s',
                                directories=['BRHelper'])
         jp = make_addon_info(id_=2996, title='Blackrose Prison Helper JP Version', author='tdenc',
@@ -567,7 +568,13 @@ class TestMatchCommand:
             return config, api, local
 
         monkeypatch.setattr(cli_mod, 'build_app', fake_build_app)
-        return {'config_file': config_file, 'config_dir': tmp_path / 'config', 'base': base, 'jp': jp}
+        return {'config_file': config_file, 'config_dir': tmp_path / 'config', 'addons_root': addons_root,
+                'base': base, 'jp': jp}
+
+    @staticmethod
+    def links(cli_app):
+        rows = list(csv.reader((cli_app['config_dir'] / 'ESO' / 'addons.csv').open()))
+        return {row[0]: row[2] for row in rows[1:]}
 
     def test_match_ranks_author_match_first_and_persists_pick(self, cli_app):
         result = invoke(cli_app['config_file'], ['match'], input='1\n')
@@ -650,6 +657,62 @@ class TestMatchCommand:
         rows = list(csv.reader((tmp_path / 'config' / 'ESO' / 'addons.csv').open()))
         by_dir = {row[0]: row for row in rows[1:]}
         assert by_dir['BRHelper'][2] == jp.metadata['link']
+
+    def test_match_prompt_marks_local(self, cli_app):
+        result = invoke(cli_app['config_file'], ['match'], input='l\n')
+        assert result.exit_code == 0
+        assert 'Resolved 1 of 1 ambiguous addon(s), 1 marked local.' in result.output
+        assert self.links(cli_app)['BRHelper'] == 'local:'
+        assert 'No ambiguous addons to resolve.' in invoke(cli_app['config_file'], ['match']).output
+
+    def test_match_single_addon(self, cli_app):
+        result = invoke(cli_app['config_file'], ['match', 'BRHelper'], input='y\n1\n')
+        assert result.exit_code == 0
+        assert 'Resolved 1 of 1 ambiguous addon(s).' in result.output
+        assert self.links(cli_app)['BRHelper'] == cli_app['jp'].metadata['link']
+
+    def test_match_single_addon_without_listing(self, cli_app):
+        result = invoke(cli_app['config_file'], ['match', 'Lonely'], input='y\n')
+        assert result.exit_code == 0
+        assert 'Lonely has no online listing: `gru match --local Lonely`' in result.output
+
+    def test_match_local_then_online(self, cli_app):
+        result = invoke(cli_app['config_file'], ['match', '--local', 'Lonely'], input='y\n')
+        assert result.exit_code == 0
+        assert 'Lonely is now local' in result.output
+        assert self.links(cli_app)['Lonely'] == 'local:'
+
+        result = invoke(cli_app['config_file'], ['match', '--local', 'Lonely'], input='y\n')
+        assert 'Lonely is already local.' in result.output
+
+        result = invoke(cli_app['config_file'], ['match', 'Lonely'], input='y\n')
+        assert 'Lonely is local (see `gru match --online`).' in result.output
+
+        result = invoke(cli_app['config_file'], ['match', '--online', 'Lonely'], input='y\n')
+        assert result.exit_code == 0
+        assert 'Lonely is no longer local.' in result.output
+        assert 'Lonely has no online listing' in result.output
+        assert self.links(cli_app)['Lonely'] == ''
+
+    def test_match_online_prompts_for_ambiguous_addon(self, cli_app):
+        invoke(cli_app['config_file'], ['match', '--local', 'BRHelper'], input='y\n')
+        assert self.links(cli_app)['BRHelper'] == 'local:'
+
+        # no addon given: the only local addon is offered
+        result = invoke(cli_app['config_file'], ['match', '--online'], input='y\n1\n')
+        assert result.exit_code == 0
+        assert 'Resolved 1 of 1 ambiguous addon(s).' in result.output
+        assert self.links(cli_app)['BRHelper'] == cli_app['jp'].metadata['link']
+
+    def test_match_online_refuses_git_checkout(self, cli_app, git):
+        checkout = cli_app['addons_root'] / 'Lonely'
+        git(checkout, 'init')
+        git(checkout, 'commit', '--allow-empty', '-m', 'one')
+
+        result = invoke(cli_app['config_file'], ['match', '--online', 'Lonely'], input='y\n')
+        assert 'Lonely is a git checkout: remove its .git folder' in result.output
+        result = invoke(cli_app['config_file'], ['match', '--local', 'Lonely'], input='y\n')
+        assert 'Lonely is already a git checkout.' in result.output
 
 
 class TestExportCommand:

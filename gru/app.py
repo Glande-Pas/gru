@@ -120,12 +120,18 @@ def log_changes(local: Folder, config: configparser.ConfigParser,
         append_change_log(path, [new_dir or old_dir, new_version, new_link or old_link, now, old_version], max_lines)
 
 
-def find_ambiguous(local: Folder, api: API) -> list[tuple[InstalledAddon, list[AddonInfo]]]:
+def _in_scope(addon: InstalledAddon, only: InstalledAddon | None) -> bool:
+    """ Whether `addon` is `only` or the bundle containing it; always if `only` is None """
+    return only is None or addon is only or only.parent is addon
+
+
+def find_ambiguous(local: Folder, api: API, only: InstalledAddon | None = None
+                   ) -> list[tuple[InstalledAddon, list[AddonInfo]]]:
     """ Installed addons left unmatched specifically because their dir is ambiguous online (not
     just missing), paired with their candidate listings -- for `gru match` to resolve. """
     found = []
     for addon in local.installed:
-        if addon.infos is not None or addon.source:
+        if addon.infos is not None or addon.source or not _in_scope(addon, only):
             continue
         try:
             api.dir(addon.dir)
@@ -318,10 +324,10 @@ def find_exact_match(installed: InstalledAddon, candidates: list[AddonInfo], api
     return None
 
 
-def resolve_exact_matches(local: Folder, api: API) -> list[InstalledAddon]:
+def resolve_exact_matches(local: Folder, api: API, only: InstalledAddon | None = None) -> list[InstalledAddon]:
     """ Auto-link every ambiguous local install with exactly one CRC-verified match. Returns the
     addons resolved this way; each is also reported via warnings.warn(). """
-    ambiguous = find_ambiguous(local, api)
+    ambiguous = find_ambiguous(local, api, only)
     logger.debug('resolve_exact_matches: %d ambiguous addon(s) to check', len(ambiguous))
     resolved = []
     for installed, candidates in ambiguous:
@@ -339,14 +345,16 @@ def resolve_exact_matches(local: Folder, api: API) -> list[InstalledAddon]:
     return resolved
 
 
-def find_ambiguous_bundles(local: Folder, api: API) -> list[tuple[AddonBundle, list[AddonInfo]]]:
+def find_ambiguous_bundles(local: Folder, api: API, only: InstalledAddon | None = None
+                           ) -> list[tuple[AddonBundle, list[AddonInfo]]]:
     """ Groups of individually-unmatched sibling addons (private/library-only names, e.g.
     HarvestMapData's per-region submodules) whose containing directory is ambiguous online --
     for `gru match` to resolve, same as find_ambiguous() does for a single addon. """
     links, _ = local.read_csv_hints()
     results = {addon.folder: addon for addon in local.installed}
     return [(bundle, candidates) for bundle, infos, candidates
-            in local.find_bundle_matches(results, api, links) if infos is None and candidates]
+            in local.find_bundle_matches(results, api, links)
+            if infos is None and candidates and _in_scope(bundle, only)]
 
 
 def _bundle_dirs_match(bundle: AddonBundle, candidate: AddonInfo, url_template: str,
@@ -378,11 +386,11 @@ def _bundle_dirs_match(bundle: AddonBundle, candidate: AddonInfo, url_template: 
     return all(member.dir.lower() in remote_parts for member in bundle.members)
 
 
-def resolve_ambiguous_bundles(local: Folder, api: API) -> list[AddonBundle]:
+def resolve_ambiguous_bundles(local: Folder, api: API, only: InstalledAddon | None = None) -> list[AddonBundle]:
     """ Auto-link every ambiguous bundle group with exactly one candidate whose zip contains all
     of its members. Returns the bundles resolved this way; each is also reported via
     warnings.warn(). """
-    ambiguous = find_ambiguous_bundles(local, api)
+    ambiguous = find_ambiguous_bundles(local, api, only)
     resolved = []
     for bundle, candidates in ambiguous:
         confirmed = [c for c in candidates if _bundle_dirs_match(bundle, c, local.url_template) is True]

@@ -321,7 +321,7 @@ class TestResolveAmbiguousBundles:
         api = make_api(addons={1: one, 2: two})
         folder = make_folder(addon_root)
         bundle = AddonBundle('Bundle', addon_root / 'Bundle', [member1, member2])
-        monkeypatch.setattr(app_mod, 'find_ambiguous_bundles', lambda local, api: [(bundle, [one, two])])
+        monkeypatch.setattr(app_mod, 'find_ambiguous_bundles', lambda local, api, only=None: [(bundle, [one, two])])
         _mock_remote_zips_by_id(monkeypatch, {
             1: _build_zip({'Bundle/BundleExtra1/BundleExtra1.txt': b'1', 'Bundle/BundleExtra2/BundleExtra2.txt': b'2'}),
             2: _build_zip({'Bundle/BundleExtra1/BundleExtra1.txt': b'1'}),  # missing BundleExtra2
@@ -342,7 +342,7 @@ class TestResolveAmbiguousBundles:
         api = make_api(addons={1: one, 2: two})
         folder = make_folder(addon_root)
         bundle = AddonBundle('Bundle', addon_root / 'Bundle', [member1, member2])
-        monkeypatch.setattr(app_mod, 'find_ambiguous_bundles', lambda local, api: [(bundle, [one, two])])
+        monkeypatch.setattr(app_mod, 'find_ambiguous_bundles', lambda local, api, only=None: [(bundle, [one, two])])
         same_zip = _build_zip({
             'Bundle/BundleExtra1/BundleExtra1.txt': b'1',
             'Bundle/BundleExtra2/BundleExtra2.txt': b'2',
@@ -782,7 +782,7 @@ class TestResolveExactMatches:
         exact = make_addon_info(id_=2, title='Exact', directories=['BRHelper'])
         api = make_api(addons={1: make_addon_info(id_=1, title='Other', directories=['AAHelper']), 2: exact})
         folder.scan(api)
-        monkeypatch.setattr(app_mod, 'find_ambiguous', lambda local, api: [
+        monkeypatch.setattr(app_mod, 'find_ambiguous', lambda local, api, only=None: [
             (next(a for a in local.installed if a.dir == 'AAHelper'), []),
             (next(a for a in local.installed if a.dir == 'BRHelper'), [exact])])
 
