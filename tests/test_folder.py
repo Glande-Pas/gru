@@ -1535,3 +1535,35 @@ class TestOfflineLinks:
 
         folder.scan(api)
         assert find_ambiguous(folder, api) == []
+
+    @pytest.fixture
+    def checkout(self, addon_root, git):
+        make_installed(addon_root, 'Mine')
+        git(addon_root / 'Mine', 'init')
+        git(addon_root / 'Mine', 'commit', '--allow-empty', '-m', 'one')
+        return addon_root / 'Mine'
+
+    def test_scan_detects_git_checkout(self, checkout, folder, git, recording_api):
+        git(checkout, 'remote', 'add', 'origin', 'https://github.com/a/Mine.git')
+        git(checkout, 'tag', 'v1.0')
+        make_installed(checkout, 'Child')
+
+        folder.scan(recording_api)
+        by_dir = {a.dir: a for a in folder.installed}
+        assert recording_api.looked_up == []
+        assert by_dir['Mine'].source == by_dir['Child'].source == 'git+https://github.com/a/Mine.git@v1.0'
+
+    def test_scan_git_checkout_without_remote_is_local(self, checkout, folder, recording_api):
+        folder.scan(recording_api)
+        [addon] = folder.installed
+        assert addon.source == 'local:'
+        assert recording_api.looked_up == []
+
+    def test_git_detection_overrides_csv_link(self, checkout, folder, git, write_hints, recording_api):
+        git(checkout, 'remote', 'add', 'origin', 'https://github.com/a/Mine.git')
+        write_hints('Mine,1.0,https://www.esoui.com/downloads/info1-Mine.html')
+
+        folder.scan(recording_api)
+        [addon] = folder.installed
+        assert addon.source == 'git+https://github.com/a/Mine.git@main'
+        assert addon.infos is None

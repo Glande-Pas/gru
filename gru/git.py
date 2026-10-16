@@ -1,14 +1,19 @@
 # Copyright Glande-Pas and contributors
 # Licensed under the EUPL, see LICENSE.md
 
-""" Read-only identification of git checkouts (remote, ref, commit) by parsing .git directly """
+""" Read-only identification of git checkouts (remote, ref, commit): via the git CLI, else by parsing .git """
 
 from __future__ import annotations
 
+import os
 import pathlib
 import re
+import subprocess
 import zlib
 from typing import NamedTuple
+
+#: Inherited from a calling git hook, these would point the CLI at another repo
+_GIT_LOCATION_VARS = {'GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_OBJECT_DIRECTORY'}
 
 
 class GitInfo(NamedTuple):
@@ -78,6 +83,44 @@ def _config(common: pathlib.Path) -> dict[tuple[str, str], dict[str, str]]:
 
 def git_info(folder: pathlib.Path) -> GitInfo | None:
     """ Identify the checkout at `folder`, or None if it is not one """
+    if not (folder / '.git').exists():
+        return None
+    try:
+        return _git_info_cli(folder)
+    except (OSError, subprocess.SubprocessError):
+        return parse_git_info(folder)
+
+
+def _git_info_cli(folder: pathlib.Path) -> GitInfo:
+    env = {k: v for k, v in os.environ.items() if k not in _GIT_LOCATION_VARS}
+
+    def git(*args: str) -> list[str]:
+        return subprocess.run(['git', '-C', str(folder), *args], env=env, capture_output=True, text=True,
+                              check=True, timeout=10).stdout.splitlines()
+
+    # fails on an unborn branch: left to the parser
+    toplevel, common, sha, head = git('rev-parse', '--show-toplevel', '--git-common-dir',
+                                      'HEAD', '--symbolic-full-name', 'HEAD')
+    if pathlib.Path(toplevel).resolve() != folder.resolve():
+        raise subprocess.SubprocessError(f'{folder} is not the top level of its repository')
+    branch = head.removeprefix('refs/heads/') if head.startswith('refs/heads/') else None
+    tags = git('for-each-ref', '--points-at', 'HEAD', '--format=%(refname:strip=2)', 'refs/tags')
+    url = _remote_url(folder / common, branch)
+    return GitInfo(url, tags[0] if tags else branch or sha, sha)
+
+
+def _remote_url(common: pathlib.Path, branch: str | None) -> str:
+    """ url of the branch's remote, else origin, else the first remote """
+    cfg = _config(common)
+    remotes = [sub for sec, sub in cfg if sec == 'remote']
+    remote = cfg.get(('branch', branch or ''), {}).get('remote')
+    if remote is None:
+        remote = 'origin' if 'origin' in remotes else next(iter(remotes), '')
+    return cfg.get(('remote', remote), {}).get('url', '')
+
+
+def parse_git_info(folder: pathlib.Path) -> GitInfo | None:
+    """ git_info() without the git CLI """
     gd = _git_dir(folder)
     if gd is None:
         return None
@@ -90,11 +133,4 @@ def git_info(folder: pathlib.Path) -> GitInfo | None:
     tags = sorted(r.removeprefix('refs/tags/') for r, s in refs.items() if sha and r.startswith('refs/tags/')
                   and sha in (s, peeled.get(r) or _peel_loose(common, s)))
 
-    cfg = _config(common)
-    remotes = [sub for sec, sub in cfg if sec == 'remote']
-    remote = cfg.get(('branch', branch or ''), {}).get('remote')
-    if remote is None:
-        remote = 'origin' if 'origin' in remotes else next(iter(remotes), '')
-    url = cfg.get(('remote', remote), {}).get('url', '')
-
-    return GitInfo(url, tags[0] if tags else branch or sha, sha)
+    return GitInfo(_remote_url(common, branch), tags[0] if tags else branch or sha, sha)

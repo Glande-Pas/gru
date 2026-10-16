@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import io
+import os
 import configparser
 import datetime
 import importlib
 import pathlib
 import pkgutil
+import shutil
+import subprocess
 import sys
 import typing
 import zipfile
@@ -58,6 +61,24 @@ def _no_real_user_config(tmp_path, monkeypatch):
 def _no_network_api_versions(monkeypatch):
     """The CLI fetches the API versions list for some commands: tests never do."""
     monkeypatch.setattr('gru.cli._api_versions', lambda: None)
+
+
+@pytest.fixture
+def git(monkeypatch):
+    """ Run git isolated from the user's config (also for gru's own git calls): git(cwd, *args) -> stdout """
+    exe = shutil.which('git')
+    if exe is None:
+        pytest.skip('git not installed')
+    for var in ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR'):
+        monkeypatch.delenv(var, raising=False)
+    for var, val in {'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_NOSYSTEM': '1', 'GIT_AUTHOR_NAME': 'T',
+                     'GIT_AUTHOR_EMAIL': 't@t', 'GIT_COMMITTER_NAME': 'T', 'GIT_COMMITTER_EMAIL': 't@t'}.items():
+        monkeypatch.setenv(var, val)
+
+    def run(cwd, *args, check=True):
+        return subprocess.run([exe, '-c', 'init.defaultBranch=main', '-c', 'protocol.file.allow=always', *args],
+                              cwd=cwd, capture_output=True, text=True, check=check).stdout.strip()
+    return run
 
 
 # ---------------------------------------------------------------------------

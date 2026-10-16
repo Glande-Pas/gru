@@ -1,27 +1,30 @@
 """Tests for gru.git, using the git CLI both to build repos and as the oracle."""
 
-import os
 import shutil
 import subprocess
 
 import pytest
 
-from gru.git import GitInfo, git_info
+import gru.git
+from gru.git import GitInfo, git_info, parse_git_info
 
 pytestmark = pytest.mark.skipif(shutil.which('git') is None, reason='git not installed')
 
 
-@pytest.fixture
-def git(monkeypatch):
-    for var in ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR'):
-        monkeypatch.delenv(var, raising=False)
-    env = {**os.environ, 'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_NOSYSTEM': '1',
-           'GIT_AUTHOR_NAME': 'T', 'GIT_AUTHOR_EMAIL': 't@t', 'GIT_COMMITTER_NAME': 'T', 'GIT_COMMITTER_EMAIL': 't@t'}
+@pytest.fixture(autouse=True, params=['cli', 'parse'])
+def impl(request, monkeypatch):
+    """ Run every test against both the git CLI and the .git parser fallback """
+    def no_cli(folder):
+        raise FileNotFoundError('git')
 
-    def run(cwd, *args, check=True):
-        return subprocess.run(['git', '-c', 'init.defaultBranch=main', '-c', 'protocol.file.allow=always', *args],
-                              cwd=cwd, env=env, capture_output=True, text=True, check=check).stdout.strip()
-    return run
+    def no_fallback(folder):
+        raise AssertionError('unexpected fallback')
+
+    if request.param == 'parse':
+        monkeypatch.setattr(gru.git, '_git_info_cli', no_cli)
+    else:
+        monkeypatch.setattr(gru.git, 'parse_git_info', no_fallback)
+    return request.param
 
 
 @pytest.fixture
@@ -42,8 +45,12 @@ def info(path):
 def oracle(git, path):
     sha = git(path, 'rev-parse', '--verify', '-q', 'HEAD', check=False)
     branch = git(path, 'symbolic-ref', '--short', '-q', 'HEAD', check=False)
-    tags = git(path, 'tag', '--points-at', 'HEAD').splitlines() if sha else []
-    url = git(path, 'ls-remote', '--get-url') if git(path, 'remote') else ''
+    # show-ref -d adds a peeled `refs/tags/x^{}` line for each annotated tag
+    tags = sorted({ref.removeprefix('refs/tags/').removesuffix('^{}') for line in
+                   git(path, 'show-ref', '--tags', '-d', check=False).splitlines()
+                   for ref_sha, ref in [line.split(' ', 1)] if sha and ref_sha == sha})
+    has_remote = git(path, 'config', '--get-regexp', r'^remote\..*\.url$', check=False)
+    url = git(path, 'ls-remote', '--get-url') if has_remote else ''
     return GitInfo(url, tags[0] if tags else branch or sha, sha)
 
 
@@ -51,8 +58,9 @@ def test_not_a_repo(tmp_path):
     assert git_info(tmp_path) is None
 
 
-def test_unborn_branch(tmp_path, git):
+def test_unborn_branch(tmp_path, git, monkeypatch):
     git(tmp_path, 'init')
+    monkeypatch.setattr(gru.git, 'parse_git_info', parse_git_info)  # the CLI defers to the parser here
     assert git_info(tmp_path) == GitInfo('', 'main', '') == oracle(git, tmp_path)
 
 
@@ -142,8 +150,9 @@ def test_moved_tag_overrides_packed_peel(repo, git):
     assert info(repo).ref == 'v1.0'
 
 
-@pytest.mark.xfail(strict=True, reason='annotated tag object only in a pack: no pack parsing')
-def test_loose_annotated_tag_with_packed_object(repo, git):
+def test_loose_annotated_tag_with_packed_object(repo, git, impl, request):
+    if impl == 'parse':
+        request.applymarker(pytest.mark.xfail(strict=True, reason='annotated tag object only in a pack'))
     git(repo, 'tag', '-a', '-m', 'v', 'v1.0')
     git(repo, 'repack', '-a', '-d')
     git(repo, 'prune-packed')
@@ -170,3 +179,29 @@ def test_submodule(repo, git, tmp_path):
     assert (sub / '.git').is_file()
     assert git_info(sub) == oracle(git, sub)
     assert info(sub).remote == str(repo)
+
+
+def test_subdir_of_repo_is_not_a_repo(repo):
+    (repo / 'Addon').mkdir()
+    assert git_info(repo / 'Addon') is None
+
+
+def test_falls_back_without_git_binary(repo, git, monkeypatch, impl):
+    if impl == 'parse':
+        pytest.skip('fallback already forced')
+    monkeypatch.setattr(gru.git, 'parse_git_info', parse_git_info)
+    monkeypatch.setenv('PATH', '')
+    assert git_info(repo) == oracle(git, repo)
+
+
+def test_cli_makes_two_git_calls(repo, git, monkeypatch, impl):
+    if impl == 'parse':
+        pytest.skip('no CLI calls')
+    git(repo, 'remote', 'add', 'origin', 'https://example.com/a.git')
+    git(repo, 'tag', 'v1.0')
+    expected = oracle(git, repo)
+    calls = []
+    run = subprocess.run
+    monkeypatch.setattr(subprocess, 'run', lambda args, **kw: calls.append(args) or run(args, **kw))
+    assert git_info(repo) == expected
+    assert len(calls) == 2

@@ -24,12 +24,14 @@ import traceback
 import configparser
 import typing
 import csv
+import zlib
 from urllib.parse import quote as urllib_quote
 
 from .config import root_key, user_cache, user_config
 from .addon import (InstalledAddon, AddonInfo, AddonBundle, VersionOverride, GARBAGE, MANIFEST_EXTS, parse_version,
                     is_offline_link)
 from .cache import download_name
+from .git import git_info
 from .apiversions import ApiVersions
 from .gamesettings import DisabledInfo, GameSettings, load as load_game_settings
 from .api import _fuzz, _filter, AmbiguousDirectory
@@ -80,6 +82,18 @@ class SilentProgress:
     def update(self, size: int) -> None:
         """ Update progress with given chunk size """
         pass
+
+
+def git_source(path: pathlib.Path) -> str:
+    """ addons.csv link for the git checkout at `path`: git+<remote>@<ref>, or local: without a remote """
+    try:
+        info = git_info(path)
+    except (OSError, ValueError, zlib.error) as err:
+        warnings.warn(f'Could not read git checkout {path.name}: {err}')
+        return 'local:'
+    if info is None or not info.remote:
+        return 'local:'
+    return f'git+{info.remote}@{info.ref}' if info.ref else f'git+{info.remote}'
 
 
 class Folder:
@@ -315,7 +329,9 @@ class Folder:
 
             addon.locked = path.name in locked
             addon.update_by_date = self.update_by_date
-            if is_offline_link(link := links.get(path.name, '')):
+            if (path / '.git').exists():
+                addon.source = git_source(path)
+            elif is_offline_link(link := links.get(path.name, '')):
                 addon.source = link
             elif parent is not None:
                 addon.source = parent.source  # nested in a local/git checkout
